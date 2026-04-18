@@ -19,7 +19,7 @@ def _aux_info(client):
     if not raw:
         return {}
     it = iter(raw)
-    return {k.decode(): v for k, v in zip(it, it)}
+    return {k: v for k, v in zip(it, it)}
 
 
 # ── Aux state tests ───────────────────────────────────────────────────────────
