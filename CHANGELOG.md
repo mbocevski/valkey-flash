@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Active-defrag support for FLASH data types: `FlashString` and `FlashHash` defrag callbacks relocate the object struct and, for Hot-tier entries, each `Vec<u8>` backing buffer; Cold-tier entries (scalar metadata only) are a no-op; integration tests in `tests/test_flash_defrag.py` verify data integrity and server stability under activedefrag
 - loom concurrency tests for async thread-pool, cache, WAL, and role-change paths: 7 `loom_tests::*` tests covering `RwLock<Arc<>>` resize races, candidates-queue Mutex, `approx_bytes` AtomicU64, WAL Mutex serialization, `sync_mode` AtomicU8 visibility, worker-claims-task-exactly-once, and `IS_REPLICA` Acquire/Release ordering; wired into CI via `.github/workflows/loom.yml` (`RUSTFLAGS='--cfg loom' cargo test -- loom_tests::`)
 - Runtime CONFIG SET for mutable flash.* knobs: `flash.cache-size-bytes` (live resize with entry migration), `flash.sync` (WAL flusher observes new mode on next tick), `flash.compaction-interval-sec` (compaction thread woken immediately)
 - `@flash` ACL category registered; FLASH.* commands scoped to `@read`, `@write`, or `@admin @dangerous` as appropriate

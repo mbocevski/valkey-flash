@@ -420,11 +420,55 @@ pub unsafe extern "C" fn copy(
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
-    _ctx: *mut RedisModuleDefragCtx,
+    ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
-    _value: *mut *mut c_void,
+    value: *mut *mut c_void,
 ) -> i32 {
-    // stub — defrag not yet implemented
+    use std::mem;
+    use valkey_module::defrag::Defrag;
+
+    let dfg = Defrag::new(ctx);
+
+    // Step 1: relocate the FlashHashObject struct itself
+    let new_struct = dfg.alloc(*value);
+    if !new_struct.is_null() {
+        *value = new_struct;
+    }
+
+    // Step 2: for Hot tier, relocate each key and value Vec's backing buffer
+    let obj: &mut FlashHashObject = &mut *(*value).cast::<FlashHashObject>();
+    if let Tier::Hot(ref mut map) = obj.tier {
+        // Drain the map, potentially relocating each key and value buffer, then
+        // reinsert. Collect first to avoid borrowing `map` during drain.
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = map.drain().collect();
+        for (mut k, mut v) in entries {
+            if k.capacity() > 0 {
+                let new_buf = dfg.alloc(k.as_mut_ptr().cast::<c_void>());
+                if !new_buf.is_null() {
+                    let (old_len, old_cap) = (k.len(), k.capacity());
+                    let old = mem::replace(
+                        &mut k,
+                        Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
+                    );
+                    mem::forget(old);
+                }
+            }
+            if v.capacity() > 0 {
+                let new_buf = dfg.alloc(v.as_mut_ptr().cast::<c_void>());
+                if !new_buf.is_null() {
+                    let (old_len, old_cap) = (v.len(), v.capacity());
+                    let old = mem::replace(
+                        &mut v,
+                        Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
+                    );
+                    mem::forget(old);
+                }
+            }
+            map.insert(k, v);
+        }
+    }
+    // Cold tier: only primitive scalars — nothing to relocate.
+
     0
 }
 

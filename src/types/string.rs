@@ -337,13 +337,72 @@ pub unsafe extern "C" fn copy(
 }
 
 /// # Safety
+///
+/// Called by Valkey's active-defrag mechanism to relocate a FlashStringObject
+/// to a less-fragmented heap arena.
+///
+/// ## Pointer contract
+/// - `ctx`   — valid `RedisModuleDefragCtx`; remains valid for the call's duration.
+/// - `value` — double-pointer (`*mut *mut FlashStringObject`). Writing `*value`
+///   updates Valkey's stored reference when the struct itself is relocated.
+/// - Returns 0 (complete). Cursor-based resumption is not needed because
+///   FlashStringObject has at most one inner allocation (the Hot `Vec<u8>`).
+///
+/// ## `alloc()` semantics
+/// `defrag.alloc(ptr)` calls `je_defrag_alloc`:
+/// - Returns **null** → allocation is already well-placed; `ptr` remains valid.
+/// - Returns **non-null** → data was copied to the new address and the old
+///   allocation was freed by jemalloc. The caller **must not** dereference `ptr`
+///   again; the returned pointer is now the sole valid reference.
+///
+/// ## No-concurrent-access guarantee
+/// Valkey's active-defrag runs on the main event-loop thread under the GIL.
+/// No command handler executes concurrently with this callback.
+/// Async I/O completion handlers (hot-promotion via background NVMe reads) only
+/// write to `FlashCache`; they hold no pointer to the keyspace object. It is
+/// therefore safe to relocate or mutate the object without extra synchronisation.
 pub unsafe extern "C" fn defrag(
-    _ctx: *mut RedisModuleDefragCtx,
+    ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
-    _value: *mut *mut c_void,
+    value: *mut *mut c_void,
 ) -> i32 {
-    // stub — defrag not yet implemented
-    0
+    use std::mem;
+    use valkey_module::defrag::Defrag;
+
+    let dfg = Defrag::new(ctx);
+
+    // ── Step 1: relocate the FlashStringObject struct itself ──────────────────
+    // If alloc() returns non-null, the struct was moved; old *value is freed.
+    // Writing *value here redirects Valkey's internal key→object pointer.
+    let new_struct = dfg.alloc(*value);
+    if !new_struct.is_null() {
+        *value = new_struct;
+    }
+
+    // ── Step 2: for Hot tier, relocate the Vec<u8> backing buffer ─────────────
+    // Cold tier holds only primitive scalars (key_hash, offset, counts) — no
+    // heap pointer to defrag. A Vec with capacity 0 uses a dangling sentinel
+    // pointer that is not a real heap allocation; skip it.
+    let obj: &mut FlashStringObject = &mut *(*value).cast::<FlashStringObject>();
+    if let Tier::Hot(ref mut vec) = obj.tier {
+        if vec.capacity() > 0 {
+            let new_buf = dfg.alloc(vec.as_mut_ptr().cast::<c_void>());
+            if !new_buf.is_null() {
+                // The buffer was relocated. Rebuild the Vec at the new address.
+                // `mem::forget` on the old Vec prevents its Drop impl from
+                // running (which would call `dealloc` on the already-freed ptr).
+                let old_len = vec.len();
+                let old_cap = vec.capacity();
+                let old = mem::replace(
+                    vec,
+                    Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
+                );
+                mem::forget(old);
+            }
+        }
+    }
+
+    0 // defrag complete — single-allocation types never need cursor resumption
 }
 
 // ── Fuzz helpers ─────────────────────────────────────────────────────────────
