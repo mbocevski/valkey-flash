@@ -1,0 +1,40 @@
+name: apply-labels
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    name: Apply label definitions from .github/labels.yml
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+    - name: Apply labels
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        python3 - <<'PYEOF'
+        import subprocess, sys
+        try:
+            import yaml
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "pyyaml"])
+            import yaml
+
+        with open(".github/labels.yml") as f:
+            labels = [l for l in yaml.safe_load(f) if isinstance(l, dict) and "name" in l]
+
+        for label in labels:
+            color = label["color"].lstrip("#")
+            desc  = label.get("description", "")
+            result = subprocess.run(
+                ["gh", "label", "create", label["name"],
+                 "--color", color, "--description", desc, "--force"],
+                capture_output=True, text=True,
+            )
+            status = "ok" if result.returncode == 0 else f"FAILED: {result.stderr.strip()}"
+            print(f"  {label['name']}: {status}")
+        PYEOF

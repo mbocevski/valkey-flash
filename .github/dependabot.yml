@@ -1,0 +1,34 @@
+version: 2
+updates:
+
+  # Rust / Cargo dependencies — grouped to reduce PR noise
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  # GitHub Actions — update pinned SHA references weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+
+  # Docker base images (rust:x.y.z-trixie in docker/Dockerfile)
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
