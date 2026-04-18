@@ -152,8 +152,9 @@ class TestFlashDelReplication(ReplicationTestCase):
 
     def test_flash_del_missing_not_replicated(self):
         self.setup_replication(num_replicas=1)
-        # DEL on missing key (returns 0) is still replicated verbatim.
         result = self.client.execute_command("FLASH.DEL", "ghost")
         assert result == 0
         self.waitForReplicaToSyncUp(self.replicas[0])
-        assert self.replicas[0].client.execute_command("EXISTS", "ghost") == 0
+        cmd_stats = self.replicas[0].client.info("Commandstats")
+        flash_del_calls = cmd_stats.get("cmdstat_FLASH.DEL", {}).get("calls", 0)
+        assert flash_del_calls == 0
