@@ -13,6 +13,15 @@ pub fn is_cluster() -> bool {
     IS_CLUSTER.load(Ordering::Acquire)
 }
 
+// ── AtomicSlotMigration subevent constants (valkeymodule.h:670-675, Valkey 9.0) ──
+// Defined here so task #78 can import them without touching the raw event ID.
+pub const SLOT_MIGRATION_IMPORT_STARTED: u64 = 0;
+pub const SLOT_MIGRATION_EXPORT_STARTED: u64 = 1;
+pub const SLOT_MIGRATION_IMPORT_ABORTED: u64 = 2;
+pub const SLOT_MIGRATION_EXPORT_ABORTED: u64 = 3;
+pub const SLOT_MIGRATION_IMPORT_COMPLETED: u64 = 4;
+pub const SLOT_MIGRATION_EXPORT_COMPLETED: u64 = 5;
+
 /// Subscribe a stub handler for `ValkeyModuleEvent_AtomicSlotMigration` (event 19).
 ///
 /// The stub logs receipt; real slot-migration behavior is wired in task #78.
@@ -38,6 +47,7 @@ extern "C" fn on_slot_migration(
     _ctx: *mut raw::RedisModuleCtx,
     _eid: raw::RedisModuleEvent,
     subevent: u64,
+    // TODO(#78): cast to *const ValkeyModuleAtomicSlotMigrationInfo for slot + node details.
     _data: *mut ::std::os::raw::c_void,
 ) {
     // Stub — real slot-migration logic is wired in task #78.

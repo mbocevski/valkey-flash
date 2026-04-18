@@ -43,10 +43,17 @@ fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
     match new_role {
         ServerRole::Replica => {
             IS_REPLICA.store(true, Ordering::Release);
-            valkey_module::logging::log_notice(
-                "flash: role changed to Replica — NVMe demotions suspended; \
-                 hot-set preserved in RAM",
-            );
+            if crate::config::FLASH_REPLICA_TIER_ENABLED.load(Ordering::Relaxed) {
+                valkey_module::logging::log_notice(
+                    "flash: role changed to Replica — local NVMe tier remains active \
+                     (flash.replica-tier-enabled)",
+                );
+            } else {
+                valkey_module::logging::log_notice(
+                    "flash: role changed to Replica — NVMe demotions suspended; \
+                     hot-set preserved in RAM",
+                );
+            }
         }
         ServerRole::Primary => {
             IS_REPLICA.store(false, Ordering::Release);

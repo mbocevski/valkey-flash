@@ -157,15 +157,27 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     let io_uring_entries = FLASH_IO_URING_ENTRIES.load(Ordering::Relaxed) as u32;
     let io_threads = flash_io_threads();
 
-    // ── Replica early-exit ────────────────────────────────────────────────────
+    // ── Replica handling ──────────────────────────────────────────────────────
     if ctx.get_flags().contains(ContextFlags::SLAVE) {
         replication::IS_REPLICA.store(true, Ordering::Release);
-        let _ = CACHE.set(FlashCache::new(cache_size));
-        if let Ok(mut state) = MODULE_STATE.lock() {
-            *state = ModuleState::Ready;
+        if !FLASH_REPLICA_TIER_ENABLED.load(Ordering::Relaxed) {
+            // v1 / default: RAM-only replica — NVMe backend deferred until promotion.
+            let _ = CACHE.set(FlashCache::new(cache_size));
+            if let Ok(mut state) = MODULE_STATE.lock() {
+                *state = ModuleState::Ready;
+            }
+            logging::log_notice(
+                "flash: starting as replica — NVMe backend deferred until promotion",
+            );
+            return Status::Ok;
         }
-        logging::log_notice("flash: starting as replica — NVMe backend deferred until promotion");
-        return Status::Ok;
+        // flash.replica-tier-enabled=true: open a local NVMe tier so this node
+        // can make independent cache/eviction decisions. Fall through to the
+        // full init path below (same as a primary).
+        logging::log_notice(
+            "flash: starting as replica with flash.replica-tier-enabled — \
+             initializing local NVMe backend",
+        );
     }
 
     // Derive WAL path from the backing-store path (same dir, .wal extension).
