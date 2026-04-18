@@ -398,7 +398,7 @@ impl Drop for Wal {
             cvar.notify_all();
         }
         if let Some(handle) = self.flusher.take() {
-            handle.join().unwrap_or_else(|_| ());
+            handle.join().unwrap_or(());
         }
     }
 }

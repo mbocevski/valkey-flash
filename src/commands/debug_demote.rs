@@ -2,15 +2,16 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValu
 
 use crate::storage::backend::StorageBackend;
 use crate::storage::file_io_uring::FileIoUringBackend;
+use crate::types::hash::{hash_serialize, FlashHashObject, FLASH_HASH_TYPE};
 use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::types::Tier;
 use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
 
 /// `FLASH.DEBUG.DEMOTE key`
 ///
-/// Force-demote a hot-tier flash-string key to cold tier (NVMe). Intended for
-/// integration tests that need to exercise the cold-tier read and TTL-expiry
-/// paths without real eviction pressure.
+/// Force-demote a hot-tier flash-string or flash-hash key to cold tier (NVMe).
+/// Intended for integration tests that need to exercise cold-tier read and
+/// TTL-expiry paths without real eviction pressure.
 ///
 /// **Production note:** This command should be restricted via ACL in production
 /// deployments: `ACL SETUSER default -FLASH.DEBUG.DEMOTE`. The NVMe write runs
@@ -18,15 +19,17 @@ use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
 /// production traffic.
 ///
 /// Steps:
-///   1. Write the hot value to NVMe via `storage.put()` (returns byte offset).
-///   2. Remove from STORAGE index (`remove_from_index`): ownership transfers to
+///   1. Probe the key as FlashStringObject, then FlashHashObject.
+///   2. Serialize the hot value to bytes (raw for strings; `hash_serialize` for hashes).
+///   3. Write to NVMe via `storage.put()` (returns byte offset).
+///   4. Remove from STORAGE index (`remove_from_index`): ownership transfers to
 ///      `Tier::Cold`, so the index entry is no longer needed. This prevents a
 ///      double-free when TTL expiry later calls `free()` (which reclaims via
 ///      `release_cold_blocks`). Cold reads use `read_at_offset` directly.
-///   3. WAL-log the put so recovery can rebuild tiering state.
-///   4. Update TIERING_MAP with the new cold entry.
-///   5. Mutate the in-memory object to `Tier::Cold`.
-///   6. Evict the key from the hot cache.
+///   5. WAL-log the put so recovery can rebuild tiering state.
+///   6. Update TIERING_MAP with the new cold entry.
+///   7. Mutate the in-memory object to `Tier::Cold`.
+///   8. Evict the key from the hot cache.
 pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
     if args.len() != 2 {
         return Err(ValkeyError::WrongArity);
@@ -38,28 +41,54 @@ pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
     let key_handle = ctx.open_key_writable(key);
-    let obj = match key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
-        Err(_) => return Err(ValkeyError::WrongType),
+
+    // ── Try flash-string ──────────────────────────────────────────────────────
+
+    match key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
+        Ok(Some(obj)) => {
+            let value = match &obj.tier {
+                Tier::Hot(v) => v.clone(),
+                Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
+            };
+            return demote_bytes(key, storage, &value, &mut obj.tier);
+        }
         Ok(None) => return Err(ValkeyError::Str("ERR key does not exist")),
-        Ok(Some(obj)) => obj,
-    };
+        Err(_) => {} // wrong type for string — fall through to hash probe
+    }
 
-    let (value, _ttl_ms) = match &obj.tier {
-        Tier::Hot(v) => (v.clone(), obj.ttl_ms),
-        Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
-    };
+    // ── Try flash-hash ────────────────────────────────────────────────────────
 
+    match key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
+        Ok(Some(obj)) => {
+            let bytes = match &obj.tier {
+                Tier::Hot(fields) => hash_serialize(fields),
+                Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
+            };
+            demote_bytes(key, storage, &bytes, &mut obj.tier)
+        }
+        Ok(None) => Err(ValkeyError::Str("ERR key does not exist")),
+        Err(_) => Err(ValkeyError::WrongType),
+    }
+}
+
+// ── Shared demotion logic ─────────────────────────────────────────────────────
+
+fn demote_bytes<T>(
+    key: &valkey_module::ValkeyString,
+    storage: &FileIoUringBackend,
+    bytes: &[u8],
+    tier: &mut Tier<T>,
+) -> ValkeyResult {
     let key_bytes = key.as_slice();
     let kh = crate::util::key_hash(key_bytes);
-    let vh = crate::util::value_hash(&value);
-    let num_blocks = FileIoUringBackend::blocks_needed(value.len());
-    let value_len = value.len() as u32;
+    let vh = crate::util::value_hash(bytes);
+    let num_blocks = FileIoUringBackend::blocks_needed(bytes.len());
+    let value_len = bytes.len() as u32;
 
     let backend_offset = storage
-        .put(key_bytes, &value)
+        .put(key_bytes, bytes)
         .map_err(|e| ValkeyError::String(e.to_string()))?;
 
-    // Transfer NVMe block ownership from the STORAGE index to Tier::Cold.
     storage.remove_from_index(key_bytes);
 
     if let Some(wal) = WAL.get() {
@@ -80,7 +109,7 @@ pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
         );
     }
 
-    obj.tier = Tier::Cold {
+    *tier = Tier::Cold {
         key_hash: kh,
         backend_offset,
         num_blocks,

@@ -31,11 +31,18 @@ pub fn hash_serialize(fields: &HashMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {
 
 /// Decode bytes (from NVMe or cache) back to a hash map.
 /// Returns `None` on any structural corruption.
+///
+/// Field count is capped at 1 << 20 (≈ 1 M) to prevent OOM from a corrupt
+/// 4-byte count field on a degraded NVMe device.
 pub fn hash_deserialize(bytes: &[u8]) -> Option<HashMap<Vec<u8>, Vec<u8>>> {
+    const MAX_FIELDS: usize = 1 << 20;
     if bytes.len() < 4 {
         return None;
     }
     let count = u32::from_le_bytes(bytes[..4].try_into().ok()?) as usize;
+    if count > MAX_FIELDS {
+        return None;
+    }
     let mut map = HashMap::with_capacity(count);
     let mut pos = 4usize;
     for _ in 0..count {
@@ -65,6 +72,22 @@ pub fn hash_deserialize(bytes: &[u8]) -> Option<HashMap<Vec<u8>, Vec<u8>>> {
         return None;
     }
     Some(map)
+}
+
+/// Like [`hash_deserialize`] but logs a warning and returns an empty map when
+/// bytes are non-empty and parsing fails — preventing silent data loss.
+pub fn hash_deserialize_or_warn(bytes: &[u8]) -> HashMap<Vec<u8>, Vec<u8>> {
+    match hash_deserialize(bytes) {
+        Some(m) => m,
+        None => {
+            if !bytes.is_empty() {
+                logging::log_warning(
+                    "flash: hash_deserialize: corrupt or truncated bytes — returning empty map",
+                );
+            }
+            HashMap::new()
+        }
+    }
 }
 
 // ── FlashHashObject ───────────────────────────────────────────────────────────

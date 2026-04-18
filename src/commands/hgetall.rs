@@ -1,6 +1,8 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{hash_deserialize, hash_serialize, FlashHashObject, FLASH_HASH_TYPE};
+use crate::types::hash::{
+    hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
+};
 use crate::types::Tier;
 use crate::CACHE;
 
@@ -35,9 +37,7 @@ impl crate::async_io::CompletionHandle for HGetAllCompletionHandle {
             Err(e) => Err(valkey_module::ValkeyError::String(e.to_string())),
             Ok(bytes) => {
                 self.cache.put(&self.key, bytes.clone());
-                Ok(fields_to_array(
-                    hash_deserialize(&bytes).unwrap_or_default(),
-                ))
+                Ok(fields_to_array(hash_deserialize_or_warn(&bytes)))
             }
         };
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -78,9 +78,7 @@ pub fn flash_hgetall_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
 
     // Cache hit: deserialise and return all pairs.
     if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        return Ok(fields_to_array(
-            hash_deserialize(&cached_bytes).unwrap_or_default(),
-        ));
+        return Ok(fields_to_array(hash_deserialize_or_warn(&cached_bytes)));
     }
 
     let cold_info: Option<(u64, u32)>;

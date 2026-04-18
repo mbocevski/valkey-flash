@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{hash_deserialize, hash_serialize, FlashHashObject, FLASH_HASH_TYPE};
+use crate::types::hash::{
+    hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
+};
 use crate::types::Tier;
 use crate::{CACHE, STORAGE};
 #[cfg(not(test))]
@@ -85,7 +87,7 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
                 let bytes = storage
                     .read_at_offset(*backend_offset, *value_len)
                     .map_err(|e| ValkeyError::String(e.to_string()))?;
-                hash_deserialize(&bytes).unwrap_or_default()
+                hash_deserialize_or_warn(&bytes)
             }
         };
         (fields, ttl)
