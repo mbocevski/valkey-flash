@@ -24,6 +24,7 @@ use crate::storage::file_io_uring::FileIoUringBackend;
 use crate::types::hash::FLASH_HASH_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 
+use crate::commands::del::flash_del_command;
 use crate::commands::get::flash_get_command;
 use crate::commands::set::flash_set_command;
 
@@ -97,6 +98,7 @@ valkey_module! {
     commands: [
         ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
     ],
     configurations: [
         i64: [
