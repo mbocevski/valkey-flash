@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+#[cfg(not(test))]
+use valkey_module::raw;
 
 use crate::commands::list_common::{current_time_ms, promote_cold_list};
 use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
@@ -125,6 +127,12 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         ctx.replicate_verbatim();
         ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", src_key);
 
+        // src == dst in a rotation — signal so BLPOP clients on this key wake up.
+        #[cfg(not(test))]
+        unsafe {
+            raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, src_key.inner);
+        }
+
         return finish_lmove(ctx, elem, None, serialized, src_key, None, &[]);
     }
 
@@ -239,6 +247,12 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", src_key);
     ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", dst_key);
+
+    // Signal dst so any FLASH.BLPOP clients blocked on it wake up.
+    #[cfg(not(test))]
+    unsafe {
+        raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, dst_key.inner);
+    }
 
     let src_bytes: &[u8] = src_serialized.as_deref().unwrap_or(&[]);
     finish_lmove(

@@ -274,6 +274,13 @@ fn push_one_blmove(
     if let Some(cache) = CACHE.get() {
         cache.put(dst_key_bytes, serialized.clone());
     }
+
+    // Wake any BLPOP clients blocked on dst.
+    #[cfg(not(test))]
+    unsafe {
+        raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, dst_vs.inner);
+    }
+
     serialized
 }
 

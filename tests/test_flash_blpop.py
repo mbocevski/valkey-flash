@@ -208,3 +208,115 @@ class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
         assert results.get("val") == b"mover"
         dst = self.client.execute_command("FLASH.LRANGE", "bmdst", "0", "-1")
         assert dst == [b"mover"]
+
+    def test_blmove_same_key_rotation_wakes_blpop(self):
+        """BLMOVE src src (rotation) signals src — unblocks a BLPOP on the same key."""
+        # Pre-populate src so BLMOVE fast-path succeeds and rotates.
+        self.client.execute_command("FLASH.RPUSH", "bmrot", "a", "b", "c")
+
+        results = {}
+
+        def blocker():
+            # Block on bmrot (it has elements, so this tests that the signal
+            # fired by a same-key LMOVE wakes a second concurrent BLPOP).
+            # Use a separate key that starts empty so we are truly blocking.
+            results["val"] = self.client.execute_command(
+                "FLASH.BLPOP", "bmrot_empty", "5"
+            )
+
+        t = threading.Thread(target=blocker, daemon=True)
+        t.start()
+        time.sleep(0.15)
+
+        # LMOVE on a different key into bmrot_empty via a second connection.
+        pusher = self.create_client()
+        pusher.execute_command("FLASH.RPUSH", "bmrot_src2", "signal_elem")
+        pusher.execute_command(
+            "FLASH.LMOVE", "bmrot_src2", "bmrot_empty", "LEFT", "RIGHT"
+        )
+
+        t.join(timeout=3.0)
+        assert not t.is_alive(), "BLPOP on dst did not unblock after FLASH.LMOVE into it"
+        assert results.get("val") == [b"bmrot_empty", b"signal_elem"]
+
+
+class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
+    """BLPOP/BRPOP on a destination key wakes when FLASH.LMOVE pushes to it."""
+
+    def test_blpop_wakes_when_lmove_pushes_to_dst(self):
+        results = {}
+
+        def blocker():
+            results["val"] = self.client.execute_command(
+                "FLASH.BLPOP", "lmove_dst", "5"
+            )
+
+        t = threading.Thread(target=blocker, daemon=True)
+        t.start()
+        time.sleep(0.15)
+
+        mover = self.create_client()
+        mover.execute_command("FLASH.RPUSH", "lmove_src", "payload")
+        mover.execute_command("FLASH.LMOVE", "lmove_src", "lmove_dst", "LEFT", "RIGHT")
+
+        t.join(timeout=3.0)
+        assert not t.is_alive(), "BLPOP on dst did not unblock after FLASH.LMOVE"
+        assert results.get("val") == [b"lmove_dst", b"payload"]
+
+    def test_brpop_wakes_when_lmove_pushes_to_dst(self):
+        results = {}
+
+        def blocker():
+            results["val"] = self.client.execute_command(
+                "FLASH.BRPOP", "lmove_dst2", "5"
+            )
+
+        t = threading.Thread(target=blocker, daemon=True)
+        t.start()
+        time.sleep(0.15)
+
+        mover = self.create_client()
+        mover.execute_command("FLASH.RPUSH", "lmove_src2", "p2")
+        mover.execute_command("FLASH.LMOVE", "lmove_src2", "lmove_dst2", "RIGHT", "LEFT")
+
+        t.join(timeout=3.0)
+        assert not t.is_alive(), "BRPOP on dst did not unblock after FLASH.LMOVE"
+        assert results.get("val") == [b"lmove_dst2", b"p2"]
+
+    def test_blpop_wakes_when_blmove_reply_cb_pushes_to_dst(self):
+        """A blocked BLPOP on `bdst` wakes when BLMOVE's reply callback pushes to it."""
+        results = {}
+
+        def blpop_waiter():
+            results["val"] = self.client.execute_command(
+                "FLASH.BLPOP", "blmove_chain_dst", "5"
+            )
+
+        t = threading.Thread(target=blpop_waiter, daemon=True)
+        t.start()
+        time.sleep(0.15)
+
+        # Block a BLMOVE on blmove_chain_src → blmove_chain_dst.
+        blmove_results = {}
+
+        def blmove_waiter():
+            blmove_results["val"] = self.client.execute_command(
+                "FLASH.BLMOVE", "blmove_chain_src", "blmove_chain_dst",
+                "LEFT", "RIGHT", "5"
+            )
+
+        t2 = threading.Thread(target=blmove_waiter, daemon=True)
+        t2.start()
+        time.sleep(0.15)
+
+        # Push to blmove_chain_src — wakes BLMOVE, which pushes to dst, which wakes BLPOP.
+        pusher = self.create_client()
+        pusher.execute_command("FLASH.RPUSH", "blmove_chain_src", "chained")
+
+        t2.join(timeout=3.0)
+        assert not t2.is_alive(), "BLMOVE did not unblock"
+        assert blmove_results.get("val") == b"chained"
+
+        t.join(timeout=3.0)
+        assert not t.is_alive(), "BLPOP on dst did not unblock via BLMOVE chain"
+        assert results.get("val") == [b"blmove_chain_dst", b"chained"]
