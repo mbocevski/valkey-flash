@@ -16,16 +16,20 @@ pub struct FlashStringObject {
 
 const ENCODING_VERSION: i32 = 1;
 
+// RDB format constants (spec #13, v1 inline format):
+//   [u64 encoding_version][u64 shape_tag][i64 ttl_ms][string_buffer value]
+const SHAPE_TAG_STRING: u64 = 0x01;
+// Sentinel stored in the RDB ttl_ms field when the key has no expiry.
+const TTL_NONE_SENTINEL: i64 = -1;
+
 // "flashstr1" is exactly 9 chars — satisfies the module-type-id constraint.
 pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
     "flashstr1",
     ENCODING_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
-        // rdb_save/rdb_load are None until task #25: a registered rdb_load returning
-        // null_mut() triggers rdbReportCorruptRDB → server exit (rdb.c:2942).
-        rdb_load: None,
-        rdb_save: None,
+        rdb_load: Some(rdb_load),
+        rdb_save: Some(rdb_save),
         aof_rewrite: Some(aof_rewrite),
         digest: Some(digest),
         // mem_usage (v1) intentionally None; real accounting is in mem_usage2 (v2).
@@ -73,12 +77,142 @@ pub unsafe extern "C" fn mem_usage2(
 }
 
 /// # Safety
+///
+/// Serialise a `FlashStringObject` into the RDB stream.
+///
+/// Wire format (spec #13 v1):
+///   [u64 encoding_version = 1][u64 shape_tag = 0x01][i64 ttl_ms|-1][string_buffer value]
+///
+/// Cold-tier objects: NVMe fetch is not possible here because `rdb_save` does not
+/// receive the key. No code currently transitions keys to `Tier::Cold`, so this
+/// branch is unreachable today. If reached, an empty value is written with a
+/// warning — future work (demotion) must store the key in `Tier::Cold`.
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
+    // and remains valid for the duration of this call (Valkey holds a read lock).
+    let obj = &*value.cast::<FlashStringObject>();
+
+    raw::save_unsigned(io, ENCODING_VERSION as u64);
+    raw::save_unsigned(io, SHAPE_TAG_STRING);
+
+    let ttl = obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL);
+    raw::save_signed(io, ttl);
+
+    match &obj.tier {
+        Tier::Hot(v) => {
+            raw::save_slice(io, v);
+        }
+        Tier::Cold { .. } => {
+            // No key available here; cannot fetch from NVMe. Log and write empty
+            // bytes — the loaded key will have an empty value.
+            logging::log_warning(
+                "flash: rdb_save on Tier::Cold object — value cannot be materialised; \
+                 writing empty bytes (demotion support required)",
+            );
+            raw::save_slice(io, &[]);
+        }
+    }
+}
+
+/// # Safety
+///
+/// Deserialise a `FlashStringObject` from the RDB stream. Returns a raw pointer
+/// to a heap-allocated object owned by Valkey, or `null_mut()` on any error.
+///
+/// All loaded values come back as `Tier::Hot` — cold tiering happens later via
+/// the eviction path.
+pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
+    // Reject data saved by a future, incompatible module version.
+    if encver > ENCODING_VERSION {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load: unsupported module encoding version {encver} \
+                 (max supported: {ENCODING_VERSION})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    // ── Read encoding_version ──────────────────────────────────────────────
+    let version = match raw::load_unsigned(io) {
+        Ok(v) => v,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load: short read on encoding_version");
+            return null_mut();
+        }
+    };
+    if version as i32 > ENCODING_VERSION {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load: unsupported in-stream encoding_version {version} \
+                 (max supported: {ENCODING_VERSION})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    // ── Read shape_tag ─────────────────────────────────────────────────────
+    let tag = match raw::load_unsigned(io) {
+        Ok(t) => t,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load: short read on shape_tag");
+            return null_mut();
+        }
+    };
+    if tag != SHAPE_TAG_STRING {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load: unexpected shape_tag {tag:#04x} \
+                 (expected {SHAPE_TAG_STRING:#04x})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    // ── Read ttl_ms ────────────────────────────────────────────────────────
+    let ttl_raw = match raw::load_signed(io) {
+        Ok(t) => t,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load: short read on ttl_ms");
+            return null_mut();
+        }
+    };
+    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
+        None
+    } else {
+        Some(ttl_raw)
+    };
+
+    // ── Read value bytes ───────────────────────────────────────────────────
+    let value = match raw::load_string_buffer(io) {
+        Ok(buf) => buf.as_ref().to_vec(),
+        Err(_) => {
+            logging::log_warning("flash: rdb_load: short read on value bytes");
+            return null_mut();
+        }
+    };
+
+    let obj = Box::new(FlashStringObject {
+        tier: Tier::Hot(value),
+        ttl_ms,
+    });
+
+    // SAFETY: Box::into_raw transfers ownership to Valkey's keyspace. Valkey will
+    // call the free() callback exactly once when the key is deleted or evicted,
+    // which drops the box via `drop(Box::from_raw(...))`.
+    Box::into_raw(obj).cast::<c_void>()
+}
+
+/// # Safety
 pub unsafe extern "C" fn aof_rewrite(
     _aof: *mut raw::RedisModuleIO,
     _key: *mut raw::RedisModuleString,
     _value: *mut c_void,
 ) {
-    // stub — AOF rewrite not yet implemented (task #25)
+    // stub — AOF rewrite not yet implemented
 }
 
 /// # Safety
@@ -92,7 +226,7 @@ pub unsafe extern "C" fn copy(
     _to_key: *mut RedisModuleString,
     _value: *const c_void,
 ) -> *mut c_void {
-    // stub — COPY not yet implemented (task #25)
+    // stub — COPY not yet implemented
     logging::log_warning("flash: copy for FlashString is a stub; returning null");
     null_mut()
 }
@@ -116,6 +250,40 @@ mod tests {
     #[test]
     fn encoding_version_is_one() {
         assert_eq!(ENCODING_VERSION, 1);
+    }
+
+    #[test]
+    fn shape_tag_string_is_0x01() {
+        assert_eq!(SHAPE_TAG_STRING, 0x01);
+    }
+
+    #[test]
+    fn ttl_none_sentinel_is_negative_one() {
+        assert_eq!(TTL_NONE_SENTINEL, -1);
+    }
+
+    #[test]
+    fn ttl_sentinel_is_negative_and_below_any_valid_timestamp() {
+        // Valid epoch-ms timestamps are large positive integers; the sentinel is -1.
+        const { assert!(TTL_NONE_SENTINEL < 0) };
+        const { assert!(1_700_000_000_000_i64 > TTL_NONE_SENTINEL) };
+    }
+
+    #[test]
+    fn ttl_sentinel_roundtrip() {
+        // Verify the sentinel → None → sentinel identity.
+        let sentinel_to_opt = |v: i64| {
+            if v == TTL_NONE_SENTINEL {
+                None
+            } else {
+                Some(v)
+            }
+        };
+        assert_eq!(sentinel_to_opt(TTL_NONE_SENTINEL), None::<i64>);
+        assert_eq!(
+            sentinel_to_opt(1_700_000_000_000),
+            Some(1_700_000_000_000_i64)
+        );
     }
 
     #[test]
