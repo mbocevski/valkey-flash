@@ -20,6 +20,7 @@ def _bgrewriteaof_and_restart(server):
     server.args["appendonly"] = "yes"
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
+    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
 
 
 # ── AOF rewrite tests ─────────────────────────────────────────────────────────
