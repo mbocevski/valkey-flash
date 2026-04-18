@@ -431,21 +431,24 @@ valkey_module! {
     ],
     init: initialize,
     deinit: deinitialize,
+    acl_categories: [
+        "flash",
+    ]
     commands: [
-        ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write fast flash"],
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
-        ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
+        ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write fast flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HDEL", flash_hdel_command, "write", 1, 1, 1, "write flash"],
         ["FLASH.HEXISTS", flash_hexists_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HLEN", flash_hlen_command, "readonly", 1, 1, 1, "read flash"],
-        ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "read flash"],
-        ["FLASH.DEBUG.DEMOTE", flash_debug_demote_command, "write", 1, 1, 1, "write flash"],
-        ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "read flash"],
-        ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "read flash"],
-        ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "write flash"],
+        ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "admin flash"],
+        ["FLASH.DEBUG.DEMOTE", flash_debug_demote_command, "write", 1, 1, 1, "admin dangerous flash"],
+        ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "admin flash"],
+        ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "admin dangerous flash"],
+        ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "admin dangerous flash"],
     ],
     configurations: [
         i64: [
