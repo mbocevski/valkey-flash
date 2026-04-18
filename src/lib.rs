@@ -73,6 +73,12 @@ pub static MODULE_STATE: LazyLock<Mutex<ModuleState>> =
 /// Signal the background compaction thread to exit on module unload.
 static COMPACTION_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Join handle for the background compaction thread.
+/// `deinitialize` takes the handle and joins it so the thread exits before
+/// `dlclose()` unmaps the `.so` text segment.
+static COMPACTION_THREAD: LazyLock<Mutex<Option<std::thread::JoinHandle<()>>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
 fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
@@ -204,7 +210,7 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
     // flash.compaction-interval-sec seconds. Sleeps in 100 ms increments so
     // module unload (COMPACTION_SHUTDOWN) is noticed quickly.
     COMPACTION_SHUTDOWN.store(false, Ordering::Relaxed);
-    std::thread::spawn(|| {
+    let handle = std::thread::spawn(|| {
         let mut elapsed_decisecs: u64 = 0; // units of 100 ms
         loop {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -222,6 +228,9 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
             }
         }
     });
+    if let Ok(mut guard) = COMPACTION_THREAD.lock() {
+        *guard = Some(handle);
+    }
 
     if let Ok(mut state) = MODULE_STATE.lock() {
         *state = ModuleState::Ready;
@@ -231,7 +240,14 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
 }
 
 fn deinitialize(_ctx: &Context) -> Status {
+    // Signal the compaction thread to stop, then join it (≤ 100 ms wait).
+    // This must complete before dlclose() unmaps the .so text segment.
     COMPACTION_SHUTDOWN.store(true, Ordering::Relaxed);
+    if let Ok(mut guard) = COMPACTION_THREAD.lock() {
+        if let Some(handle) = guard.take() {
+            let _ = handle.join();
+        }
+    }
     Status::Ok
 }
 
