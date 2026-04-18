@@ -36,7 +36,7 @@ out of the box.
 - Per-node INFO flash with cluster-mode field (`flash_cluster_mode:yes/no`)
 - Migration metrics in INFO flash (8 `flash_migration_*` fields)
 - Optional flash tier on replicas (`flash.replica-tier-enabled=true`)
-- `FLASH.MIGRATE.PROBE` for pre-migration capacity checks
+- `FLASH.MIGRATE.PROBE` for pre-migration capacity checks — rejects migration if target free space < key serialized size (spec #70 via task #96)
 
 **v1.1 planned**
 
@@ -294,7 +294,7 @@ should be left for normal hot-tier promotions and cache misses.
 | Cluster-aware client required | Standard single-node clients receive MOVED/ASK redirects; use a cluster-mode client |
 | Import-side byte tracking | `flash_migration_bytes_received` is always 0 in v1; export-side `flash_migration_bytes_sent` is accurate |
 | Chunked streaming | Keys > `flash.migration-max-key-bytes` are not streamed in chunks; planned for v1.1 |
-| Capacity gating | No pre-MIGRATE capacity check on target; planned for v1.1 as an enhancement to `FLASH.MIGRATE.PROBE` |
+| Capacity gating | `FLASH.MIGRATE.PROBE` rejects migration when target `free_bytes` < key serialized size; error `ERR FLASH-MIGRATE target ... insufficient flash capacity (need N bytes free, has M)` |
 | `flash.path` sharing | No file locking; sharing a path between nodes silently corrupts both — see [critical constraint](#critical-constraint-unique-flashpath-per-node) |
 
 ---

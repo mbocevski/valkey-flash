@@ -168,7 +168,7 @@ On load: detect cluster mode via `CTX_FLAGS_CLUSTER`. Config knob `flash.cluster
 
 **Per-key atomic** for v1. Not chunked streaming.
 
-- Source probes target via `FLASH.MIGRATE.PROBE` before migration — verifies flash module loaded + capacity. Probe result cached for 60 s (`flash.migration-probe-cache-sec`).
+- Source probes target via `FLASH.MIGRATE.PROBE` before migration — verifies flash module loaded, `flash.path` configured, and target has sufficient `free_bytes` for the specific key being migrated (task #96). Probe result cached for 60 s (`flash.migration-probe-cache-sec`).
 - Keys larger than `flash.migration-max-key-bytes` (default 64 MiB) are skipped from the Phase 1 pre-warm and migrated via the NVMe-read path during the standard MIGRATE — no rejection, just a different code path that avoids doubling RAM pressure.
 - `DUMP/RESTORE` extension uses the same on-disk format as `rdb_save` (encoding_version + shape_tag + ttl_ms + value bytes).
 - **Atomicity:** source keeps ownership until target ACKs the RESTORE. On failure, source retains; nothing is migrated partially.
@@ -178,7 +178,7 @@ On load: detect cluster mode via `CTX_FLAGS_CLUSTER`. Config knob `flash.cluster
 Error surface (all exact strings in code):
 - `ERR FLASH-MIGRATE target <addr> does not have flash-module loaded`
 - `ERR FLASH-MIGRATE target <addr> has flash-module but flash.path not configured`
-- `ERR FLASH-MIGRATE target <addr> insufficient flash capacity (need N bytes free, has M)` — triggering this requires the per-key capacity probe from `#96` (open as of v1 RC).
+- `ERR FLASH-MIGRATE target <addr> insufficient flash capacity (need N bytes free, has M)` — triggered by the per-key capacity probe (task #96) comparing the key's serialized size against the target's probe-reported `free_bytes` before MIGRATE.
 - `ERR FLASH-MIGRATE timeout after Ns`
 
 ### 9.3 Redirect-safe dispatch (task #81)
@@ -211,7 +211,6 @@ ACL (task #32): `@flash` category scopes every FLASH.* command; admin/debug comm
 ## 11. Known v1 limitations
 
 - **Cold-tier keyed-lookup during RDB save** for very large cold values: inline inclusion in RDB inflates file size (documented tradeoff; v2 can use `aux_save`-based shared backing).
-- **Per-key migration capacity probe** (`#96` still open at RC): the `insufficient flash capacity` error message exists in code but isn't triggered yet — RESTORE currently lands into RAM on the target first, capacity pressure manifests only at demote time.
 - **Migration key-size cap**: keys > `flash.migration-max-key-bytes` (default 64 MiB) must be drained manually before reshard; v1.1 will add chunked streaming.
 - **FLASH.HSET TTL on cold hash materialization**: `obj.ttl_ms` round-trips correctly through RDB/AOF (task #62 fix), but `rdb_save` on a Cold hash reconstructs from NVMe blocks — `backend_offset` must be set. Tested.
 - **AOF under instrumented debug builds**: integration-coverage (`#91`) disables AOF tests because debug-speed instrumentation slows server restart enough to race NVMe reinit. Production (release) builds are unaffected.
@@ -230,6 +229,6 @@ ACL (task #32): `@flash` category scopes every FLASH.* command; admin/debug comm
 | Slot migration | `#67` | `#78` + `#79` |
 | Cross-shard replication | `#68` | `#82` |
 | Resharding correctness | `#69` | `#84` |
-| Target-no-flash | `#70` | `#78` (probe) + `#96` (pending capacity) |
+| Target-no-flash | `#70` | `#78` (probe) + `#96` (per-key capacity gate) |
 
 For detailed rationale on each decision, read the spec task's attached document.
