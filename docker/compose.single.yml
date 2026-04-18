@@ -1,5 +1,6 @@
 services:
   valkey-flash:
+    image: valkey-flash:dev
     build:
       context: ..
       dockerfile: docker/Dockerfile

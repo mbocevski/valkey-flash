@@ -10,6 +10,7 @@
 # Ports: 7001-7003 → primaries, 7004-7006 → replicas.
 
 x-flash-node: &flash-node
+  image: valkey-flash:dev
   build:
     context: ..
     dockerfile: docker/Dockerfile
