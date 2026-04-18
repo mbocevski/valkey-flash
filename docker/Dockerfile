@@ -1,5 +1,5 @@
 # Stage 1 — build the valkey-flash shared library
-FROM rust:trixie@sha256:4a7e3a0c309c9bab658e469f842711bd595fae484936bc5d605e08ca0c631bf4 AS builder
+FROM rust:1.95.0-trixie AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends libclang-dev && rm -rf /var/lib/apt/lists/*
 
@@ -11,7 +11,7 @@ COPY src/ src/
 RUN cargo build --release
 
 # Stage 2 — runtime image based on official Valkey 9.0
-FROM valkey/valkey:9.0-trixie@sha256:3b55fbaa0cd93cf0d9d961f405e4dfcc70efe325e2d84da207a0a8e6d8fde4f9
+FROM valkey/valkey:9.0.3-trixie
 
 COPY --from=builder /build/target/release/libvalkey_flash.so /usr/local/lib/
 

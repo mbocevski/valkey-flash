@@ -5,3 +5,7 @@ fuzz/
 .github/
 backlog/
 .agent-reports/
+.gitignore
+LICENSE
+README.md
+CHANGELOG.md
