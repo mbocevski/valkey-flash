@@ -133,12 +133,26 @@ def find_free_port() -> int:
 
 def wait_for_server(port: int, timeout: float = 20.0) -> bool:
     deadline = time.monotonic() + timeout
+    # Phase 1: TCP connectivity
     while time.monotonic() < deadline:
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                return True
+                break
         except OSError:
             time.sleep(0.1)
+    else:
+        return False
+    # Phase 2: flash module initialization (TCP up != module ready)
+    while time.monotonic() < deadline:
+        try:
+            c = valkey.Valkey(host="127.0.0.1", port=port, socket_timeout=1)
+            raw = c.execute_command("INFO", "flash")
+            decoded = raw.decode() if isinstance(raw, bytes) else raw
+            if "flash_module_state:ready" in decoded:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.1)
     return False
 
 
@@ -182,7 +196,7 @@ def running_server(module_path: str, server_bin: str):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
+        for p in (flash_path, flash_path + ".wal"):
             try:
                 os.unlink(p)
             except OSError:
