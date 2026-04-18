@@ -51,7 +51,8 @@ class TestFlashHashRdb(ValkeyFlashTestCase):
         assert d == {b"a": b"1", b"b": b"2", b"c": b"3"}
 
     def test_hash_ttl_survives_restart(self):
-        self.client.execute_command("FLASH.HSET", "rh3", "f", "v", "EX", "600")
+        self.client.execute_command("FLASH.HSET", "rh3", "f", "v")
+        self.client.execute_command("EXPIRE", "rh3", 600)
         _bgsave_and_restart(self.server)
         assert self.client.execute_command("FLASH.HGET", "rh3", "f") == b"v"
         assert self.client.execute_command("TTL", "rh3") > 0
@@ -130,7 +131,8 @@ class TestFlashHashAof(ValkeyFlashTestCase):
 
     def test_hash_ttl_survives_aof_rewrite(self):
         _enable_aof(self.client)
-        self.client.execute_command("FLASH.HSET", "ah2", "f", "v", "EX", "600")
+        self.client.execute_command("FLASH.HSET", "ah2", "f", "v")
+        self.client.execute_command("EXPIRE", "ah2", 600)
         _bgrewriteaof_and_restart(self.server)
         assert self.client.execute_command("FLASH.HGET", "ah2", "f") == b"v"
         assert self.client.execute_command("TTL", "ah2") > 0
