@@ -35,10 +35,10 @@ pub struct ValkeyModuleSlotRange {
 
 #[repr(C)]
 pub struct ValkeyModuleAtomicSlotMigrationInfoV1 {
-    pub version: ::std::os::raw::c_int,
+    pub version: u64,                           // uint64_t in valkeymodule.h:843
     pub job_name: [::std::os::raw::c_char; 41],
     pub slot_ranges: *const ValkeyModuleSlotRange,
-    pub num_slot_ranges: ::std::os::raw::c_int,
+    pub num_slot_ranges: u32,                   // uint32_t in valkeymodule.h:847
 }
 
 // ── Cluster slot computation ──────────────────────────────────────────────────
@@ -279,8 +279,8 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
     let mut keys_warmed: u64 = 0;
     let mut keys_skipped: u64 = 0;
 
-    // Bandwidth throttle: bytes per second limit.
-    let bw_limit_bytes_per_sec = bw_mbps * 1024 * 1024;
+    // Bandwidth throttle: bytes per second limit (Mbps → bytes/s: × 1,000,000 ÷ 8).
+    let bw_limit_bytes_per_sec = bw_mbps * 125_000;
     let mut phase2_start = Instant::now();
     let mut bytes_this_window: u64 = 0;
 
@@ -304,10 +304,11 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
             bytes_this_window += value_len as u64;
             keys_warmed += 1;
 
-            // Throttle: if we've exceeded bw_limit in the last second, sleep.
-            let elapsed = phase2_start.elapsed();
-            if elapsed.as_secs() > 0 {
-                let allowed = bw_limit_bytes_per_sec * elapsed.as_secs();
+            // Throttle: if we've exceeded bw_limit in the elapsed window, sleep.
+            // Use milliseconds so the first sub-second window is also throttled.
+            let elapsed_ms = phase2_start.elapsed().as_millis() as u64;
+            if elapsed_ms > 0 {
+                let allowed = bw_limit_bytes_per_sec * elapsed_ms / 1000;
                 if bytes_this_window > allowed {
                     let excess = bytes_this_window - allowed;
                     let wait_ms = (excess * 1000) / bw_limit_bytes_per_sec.max(1);

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ValkeyModuleAtomicSlotMigrationInfoV1.version` was declared `c_int` (4 bytes) but the C definition uses `uint64_t` (8 bytes); `num_slot_ranges` similarly mistyped as `c_int` vs `uint32_t` — struct layout now matches `valkeymodule.h:843-847`, preventing a crash when reading `slot_ranges` during slot migration
+- Migration bandwidth throttle used `elapsed.as_secs()` (truncates to whole seconds), leaving the first sub-second window entirely unthrottled; switched to millisecond precision
+- Migration bandwidth limit computed as `bw_mbps * 1024 * 1024` (MiB/s) instead of `bw_mbps * 125_000` (Mbps → bytes/s: ×1 000 000 ÷ 8) — 8× too permissive
+
 ### Added
 
 - `FLASH.MIGRATE.PROBE [host port]` command: 0-arg form returns local node state/capacity_bytes/free_bytes/path; 2-arg form probes a remote node over TCP (RESP2, 5 s timeout), errors if target lacks flash-module; results cached per-address with configurable TTL (`flash.migration-probe-cache-sec`, IMMUTABLE, default 60 s); four new migration config knobs: `flash.migration-max-key-bytes` (IMMUTABLE, 64 MiB), `flash.migration-bandwidth-mbps` (100), `flash.migration-chunk-timeout-sec` (30), `flash.migration-probe-cache-sec` (IMMUTABLE, 60); real `ValkeyModuleEvent_AtomicSlotMigration` handler: EXPORT_STARTED scans the keyspace, identifies Cold Flash keys in migrating slots, and promotes them to Hot via synchronous NVMe read with bandwidth throttling; integration tests in `tests/test_flash_migrate.py`
