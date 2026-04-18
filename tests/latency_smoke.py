@@ -75,6 +75,7 @@ def main():
             "--port", str(port),
             "--daemonize", "no",
             "--loadmodule", module_path,
+            "--flash.path", flash_path,
             "--save", "",
             "--loglevel", "warning",
         ]
