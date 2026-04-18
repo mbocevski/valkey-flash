@@ -6,7 +6,7 @@
 
 A Valkey module that tiers key/value data to NVMe storage, letting Valkey serve a working set larger than RAM. Hot entries live in an in-memory cache; cold entries reside on NVMe and are promoted back on read. The NVMe I/O path uses `io_uring` and runs on background threads — the Valkey event loop never blocks on disk.
 
-valkey-flash ships full cluster support, durable writes via a per-record WAL, and native RDB + AOF persistence. Strings, hashes, lists, and sorted sets are all supported as tiered types.
+valkey-flash ships full cluster support, durable writes via a per-record WAL, and native RDB + AOF persistence. **Strings and hashes** are supported as tiered types in v1.0.0; **lists and sorted sets** are planned for a follow-on v1.x release (see [CHANGELOG](CHANGELOG.md)).
 
 ## Quick start
 
@@ -91,32 +91,6 @@ All FLASH.* commands are opt-in per key — existing native Valkey data types ar
 | `FLASH.HEXISTS key field` | 0 or 1 |
 | `FLASH.HLEN key` | Number of fields |
 
-### Lists (`FlashList`)
-
-| Command | Purpose |
-|---|---|
-| `FLASH.LPUSH key element [element ...]` | Push to head |
-| `FLASH.RPUSH key element [element ...]` | Push to tail |
-| `FLASH.LPUSHX` / `FLASH.RPUSHX` | Push only if key exists |
-| `FLASH.LPOP key [count]` / `FLASH.RPOP key [count]` | Pop from head/tail |
-| `FLASH.LRANGE key start stop` | Slice by index |
-| `FLASH.LLEN key` | Length |
-| `FLASH.LINDEX` / `FLASH.LSET` / `FLASH.LINSERT` / `FLASH.LREM` / `FLASH.LTRIM` / `FLASH.LMOVE` | Standard list ops |
-| `FLASH.BLPOP` / `FLASH.BRPOP` / `FLASH.BLMOVE` | Blocking variants with key-notify wake-up |
-
-### Sorted sets (`FlashZSet`)
-
-| Command | Purpose |
-|---|---|
-| `FLASH.ZADD key [NX\|XX\|GT\|LT] [CH] [INCR] score member [score member ...]` | Add / update / increment |
-| `FLASH.ZRANGE key start stop [BYSCORE\|BYLEX] [REV] [LIMIT offset count] [WITHSCORES]` | Unified range query |
-| `FLASH.ZRANGEBYSCORE` / `FLASH.ZREVRANGEBYSCORE` / `FLASH.ZRANGEBYLEX` / `FLASH.ZREVRANGEBYLEX` | Legacy range variants |
-| `FLASH.ZSCORE` / `FLASH.ZRANK` / `FLASH.ZREVRANK` / `FLASH.ZCARD` / `FLASH.ZCOUNT` / `FLASH.ZLEXCOUNT` | Lookups |
-| `FLASH.ZREM` / `FLASH.ZINCRBY` / `FLASH.ZPOPMIN` / `FLASH.ZPOPMAX` | Mutations |
-| `FLASH.ZSCAN key cursor [MATCH] [COUNT]` | Iterate |
-| `FLASH.ZUNIONSTORE` / `FLASH.ZINTERSTORE` / `FLASH.ZDIFFSTORE` / `FLASH.ZRANGESTORE` | Multi-key stores (destination always `FlashZSet`) |
-| `FLASH.BZPOPMIN` / `FLASH.BZPOPMAX` | Blocking pop variants |
-
 ### Admin / debug
 
 | Command | Purpose |
@@ -126,6 +100,7 @@ All FLASH.* commands are opt-in per key — existing native Valkey data types ar
 | `FLASH.COMPACTION.TRIGGER` | Manually run NVMe compaction (test-only) |
 | `FLASH.COMPACTION.STATS` | Current free-list state |
 | `FLASH.MIGRATE.PROBE [host port]` | Query local or remote node state, capacity, path |
+| `FLASH.MIGRATE` | Extended MIGRATE hook for FLASH.* keys — bundles DUMP/RESTORE with tier state, capacity-probe gated (spec #67 + #96) |
 
 ## Configuration
 

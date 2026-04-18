@@ -27,10 +27,10 @@ docker run --rm -d --name flash \
 
 If you don't have the `seccomp-flash.json` file handy, swap the `--security-opt` to `seccomp=unconfined` for quick-start.
 
-Check the container is ready:
+Wait for the module to finish recovery:
 
 ```sh
-docker logs flash | grep "Module 'flash' loaded"
+until [ "$(valkey-cli FLASH.DEBUG.STATE)" = "ready" ]; do sleep 0.2; done
 ```
 
 ### 2. Try the tiered commands
@@ -48,14 +48,9 @@ valkey-cli FLASH.HSET session:42 user_id 1001 last_seen 1713456789
 valkey-cli FLASH.HGETALL session:42
 # → 1) "user_id"  2) "1001"  3) "last_seen"  4) "1713456789"
 
-valkey-cli FLASH.LPUSH audit:events "login:1001" "click:1001"
-valkey-cli FLASH.LRANGE audit:events 0 -1
-# → 1) "click:1001"  2) "login:1001"
-
-valkey-cli FLASH.ZADD leaderboard 100 alice 150 bob 80 carol
-valkey-cli FLASH.ZRANGE leaderboard 0 -1 WITHSCORES
-# → 1) "carol"  2) "80"  3) "alice"  4) "100"  5) "bob"  6) "150"
 ```
+
+> `FLASH.LPUSH` / `FLASH.ZADD` and the rest of the list + sorted-set APIs land in a follow-on v1.x release. v1.0.0 ships strings and hashes.
 
 ### 3. Observe the tiering in action
 
@@ -135,10 +130,11 @@ The `-c` flag enables follow-redirects. Without it you get `MOVED` errors.
 # Find which replica serves the shard holding user:1
 valkey-cli -p 7001 CLUSTER NODES
 
-# Connect directly to that replica (replace 7004 with the actual port)
-valkey-cli -p 7004 READONLY
-valkey-cli -p 7004 FLASH.GET user:1
-# → "alice"
+# Connect directly to that replica (replace 7004 with the actual port).
+# READONLY is connection-scoped, so issue it and the FLASH.GET on the same session:
+printf 'READONLY\nFLASH.GET user:1\n' | valkey-cli -p 7004
+# → OK
+#   "alice"
 ```
 
 ### 4. Clean up
@@ -152,7 +148,7 @@ docker compose -f docker/compose.cluster.yml down -v
 - **[Cluster deployment](cluster.md)** — production sizing, replica tier topology, failover
 - **[Migration runbook](cluster-migration-runbook.md)** — live resharding
 - **[Architecture](ARCHITECTURE.md)** — design consolidation (component map, durability matrix, tiering internals)
-- **[Command reference](../README.md#commands)** — full surface
+- **[Command reference](../README.md#commands)** — full surface shipped in v1.0.0
 - **[Configuration reference](../README.md#configuration)** — all knobs
 
 ## Troubleshooting
