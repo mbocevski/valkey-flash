@@ -50,6 +50,9 @@ use crate::types::hash::FLASH_HASH_TYPE;
 use crate::types::list::FLASH_LIST_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 
+use crate::commands::blmove::flash_blmove_command;
+use crate::commands::blpop::flash_blpop_command;
+use crate::commands::blpop::flash_brpop_command;
 use crate::commands::aux_info::flash_aux_info_command;
 use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
@@ -579,6 +582,9 @@ valkey_module! {
         ["FLASH.LREM", flash_lrem_command, "write", 1, 1, 1, "write flash"],
         ["FLASH.LTRIM", flash_ltrim_command, "write", 1, 1, 1, "write flash"],
         ["FLASH.LMOVE", flash_lmove_command, "write deny-oom", 1, 2, 1, "write flash"],
+        ["FLASH.BLPOP", flash_blpop_command, "write no-multi slow", 1, -2, 1, "write slow flash"],
+        ["FLASH.BRPOP", flash_brpop_command, "write no-multi slow", 1, -2, 1, "write slow flash"],
+        ["FLASH.BLMOVE", flash_blmove_command, "write deny-oom no-multi slow", 1, 2, 1, "write slow flash"],
         ["FLASH.MIGRATE", flash_migrate_command, "write", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.MIGRATE.PROBE", flash_migrate_probe_command, "readonly", 0, 0, 0, "admin dangerous flash"],
     ],

@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+#[cfg(not(test))]
+use valkey_module::raw;
 
 use crate::commands::list_common::{
     apply_ttl_to_key, find_ttl_start, parse_ttl_options, promote_cold_list,
@@ -120,6 +122,12 @@ fn do_push(
 
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.push", key);
+
+    // Wake any BLPOP/BRPOP clients blocked on this key.
+    #[cfg(not(test))]
+    unsafe {
+        raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, key.inner);
+    }
 
     #[cfg(not(test))]
     {
