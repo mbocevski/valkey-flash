@@ -1,4 +1,5 @@
-use std::os::raw::c_void;
+use std::ffi::CString;
+use std::os::raw::{c_char, c_void};
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
@@ -209,12 +210,82 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
 }
 
 /// # Safety
+///
+/// Emit a `FLASH.SET key value [PXAT <ms>]` command into the AOF rewrite buffer.
+///
+/// Cold-tier limitation (v1): `aof_rewrite` receives no key bytes, so cold
+/// objects cannot be fetched from NVMe. Since no code currently creates
+/// `Tier::Cold` objects, this branch is unreachable. If reached, a warning is
+/// logged and the key is skipped (tracked in task #57).
 pub unsafe extern "C" fn aof_rewrite(
-    _aof: *mut raw::RedisModuleIO,
-    _key: *mut raw::RedisModuleString,
-    _value: *mut c_void,
+    aof: *mut raw::RedisModuleIO,
+    key: *mut raw::RedisModuleString,
+    value: *mut c_void,
 ) {
-    // stub — AOF rewrite not yet implemented
+    let obj = &*value.cast::<FlashStringObject>();
+
+    let bytes = match &obj.tier {
+        Tier::Hot(v) => v.as_slice(),
+        Tier::Cold { .. } => {
+            logging::log_warning(
+                "flash: aof_rewrite on Tier::Cold object — cannot fetch from NVMe without key; \
+                 skipping key (task #57)",
+            );
+            return;
+        }
+    };
+
+    let cmd = match CString::new("FLASH.SET") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let emit = match raw::RedisModule_EmitAOF {
+        Some(f) => f,
+        None => {
+            logging::log_warning("flash: aof_rewrite: RedisModule_EmitAOF is null");
+            return;
+        }
+    };
+
+    match obj.ttl_ms {
+        None => {
+            // FLASH.SET key value
+            let fmt = match CString::new("sb") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            emit(
+                aof,
+                cmd.as_ptr(),
+                fmt.as_ptr(),
+                key,
+                bytes.as_ptr().cast::<c_char>(),
+                bytes.len(),
+            );
+        }
+        Some(ttl) => {
+            // FLASH.SET key value PXAT <absolute-ms>
+            let fmt = match CString::new("sbcl") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let pxat = match CString::new("PXAT") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            emit(
+                aof,
+                cmd.as_ptr(),
+                fmt.as_ptr(),
+                key,
+                bytes.as_ptr().cast::<c_char>(),
+                bytes.len(),
+                pxat.as_ptr(),
+                ttl as std::os::raw::c_longlong,
+            );
+        }
+    }
 }
 
 /// # Safety
