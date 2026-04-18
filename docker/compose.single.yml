@@ -1,0 +1,35 @@
+services:
+  valkey-flash:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "6379:6379"
+    volumes:
+      - flash_data:/var/lib/valkey-flash
+      - valkey_data:/data
+    environment:
+      FLASH_PATH: /var/lib/valkey-flash/flash.bin
+      FLASH_CAPACITY_BYTES: "67108864"   # 64 MiB — small default suitable for tests
+      FLASH_CACHE_SIZE_BYTES: ""
+      FLASH_SYNC: everysec
+      FLASH_IO_THREADS: ""
+      FLASH_IO_URING_ENTRIES: ""
+      FLASH_COMPACTION_INTERVAL_SEC: ""
+    # io_uring requires several ring-related syscalls that Docker's default seccomp
+    # profile blocks (io_uring_setup, io_uring_enter, io_uring_register).
+    # seccomp:unconfined is the simplest workaround; a tighter custom profile can
+    # allowlist only those three ops for production hardening.
+    security_opt:
+      - seccomp:unconfined
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  flash_data:
+  valkey_data:

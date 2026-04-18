@@ -1,0 +1,17 @@
+# Dev override — use with:
+#   docker compose -f docker/compose.single.yml -f docker/compose.single.dev.yml up
+#
+# Differences from the base file:
+#   - Smaller flash capacity (16 MiB) for faster iteration
+#   - sync=no for write speed during manual testing
+#   - No restart policy (fail-fast while debugging)
+#   - Extra port 6380 exposed so a second client can connect alongside the default
+
+services:
+  valkey-flash:
+    ports:
+      - "6380:6379"
+    environment:
+      FLASH_CAPACITY_BYTES: "16777216"   # 16 MiB
+      FLASH_SYNC: "no"
+    restart: "no"
