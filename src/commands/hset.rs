@@ -261,8 +261,10 @@ pub fn flash_hset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         )
         .map_err(|e| ValkeyError::String(format!("flash: hset set_value: {e}")))?;
 
-    // Register native key-level TTL when a new expiry was explicitly set.
-    if let Some(abs_ms) = new_ttl_abs_ms {
+    // Restore key-level expiry from stored_ttl. VM_ModuleTypeSetValue clears the
+    // Valkey-level expiry unconditionally (VM_DeleteKey + setKey sans SETKEY_KEEPTTL),
+    // so we must re-apply it for KEEPTTL and no-flag cases as well as new TTL args.
+    if let Some(abs_ms) = stored_ttl {
         use std::time::Duration;
         let remaining_ms = (abs_ms - current_time_ms()).max(1) as u64;
         key_handle
