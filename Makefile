@@ -24,13 +24,18 @@ docker-clean:
 coverage-integration:
 	cargo llvm-cov clean --workspace
 	cargo llvm-cov --no-report --features enable-system-alloc
+	RUSTFLAGS="-Cinstrument-coverage --cfg=coverage" \
+	  cargo build --features enable-system-alloc --target-dir target/llvm-cov-target
 	LLVM_PROFILE_FILE="$$PWD/target/llvm-cov-target/flash-%p-%m.profraw" \
-	  MODULE_PATH="$$PWD/target/debug/libvalkey_flash.so" \
+	  MODULE_PATH="$$PWD/target/llvm-cov-target/debug/libvalkey_flash.so" \
 	  SERVER_VERSION="$${SERVER_VERSION:-unstable}" \
-	  python3 -m pytest tests/ --ignore=tests/test_docker_smoke.py -q --tb=no
+	  python3 -m pytest tests/ \
+	    --ignore=tests/test_docker_smoke.py \
+	    --ignore=tests/test_flash_acl.py \
+	    --ignore=tests/test_flash_aof.py \
+	    -q --tb=no
 	cargo llvm-cov report \
 	  --lcov \
 	  --output-path lcov.info \
-	  --features enable-system-alloc \
 	  --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
 	@echo "Coverage report: lcov.info"

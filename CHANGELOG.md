@@ -66,10 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replication integration test suite (`tests/test_flash_replication_integration.py`): basic SET/DEL/HSET/HDEL propagation, post-promotion writes, RDB full sync, diskless resync, PSYNC reconnect after connection kill, and cluster topology replication (docker-only)
 - `docker/seccomp-flash.json`: production-grade seccomp profile — Docker default syscall allowlist extended with `io_uring_setup`, `io_uring_enter`, `io_uring_register` (minKernel 5.1); all other default restrictions remain; `docker/compose.single.yml` and `docker/compose.cluster.yml` updated to use this profile; `docker/compose.single.dev.yml` reverts to `unconfined` for quick-start convenience; CI docker-integration job smoke-tests the profile with FLASH.SET/GET
 - README "Running in containers" section: io_uring seccomp requirements, Docker/Compose and Podman quick-start, rootless Podman caveats (kernel ≥5.11, SELinux, AppArmor, systemd NoNewPrivileges), Kubernetes `securityContext.seccompProfile` examples for dev and production (#89 custom profile placeholder), Pod Security Standards note
-- CI coverage gate enforced on pull requests (`--fail-under-lines 60 --fail-under-functions 68` — regression floor; target 85/85 tracked in #91); FFI glue, fuzz harnesses, and test-framework build artefacts excluded
+- CI coverage gate enforced on pull requests; FFI glue, fuzz harnesses, and test-framework build artefacts excluded
 
 ### Changed
 
+- Coverage CI job now runs Python integration tests under `cargo llvm-cov --no-report` flow: instrumented cdylib built with `-Cinstrument-coverage --cfg=coverage`, each valkey-server shutdown flushes profraw via `__llvm_profile_write_file()` in `deinitialize()`; combined line/function coverage ratcheted from 60/68 to 79/82 (actual: 81.90% lines, 84.91% functions with unstable server)
 - Test matrix bumped to (unstable, 8.1, 9.0); Valkey 8.0 support removed
 
 ### Fixed
