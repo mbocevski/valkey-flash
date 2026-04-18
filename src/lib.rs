@@ -42,6 +42,12 @@ use crate::commands::debug_demote::flash_debug_demote_command;
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::get::flash_get_command;
+use crate::commands::hdel::flash_hdel_command;
+use crate::commands::hexists::flash_hexists_command;
+use crate::commands::hget::flash_hget_command;
+use crate::commands::hgetall::flash_hgetall_command;
+use crate::commands::hlen::flash_hlen_command;
+use crate::commands::hset::flash_hset_command;
 use crate::commands::set::flash_set_command;
 
 pub const MODULE_NAME: &str = "flash";
@@ -288,6 +294,12 @@ valkey_module! {
         ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
+        ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.HDEL", flash_hdel_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.HEXISTS", flash_hexists_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.HLEN", flash_hlen_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "read flash"],
         ["FLASH.DEBUG.DEMOTE", flash_debug_demote_command, "write", 1, 1, 1, "write flash"],
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "read flash"],

@@ -6,6 +6,67 @@ use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
 
 use super::Tier;
 
+// ── Serialization ─────────────────────────────────────────────────────────────
+
+/// Encode a hash map to bytes for NVMe storage and cache.
+/// Wire format: [u32 count] then per-field [u32 klen][key][u32 vlen][val].
+/// Keys are sorted for a deterministic byte sequence (stable value_hash).
+pub fn hash_serialize(fields: &HashMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {
+    let mut pairs: Vec<(&Vec<u8>, &Vec<u8>)> = fields.iter().collect();
+    pairs.sort_unstable_by_key(|(a, _)| *a);
+    let capacity = 4 + pairs
+        .iter()
+        .map(|(k, v)| 8 + k.len() + v.len())
+        .sum::<usize>();
+    let mut buf = Vec::with_capacity(capacity);
+    buf.extend_from_slice(&(pairs.len() as u32).to_le_bytes());
+    for (k, v) in pairs {
+        buf.extend_from_slice(&(k.len() as u32).to_le_bytes());
+        buf.extend_from_slice(k);
+        buf.extend_from_slice(&(v.len() as u32).to_le_bytes());
+        buf.extend_from_slice(v);
+    }
+    buf
+}
+
+/// Decode bytes (from NVMe or cache) back to a hash map.
+/// Returns `None` on any structural corruption.
+pub fn hash_deserialize(bytes: &[u8]) -> Option<HashMap<Vec<u8>, Vec<u8>>> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let count = u32::from_le_bytes(bytes[..4].try_into().ok()?) as usize;
+    let mut map = HashMap::with_capacity(count);
+    let mut pos = 4usize;
+    for _ in 0..count {
+        if pos + 4 > bytes.len() {
+            return None;
+        }
+        let klen = u32::from_le_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
+        pos += 4;
+        if pos + klen > bytes.len() {
+            return None;
+        }
+        let k = bytes[pos..pos + klen].to_vec();
+        pos += klen;
+        if pos + 4 > bytes.len() {
+            return None;
+        }
+        let vlen = u32::from_le_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
+        pos += 4;
+        if pos + vlen > bytes.len() {
+            return None;
+        }
+        let v = bytes[pos..pos + vlen].to_vec();
+        pos += vlen;
+        map.insert(k, v);
+    }
+    if pos != bytes.len() {
+        return None;
+    }
+    Some(map)
+}
+
 // ── FlashHashObject ───────────────────────────────────────────────────────────
 
 pub struct FlashHashObject {
@@ -254,5 +315,66 @@ mod tests {
     fn struct_size_regression() {
         // Catches accidental layout growth. Update the bound if a deliberate field is added.
         const { assert!(std::mem::size_of::<FlashHashObject>() <= 80) };
+    }
+
+    // ── Codec tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_hash_roundtrip() {
+        let m: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let bytes = hash_serialize(&m);
+        assert_eq!(hash_deserialize(&bytes), Some(HashMap::new()));
+    }
+
+    #[test]
+    fn single_field_roundtrip() {
+        let mut m = HashMap::new();
+        m.insert(b"field".to_vec(), b"value".to_vec());
+        let bytes = hash_serialize(&m);
+        let m2 = hash_deserialize(&bytes).unwrap();
+        assert_eq!(m2.get(b"field".as_ref()), Some(&b"value".to_vec()));
+    }
+
+    #[test]
+    fn multi_field_roundtrip() {
+        let mut m = HashMap::new();
+        m.insert(b"a".to_vec(), b"1".to_vec());
+        m.insert(b"b".to_vec(), b"2".to_vec());
+        m.insert(b"c".to_vec(), b"3".to_vec());
+        let bytes = hash_serialize(&m);
+        let m2 = hash_deserialize(&bytes).unwrap();
+        assert_eq!(m2, m);
+    }
+
+    #[test]
+    fn serialize_is_deterministic() {
+        let mut m = HashMap::new();
+        m.insert(b"z".to_vec(), b"0".to_vec());
+        m.insert(b"a".to_vec(), b"1".to_vec());
+        let b1 = hash_serialize(&m);
+        let b2 = hash_serialize(&m);
+        assert_eq!(b1, b2, "serialize must be deterministic");
+    }
+
+    #[test]
+    fn deserialize_truncated_returns_none() {
+        let mut m = HashMap::new();
+        m.insert(b"key".to_vec(), b"val".to_vec());
+        let bytes = hash_serialize(&m);
+        assert!(hash_deserialize(&bytes[..bytes.len() / 2]).is_none());
+    }
+
+    #[test]
+    fn deserialize_empty_slice_returns_none() {
+        assert!(hash_deserialize(&[]).is_none());
+    }
+
+    #[test]
+    fn binary_key_value_roundtrip() {
+        let mut m = HashMap::new();
+        m.insert(vec![0u8, 255, 128], vec![1u8, 2, 3, 4]);
+        let bytes = hash_serialize(&m);
+        let m2 = hash_deserialize(&bytes).unwrap();
+        assert_eq!(m2, m);
     }
 }
