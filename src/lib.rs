@@ -261,15 +261,15 @@ fn deinitialize(_ctx: &Context) -> Status {
     // compaction tick (purely in-memory, negligible).
     {
         let (lock, cvar) = &*COMPACTION_SHUTDOWN;
-        if let Ok(mut flag) = lock.lock() {
-            *flag = true;
-        }
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
         cvar.notify_one();
     }
-    if let Ok(mut guard) = COMPACTION_THREAD.lock() {
-        if let Some(handle) = guard.take() {
-            let _ = handle.join();
-        }
+    let handle = COMPACTION_THREAD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(h) = handle {
+        let _ = h.join();
     }
     Status::Ok
 }
