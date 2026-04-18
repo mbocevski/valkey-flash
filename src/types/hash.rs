@@ -169,6 +169,7 @@ mod tests {
         let ptr = Box::into_raw(obj) as *const c_void;
         // SAFETY: ptr is freshly allocated, valid for the duration of this test.
         let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        // SAFETY: ptr was allocated by Box::into_raw above and has not been freed.
         unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
         assert_eq!(size, std::mem::size_of::<FlashHashObject>() + 8);
     }
@@ -182,6 +183,7 @@ mod tests {
         let ptr = Box::into_raw(obj) as *const c_void;
         // SAFETY: ptr is freshly allocated via Box::into_raw, valid for the duration of this test.
         let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        // SAFETY: ptr was allocated by Box::into_raw above and has not been freed.
         unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
         assert_eq!(size, std::mem::size_of::<FlashHashObject>());
     }
@@ -195,6 +197,7 @@ mod tests {
         let ptr = Box::into_raw(obj) as *const c_void;
         // SAFETY: ptr is freshly allocated via Box::into_raw, valid for the duration of this test.
         let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        // SAFETY: ptr was allocated by Box::into_raw above and has not been freed.
         unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
         assert_eq!(size, std::mem::size_of::<FlashHashObject>());
     }
@@ -212,6 +215,7 @@ mod tests {
         let ptr = Box::into_raw(obj) as *const c_void;
         // SAFETY: ptr is freshly allocated via Box::into_raw, valid for the duration of this test.
         let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        // SAFETY: ptr was allocated by Box::into_raw above and has not been freed.
         unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
         assert_eq!(
             size,
