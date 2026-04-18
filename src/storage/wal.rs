@@ -127,9 +127,24 @@ impl WalOp {
                         reason: "Put payload too short",
                     });
                 }
-                let key_hash = u64::from_le_bytes(body[0..8].try_into().unwrap());
-                let offset = u64::from_le_bytes(body[8..16].try_into().unwrap());
-                let value_hash = u64::from_le_bytes(body[16..24].try_into().unwrap());
+                let key_hash = u64::from_le_bytes(body[0..8].try_into().map_err(|_| {
+                    WalError::Corruption {
+                        offset: 0,
+                        reason: "Put key_hash slice",
+                    }
+                })?);
+                let offset = u64::from_le_bytes(body[8..16].try_into().map_err(|_| {
+                    WalError::Corruption {
+                        offset: 0,
+                        reason: "Put offset slice",
+                    }
+                })?);
+                let value_hash = u64::from_le_bytes(body[16..24].try_into().map_err(|_| {
+                    WalError::Corruption {
+                        offset: 0,
+                        reason: "Put value_hash slice",
+                    }
+                })?);
                 Ok(WalOp::Put {
                     key_hash,
                     offset,
@@ -143,7 +158,12 @@ impl WalOp {
                         reason: "Delete payload too short",
                     });
                 }
-                let key_hash = u64::from_le_bytes(body[0..8].try_into().unwrap());
+                let key_hash = u64::from_le_bytes(body[0..8].try_into().map_err(|_| {
+                    WalError::Corruption {
+                        offset: 0,
+                        reason: "Delete key_hash slice",
+                    }
+                })?);
                 Ok(WalOp::Delete { key_hash })
             }
             OP_CHECKPOINT => {
@@ -153,7 +173,12 @@ impl WalOp {
                         reason: "Checkpoint payload too short",
                     });
                 }
-                let at = u64::from_le_bytes(body[0..8].try_into().unwrap());
+                let at = u64::from_le_bytes(body[0..8].try_into().map_err(|_| {
+                    WalError::Corruption {
+                        offset: 0,
+                        reason: "Checkpoint at slice",
+                    }
+                })?);
                 Ok(WalOp::Checkpoint { at })
             }
             _other => Err(WalError::Corruption {
@@ -175,7 +200,7 @@ pub enum WalSyncMode {
 
 // ── Background everysec flusher ───────────────────────────────────────────────
 
-fn spawn_everysec_flusher(inner: Arc<Mutex<WalInner>>) -> thread::JoinHandle<()> {
+fn spawn_everysec_flusher(inner: Arc<Mutex<WalInner>>) -> WalResult<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("wal-flusher".into())
         .spawn(move || loop {
@@ -189,7 +214,7 @@ fn spawn_everysec_flusher(inner: Arc<Mutex<WalInner>>) -> thread::JoinHandle<()>
             }
             let _ = guard.file.sync_data();
         })
-        .expect("failed to spawn WAL flusher thread")
+        .map_err(WalError::Io)
 }
 
 // ── Inner state (held under Mutex) ────────────────────────────────────────────
@@ -246,7 +271,7 @@ impl Wal {
             f.seek(SeekFrom::Start(0))?;
             let mut header = [0u8; HEADER_SIZE];
             f.read_exact(&mut header)?;
-            let magic = u32::from_le_bytes(header[0..4].try_into().unwrap());
+            let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
             if magic != WAL_MAGIC {
                 return Err(WalError::BadMagic);
             }
@@ -268,7 +293,7 @@ impl Wal {
         }));
 
         let flusher = if sync_mode == WalSyncMode::Everysec {
-            Some(spawn_everysec_flusher(Arc::clone(&inner)))
+            Some(spawn_everysec_flusher(Arc::clone(&inner))?)
         } else {
             None
         };
@@ -368,8 +393,10 @@ impl Iterator for RecordIter {
             }
         }
 
-        let payload_len = u32::from_le_bytes(frame_hdr[0..4].try_into().unwrap()) as usize;
-        let stored_crc = u32::from_le_bytes(frame_hdr[4..8].try_into().unwrap());
+        let payload_len =
+            u32::from_le_bytes([frame_hdr[0], frame_hdr[1], frame_hdr[2], frame_hdr[3]]) as usize;
+        let stored_crc =
+            u32::from_le_bytes([frame_hdr[4], frame_hdr[5], frame_hdr[6], frame_hdr[7]]);
 
         let mut payload = vec![0u8; payload_len];
         match self.file.read_exact(&mut payload) {
