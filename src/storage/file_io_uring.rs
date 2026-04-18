@@ -267,7 +267,7 @@ impl StorageBackend for FileIoUringBackend {
         }
     }
 
-    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<u64> {
         let n_blocks = Self::blocks_needed(value.len());
         let block_offset = self.alloc_blocks(n_blocks)?;
         self.write_value_at(block_offset, value)?;
@@ -281,7 +281,7 @@ impl StorageBackend for FileIoUringBackend {
             .lock()
             .map_err(|e| StorageError::Other(format!("index lock poisoned: {e}")))?;
         index.insert(key.to_vec(), entry);
-        Ok(())
+        Ok(block_offset * BLOCK_SIZE as u64)
     }
 
     fn delete(&self, key: &[u8]) -> StorageResult<()> {

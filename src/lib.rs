@@ -13,6 +13,7 @@ pub mod persistence;
 pub mod recovery;
 pub mod storage;
 pub mod types;
+pub mod util;
 
 use crate::async_io::AsyncThreadPool;
 use crate::config::SyncMode;

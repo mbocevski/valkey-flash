@@ -52,7 +52,8 @@ pub trait StorageBackend: Send + Sync {
     fn get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>>;
 
     /// Insert or overwrite `key` with `value`.
-    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<()>;
+    /// Returns the NVMe byte offset at which the value was written.
+    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<u64>;
 
     /// Remove `key`. Succeeds (no-op) if the key is absent.
     fn delete(&self, key: &[u8]) -> StorageResult<()>;
@@ -101,13 +102,13 @@ impl StorageBackend for MockStorage {
         Ok(data.get(key).cloned())
     }
 
-    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+    fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<u64> {
         let mut data = self
             .data
             .lock()
             .map_err(|e| StorageError::Other(format!("lock poisoned: {e}")))?;
         data.insert(key.to_vec(), value.to_vec());
-        Ok(())
+        Ok(0) // mock has no real NVMe offset
     }
 
     fn delete(&self, key: &[u8]) -> StorageResult<()> {

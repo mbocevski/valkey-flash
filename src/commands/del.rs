@@ -116,6 +116,15 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         let handle = Box::new(DelCompletionHandle::new(bc, count));
         pool.submit_or_complete(handle, move || {
             for key in &deleted_bytes {
+                let kh = crate::util::key_hash(key);
+                if let Some(wal) = crate::WAL.get() {
+                    if let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash: kh })
+                    {
+                        valkey_module::logging::log_warning(
+                            format!("flash: DEL WAL append failed: {e}").as_str(),
+                        );
+                    }
+                }
                 if let Err(e) = storage.delete(key) {
                     // Space reclaim is best-effort — log and continue.
                     valkey_module::logging::log_warning(

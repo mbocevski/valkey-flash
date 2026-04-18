@@ -219,7 +219,21 @@ pub fn flash_set_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         let handle = Box::new(SetCompletionHandle::new(bc));
         let key_bytes = key.as_slice().to_vec();
         pool.submit_or_complete(handle, move || {
-            storage.put(&key_bytes, &value).map(|_| vec![])
+            let offset = storage.put(&key_bytes, &value)?;
+            if let Some(wal) = crate::WAL.get() {
+                let kh = crate::util::key_hash(&key_bytes);
+                let vh = crate::util::value_hash(&value);
+                if let Err(e) = wal.append(crate::storage::wal::WalOp::Put {
+                    key_hash: kh,
+                    offset,
+                    value_hash: vh,
+                }) {
+                    valkey_module::logging::log_warning(
+                        format!("flash: SET WAL append failed: {e}").as_str(),
+                    );
+                }
+            }
+            Ok(vec![])
         });
         return Ok(ValkeyValue::NoReply);
     }
