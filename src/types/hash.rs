@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_void;
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
@@ -21,8 +21,12 @@ pub static FLASH_HASH_TYPE: ValkeyType = ValkeyType::new(
     ENCODING_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
-        rdb_load: Some(rdb_load),
-        rdb_save: Some(rdb_save),
+        // rdb_save/rdb_load are None until task #25: a non-null rdb_load stub
+        // returning null_mut() triggers rdbReportCorruptRDB → server exit on
+        // the first restart after a FLASH.HSET (rdb.c:2942). Keys are ephemeral
+        // for now; real persistence lands in task #25.
+        rdb_load: None,
+        rdb_save: None,
         aof_rewrite: Some(aof_rewrite),
         digest: Some(digest),
         mem_usage: Some(mem_usage),
@@ -53,21 +57,6 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
 }
 
 /// # Safety
-pub unsafe extern "C" fn rdb_save(rdb: *mut raw::RedisModuleIO, _value: *mut c_void) {
-    // stub — RDB persistence not yet implemented (task #25)
-    logging::log_warning("flash: rdb_save for FlashHash is a stub; key will not persist");
-    raw::save_unsigned(rdb, 0);
-}
-
-/// # Safety
-pub unsafe extern "C" fn rdb_load(rdb: *mut raw::RedisModuleIO, _encver: c_int) -> *mut c_void {
-    // stub — RDB persistence not yet implemented (task #25)
-    logging::log_warning("flash: rdb_load for FlashHash is a stub; returning null");
-    let _ = raw::load_unsigned(rdb);
-    null_mut()
-}
-
-/// # Safety
 pub unsafe extern "C" fn aof_rewrite(
     _aof: *mut raw::RedisModuleIO,
     _key: *mut raw::RedisModuleString,
@@ -83,6 +72,9 @@ pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
+    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
+    // and remains valid for the duration of this call (Valkey holds a read lock
+    // on the key). Cast to shared reference is safe; no mutation occurs.
     let obj = &*value.cast::<FlashHashObject>();
     let fields_bytes: usize = obj.fields.iter().map(|(k, v)| k.len() + v.len()).sum();
     std::mem::size_of::<FlashHashObject>() + fields_bytes
