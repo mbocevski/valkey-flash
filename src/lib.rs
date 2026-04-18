@@ -1,5 +1,6 @@
 use valkey_module::{valkey_module, Context, Status, ValkeyString};
 
+pub mod async_io;
 pub mod storage;
 
 pub const MODULE_NAME: &str = "flash";
