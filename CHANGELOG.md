@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/docker-tests.md` — developer guide for running Docker-based tests locally: prerequisites, image build, single-node and cluster startup/teardown, pytest invocation, debugging, and seccomp/io_uring caveat
 - `Makefile` with `docker-build`, `docker-test-single`, `docker-test-cluster`, `docker-test`, and `docker-clean` targets
 - Replication integration test suite (`tests/test_flash_replication_integration.py`): basic SET/DEL/HSET/HDEL propagation, post-promotion writes, RDB full sync, diskless resync, PSYNC reconnect after connection kill, and cluster topology replication (docker-only)
+- README "Running in containers" section: io_uring seccomp requirements, Docker/Compose and Podman quick-start, rootless Podman caveats (kernel ≥5.11, SELinux, AppArmor, systemd NoNewPrivileges), Kubernetes `securityContext.seccompProfile` examples for dev and production (#89 custom profile placeholder), Pod Security Standards note
 - CI coverage gate enforced on pull requests (`--fail-under-lines 60 --fail-under-functions 68` — regression floor; target 85/85 tracked in #91); FFI glue, fuzz harnesses, and test-framework build artefacts excluded
 
 ### Changed
