@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Pure-Rust RDB payload parsers (`parse_rdb_payload`, `parse_rdb_hash_payload`) extracted from `rdb_load` into testable helpers; `rdb_load` is now a thin FFI shim that calls the same `build_rdb_string`/`build_rdb_hash` validation functions as the fuzz harness — closing the gap where `fuzz_rdb_deserializer` previously exercised a parallel copy rather than production code; 512 MiB string and 256 MiB hash payload caps guard against OOM on malformed input; smoke-verified with 10 000 fuzz runs finding no panics
+- Pure-Rust RDB payload parsers (`parse_rdb_payload`, `parse_rdb_hash_payload`) extracted from `rdb_load` into testable helpers; `rdb_load` is now a thin FFI shim that calls the same `build_rdb_string`/`build_rdb_hash` validation functions as the fuzz harness — closing the gap where `fuzz_rdb_deserializer` previously exercised a parallel copy rather than production code; 512 MiB string and 256 MiB hash payload caps guard against OOM on malformed input; remaining-bytes guard before each vec allocation prevents OOM from fuzz-controlled length fields; smoke-verified with 10 000 fuzz runs finding no panics
 - WAL record CRC32C framing — corrupt or truncated records are detected and rejected on recovery
 - Field-count cap in hash deserializer — prevents OOM allocation on malformed RDB input
 - RDB version guard widened cast — prevents integer overflow on untrusted version bytes
