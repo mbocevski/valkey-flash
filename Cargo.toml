@@ -1,0 +1,25 @@
+[package]
+name = "valkey-flash"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+repository = "https://github.com/valkey-io/valkey-flash"
+description = "A Valkey module that tiers key/value data to NVMe storage"
+
+[dependencies]
+valkey-module = { version = "0.1.5", features = ["min-valkey-compatibility-version-8-0", "min-redis-compatibility-version-7-2"] }
+
+[lib]
+crate-type = ["cdylib"]
+name = "valkey_flash"
+
+[profile.dev]
+opt-level = 0
+debug = 2
+debug-assertions = true
+
+[features]
+default = ["min-valkey-compatibility-version-8-0"]
+enable-system-alloc = ["valkey-module/enable-system-alloc"]
+min-valkey-compatibility-version-8-0 = []
+valkey_8_0 = []
