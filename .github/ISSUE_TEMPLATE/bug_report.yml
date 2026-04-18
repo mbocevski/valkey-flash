@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        **Security issue?** Do not file a public bug. Use [GitHub Security Advisories](../../security/advisories/new) instead.
+        **Security issue?** Do not file a public bug. Use [GitHub Security Advisories](https://github.com/valkey-io/valkey-flash/security/advisories/new) instead.
 
   - type: input
     id: valkey_version
@@ -30,6 +30,13 @@ body:
       placeholder: "e.g. Ubuntu 24.04 x86_64, macOS 15 arm64"
     validations:
       required: true
+
+  - type: input
+    id: kernel_version
+    attributes:
+      label: Linux kernel version (if applicable)
+      description: Run `uname -r` and paste the output. Required for io_uring-related bugs.
+      placeholder: "e.g. 6.8.0-45-generic"
 
   - type: textarea
     id: reproduction
