@@ -86,7 +86,7 @@ fn local_probe() -> ValkeyResult {
 /// Returns an error string if:
 /// - Connection fails / times out → `ERR FLASH-MIGRATE target <addr> did not respond within timeout`
 /// - Target returns UNKNOWN COMMAND → `ERR FLASH-MIGRATE target <addr> does not have flash-module loaded`
-fn remote_probe(host: &str, port: u16) -> Result<ProbeResult, String> {
+pub(crate) fn remote_probe(host: &str, port: u16) -> Result<ProbeResult, String> {
     let addr = format!("{host}:{port}");
 
     if let Some(cached) = cache_get(&addr) {

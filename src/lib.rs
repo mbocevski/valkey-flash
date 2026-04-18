@@ -63,6 +63,7 @@ use crate::commands::hget::flash_hget_command;
 use crate::commands::hgetall::flash_hgetall_command;
 use crate::commands::hlen::flash_hlen_command;
 use crate::commands::hset::flash_hset_command;
+use crate::commands::migrate::flash_migrate_command;
 use crate::commands::migrate_probe::flash_migrate_probe_command;
 use crate::commands::set::flash_set_command;
 
@@ -548,6 +549,7 @@ valkey_module! {
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "admin flash"],
         ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "admin dangerous flash"],
+        ["FLASH.MIGRATE", flash_migrate_command, "write", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.MIGRATE.PROBE", flash_migrate_probe_command, "readonly", 0, 0, 0, "admin dangerous flash"],
     ],
     configurations: [

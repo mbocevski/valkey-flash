@@ -74,7 +74,8 @@ def _find_replica_port(primary_port: int, replica_ports: Tuple[int, ...]) -> Opt
     for rep_port in replica_ports:
         c = valkey.Valkey(host="localhost", port=rep_port, socket_timeout=5)
         try:
-            my_id = _node_id(rep_port)
+            my_id_raw = c.cluster("myid")
+            my_id = my_id_raw.decode() if isinstance(my_id_raw, bytes) else my_id_raw
             nodes_raw = c.cluster("nodes")
             if isinstance(nodes_raw, bytes):
                 nodes_raw = nodes_raw.decode()

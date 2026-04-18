@@ -18,12 +18,10 @@ Scenario 2 — flash.path empty / unreachable:
 
 Scenario 3 — Target has insufficient flash capacity:
   FLASH.MIGRATE.PROBE returns near-zero free_bytes when target NVMe is full.
-  CURRENT BEHAVIOUR NOTE: rdb_load always restores keys as Hot (cached in RAM,
-  no NVMe write on import).  A MIGRATE to a full-NVMe target therefore succeeds
-  in v1 — no "insufficient flash capacity" error is raised at migration time.
-  The probe correctly surfaces the capacity state for operators.  Pre-MIGRATE
-  capacity gating (ERR FLASH-MIGRATE target <addr> insufficient flash capacity)
-  is tracked as a v1.1 enhancement.
+  FLASH.MIGRATE (the new capacity-gating wrapper) returns
+  "ERR FLASH-MIGRATE target <addr> insufficient flash capacity" when
+  free_bytes on the target is less than the estimated NVMe footprint of the
+  FLASH keys being migrated.
 
 Run (requires USE_DOCKER=1):
     USE_DOCKER=1 pytest tests/test_flash_cluster_no_flash_target.py -v -m docker_cluster
@@ -287,7 +285,7 @@ def _fill_flash_storage(port: int) -> int:
                 c.execute_command("FLASH.DEBUG.DEMOTE", f"fill{i}")
                 written += 1
             except Exception:
-                pass  # demotion failure (NVMe already full) — stop
+                break  # NVMe full — no point writing more
 
         return written
     finally:
@@ -296,15 +294,7 @@ def _fill_flash_storage(port: int) -> int:
 
 @pytest.mark.docker_cluster
 def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
-    """FLASH.MIGRATE.PROBE to a nearly-full flash node reports near-zero free_bytes.
-
-    This test verifies that operators can detect insufficient capacity via probe
-    before attempting a migration.
-
-    Note: automatic pre-MIGRATE capacity gating (ERR FLASH-MIGRATE ... insufficient
-    flash capacity) is not yet implemented.  The probe returns raw free_bytes for
-    operator-level decisions.
-    """
+    """FLASH.MIGRATE.PROBE to a nearly-full flash node reports near-zero free_bytes."""
     server = _start_flash_server(capacity_bytes=_1_MiB)
     try:
         keys_demoted = _fill_flash_storage(server.port)
@@ -333,3 +323,49 @@ def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
             src.close()
     finally:
         server.close()
+
+
+@pytest.mark.docker_cluster
+def test_flash_migrate_rejects_migration_when_target_full():
+    """FLASH.MIGRATE returns ERR FLASH-MIGRATE ... insufficient flash capacity when
+    the target NVMe free_bytes is less than the key's estimated size (task #96).
+
+    Uses two standalone flash servers (no cluster required): source has ample
+    space; target is filled to capacity.  FLASH.MIGRATE on the source is expected
+    to probe the target and reject the migration before forwarding to core MIGRATE.
+    """
+    _VALUE = "x" * 5000
+    _KEY = "cap96:migtest"
+
+    source = _start_flash_server(capacity_bytes=8 * _1_MiB)
+    target = _start_flash_server(capacity_bytes=_1_MiB)
+    try:
+        _fill_flash_storage(target.port)
+
+        src_c = valkey.Valkey(host="127.0.0.1", port=source.port, socket_timeout=10)
+        try:
+            src_c.execute_command("FLASH.SET", _KEY, _VALUE)
+
+            with pytest.raises(valkey.exceptions.ResponseError) as exc_info:
+                src_c.execute_command(
+                    "FLASH.MIGRATE",
+                    "127.0.0.1", str(target.port),
+                    "",       # empty key — KEYS form
+                    "0",      # destination-db
+                    "5000",   # timeout ms
+                    "KEYS", _KEY,
+                )
+            error = str(exc_info.value)
+            assert "insufficient flash capacity" in error, (
+                f"Expected capacity error, got: {error!r}"
+            )
+            # Key must still be readable on the source after the rejected migration.
+            val = src_c.execute_command("FLASH.GET", _KEY)
+            assert val == _VALUE.encode(), (
+                f"Key should remain on source after rejected FLASH.MIGRATE; got {val!r}"
+            )
+        finally:
+            src_c.close()
+    finally:
+        source.close()
+        target.close()

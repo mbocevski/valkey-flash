@@ -10,5 +10,6 @@ pub mod hget;
 pub mod hgetall;
 pub mod hlen;
 pub mod hset;
+pub mod migrate;
 pub mod migrate_probe;
 pub mod set;
