@@ -123,7 +123,7 @@ pub static FLASH_MIGRATION_MAX_KEY_BYTES: AtomicI64 =
 // ── flash.migration-bandwidth-mbps ───────────────────────────────────────────
 
 pub const FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT: i64 = 100;
-pub const FLASH_MIGRATION_BANDWIDTH_MBPS_MIN: i64 = 1;
+pub const FLASH_MIGRATION_BANDWIDTH_MBPS_MIN: i64 = 0; // 0 = unlimited (no throttle)
 pub const FLASH_MIGRATION_BANDWIDTH_MBPS_MAX: i64 = 100_000;
 
 /// Soft bandwidth cap (MiB/s) for NVMe reads during EXPORT_STARTED pre-warm.

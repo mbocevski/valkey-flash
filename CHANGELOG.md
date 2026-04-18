@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `src/cluster/throttle.rs` — `BandwidthThrottle` struct extracted from the migration pre-warm path; cumulative expected-vs-actual algorithm ensures sub-millisecond windows are throttled correctly; `bandwidth_mbps = 0` disables throttling entirely; 7 unit tests including a full-scale `#[ignore]` timing test (32 MiB @ 10 Mbps ≈ 26.8 s)
+- `flash.migration-bandwidth-mbps = 0` now accepted as "unlimited" (previously minimum was 1)
+- `docs/cluster.md` placeholder: per-key atomicity limits, 64 MiB cap rationale, v1.1 chunked streaming note, config reference table
+
 ### Fixed
 
 - `ValkeyModuleAtomicSlotMigrationInfoV1.version` was declared `c_int` (4 bytes) but the C definition uses `uint64_t` (8 bytes); `num_slot_ranges` similarly mistyped as `c_int` vs `uint32_t` — struct layout now matches `valkeymodule.h:843-847`, preventing a crash when reading `slot_ranges` during slot migration
