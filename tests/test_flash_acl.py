@@ -80,7 +80,9 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             self._acl_deluser("flash_full")
 
     def test_read_only_flash_user_cannot_write(self):
-        self._acl_setuser("flash_ro", "on >pass ~* &* -@all +@read +@flash")
+        # Grant all @flash commands then revoke @write: FLASH.GET (read) is
+        # permitted but FLASH.SET (write) is denied.
+        self._acl_setuser("flash_ro", "on >pass ~* &* -@all +@flash -@write")
         try:
             c = self.server.get_new_client()
             c.execute_command("AUTH", "flash_ro", "pass")
@@ -108,7 +110,9 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             self._acl_deluser("flash_noadmin")
 
     def test_no_flash_user_cannot_run_any_flash_command(self):
-        self._acl_setuser("flash_none", "on >pass ~* &* -@flash")
+        # Start with +@all to ensure other commands work, then revoke @flash:
+        # FLASH.SET must be denied while the user still has general access.
+        self._acl_setuser("flash_none", "on >pass ~* &* +@all -@flash")
         try:
             c = self.server.get_new_client()
             c.execute_command("AUTH", "flash_none", "pass")
