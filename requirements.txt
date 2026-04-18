@@ -1,2 +1,2 @@
-valkey
+valkey==6.1.1
 pytest==7.4.3
