@@ -21,10 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - RDB save/load for FlashString and FlashHash types
 - AOF rewrite for FlashString (with TTL preservation) and FlashHash
 - `aux_save`/`aux_load` with tiering map and WAL cursor for cross-restart consistency
-- Background compaction with free-list for NVMe block reclaim
+- Background compaction with free-list for NVMe block reclaim; FLASH.COMPACTION.TRIGGER and FLASH.COMPACTION.STATS commands
 - TTL-expiry and overwrite NVMe block reclaim
 - Replication role-change hook — primary-only tiering; replicas serve hot data from RAM
-- INFO section with cache, storage, and WAL stats (14 fields under `flash_info`)
+- INFO section with cache, storage, and WAL stats (14 `flash_*` fields; query with `INFO flash`)
 - Runtime module configuration: `flash.path`, `flash.capacity-bytes`, `flash.cache-size-bytes`, `flash.sync`, `flash.io-threads`, `flash.io-uring-entries`, `flash.compaction-interval-sec`
 - Async I/O thread pool with BlockClient for non-blocking NVMe reads and writes
 
