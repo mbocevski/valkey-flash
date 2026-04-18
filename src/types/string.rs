@@ -142,7 +142,7 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    if version as i32 > ENCODING_VERSION {
+    if version > ENCODING_VERSION as u64 {
         logging::log_warning(
             format!(
                 "flash: rdb_load: unsupported in-stream encoding_version {version} \
