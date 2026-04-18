@@ -78,16 +78,22 @@ pub unsafe extern "C" fn aux_save(io: *mut raw::RedisModuleIO, when: c_int) {
         let capacity_bytes = FLASH_CAPACITY_BYTES.load(Ordering::Relaxed) as u64;
         let io_uring_entries = FLASH_IO_URING_ENTRIES.load(Ordering::Relaxed) as u32;
 
+        // Snapshot the current WAL write position so recovery can skip records
+        // that are already reflected in this RDB snapshot.
+        let wal_cursor = crate::WAL
+            .get()
+            .and_then(|wal| wal.current_offset().ok())
+            .unwrap_or(0);
+
         let payload = AuxBeforePayload {
             magic: AUX_MAGIC,
             version: AUX_ENCODING_VERSION,
-            // Tiering map is empty until demotion is implemented (task #39).
+            // Tiering map populated by demotion (future task).
             entries: Vec::new(),
             path,
             capacity_bytes,
             io_uring_entries,
-            // WAL cursor integration deferred to task #39.
-            wal_cursor: 0,
+            wal_cursor,
         };
 
         match bincode::serialize(&payload) {

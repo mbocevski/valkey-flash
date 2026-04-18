@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
 };
@@ -7,6 +10,7 @@ pub mod async_io;
 pub mod commands;
 pub mod config;
 pub mod persistence;
+pub mod recovery;
 pub mod storage;
 pub mod types;
 
@@ -20,12 +24,15 @@ use crate::config::{
     FLASH_IO_URING_ENTRIES, FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MAX,
     FLASH_IO_URING_ENTRIES_MIN, FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_SYNC,
 };
+use crate::recovery::{ModuleState, TierEntry};
 use crate::storage::cache::FlashCache;
 use crate::storage::file_io_uring::FileIoUringBackend;
+use crate::storage::wal::{Wal, WalSyncMode};
 use crate::types::hash::FLASH_HASH_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 
 use crate::commands::aux_info::flash_aux_info_command;
+use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::get::flash_get_command;
 use crate::commands::set::flash_set_command;
@@ -43,6 +50,19 @@ pub static STORAGE: std::sync::OnceLock<FileIoUringBackend> = std::sync::OnceLoc
 
 /// Async I/O thread pool. Initialised once in `initialize()`.
 pub static POOL: std::sync::OnceLock<AsyncThreadPool> = std::sync::OnceLock::new();
+
+/// Write-ahead log. Initialised once in `initialize()` after recovery completes.
+pub static WAL: std::sync::OnceLock<Wal> = std::sync::OnceLock::new();
+
+/// In-memory tiering map: `key_hash → (offset, value_hash)` for cold-tier entries.
+/// Populated by recovery; updated by FLASH.SET/DEL when they demote/delete cold keys.
+pub static TIERING_MAP: LazyLock<Mutex<HashMap<u64, TierEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Current module lifecycle state. Starts `Recovering`, transitions to `Ready`
+/// (or `Error` on unrecoverable failure). Readable via `FLASH.DEBUG.STATE`.
+pub static MODULE_STATE: LazyLock<Mutex<ModuleState>> =
+    LazyLock::new(|| Mutex::new(ModuleState::Recovering));
 
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
@@ -65,6 +85,69 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
     let io_uring_entries = FLASH_IO_URING_ENTRIES.load(Ordering::Relaxed) as u32;
     let io_threads = flash_io_threads();
 
+    // Derive WAL path from the backing-store path (same dir, .wal extension).
+    let wal_path = PathBuf::from(&path).with_extension("wal");
+
+    // WAL sync mode follows the same knob as the backing store.
+    let wal_sync_mode = match FLASH_SYNC.lock() {
+        Ok(g) => {
+            if *g == SyncMode::always {
+                WalSyncMode::Always
+            } else if *g == SyncMode::no {
+                WalSyncMode::No
+            } else {
+                WalSyncMode::Everysec
+            }
+        }
+        Err(e) => {
+            logging::log_warning(format!("flash: FLASH_SYNC lock poisoned: {e}").as_str());
+            return Status::Err;
+        }
+    };
+
+    // Read aux state that was populated by aux_load during RDB restore.
+    // May be None on a fresh start (no RDB present).
+    let aux_state = match persistence::aux::LOADED_AUX_STATE.lock() {
+        Ok(guard) => guard.clone(),
+        Err(e) => {
+            logging::log_warning(format!("flash: LOADED_AUX_STATE lock poisoned: {e}").as_str());
+            return Status::Err;
+        }
+    };
+
+    // ── Crash recovery ────────────────────────────────────────────────────────
+    //
+    // Run WAL replay before opening the operational WAL so that any torn-tail
+    // truncation happens on the recovery handle first.  The operational WAL is
+    // then opened fresh against the (possibly truncated) file.
+
+    match recovery::run_recovery(aux_state.as_ref(), &wal_path, &path, capacity) {
+        Ok((stats, tiering_map)) => {
+            for warn in &stats.warnings {
+                logging::log_warning(warn.as_str());
+            }
+            logging::log_notice(
+                format!(
+                    "flash: recovery complete: {} records applied in {}ms",
+                    stats.records_applied, stats.elapsed_ms,
+                )
+                .as_str(),
+            );
+            if let Ok(mut map) = TIERING_MAP.lock() {
+                *map = tiering_map;
+            }
+        }
+        Err(e) => {
+            logging::log_warning(format!("flash: recovery failed: {e}").as_str());
+            if let Ok(mut state) = MODULE_STATE.lock() {
+                *state = ModuleState::Error;
+            }
+            return Status::Err;
+        }
+    }
+
+    // ── Open backing store ────────────────────────────────────────────────────
+
     match FileIoUringBackend::open(&path, capacity, io_uring_entries) {
         Ok(backend) => {
             let _ = STORAGE.set(backend);
@@ -77,8 +160,26 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
         }
     }
 
+    // ── Open operational WAL ──────────────────────────────────────────────────
+
+    match Wal::open(&wal_path, wal_sync_mode) {
+        Ok(wal) => {
+            let _ = WAL.set(wal);
+        }
+        Err(e) => {
+            logging::log_warning(
+                format!("flash: failed to open WAL at '{}': {e}", wal_path.display()).as_str(),
+            );
+            return Status::Err;
+        }
+    }
+
     let _ = CACHE.set(FlashCache::new(cache_size));
     let _ = POOL.set(AsyncThreadPool::new(io_threads));
+
+    if let Ok(mut state) = MODULE_STATE.lock() {
+        *state = ModuleState::Ready;
+    }
 
     Status::Ok
 }
@@ -102,6 +203,7 @@ valkey_module! {
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
         ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "read flash"],
+        ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "read flash"],
     ],
     configurations: [
         i64: [

@@ -332,14 +332,31 @@ impl Wal {
     /// Iterate over WAL records starting from the record area (after the header).
     /// On CRC failure or torn tail the iterator yields an error and stops.
     pub fn iter_records(&self) -> WalResult<RecordIter> {
+        self.iter_records_from(HEADER_SIZE as u64)
+    }
+
+    /// Iterate over WAL records starting from `offset` (clamped to the record
+    /// area start). Used by recovery to skip records already applied via RDB.
+    pub fn iter_records_from(&self, offset: u64) -> WalResult<RecordIter> {
         let path = self.path.clone();
         let mut file = OpenOptions::new().read(true).open(&path)?;
-        file.seek(SeekFrom::Start(HEADER_SIZE as u64))?;
+        let start = offset.max(HEADER_SIZE as u64);
+        file.seek(SeekFrom::Start(start))?;
         Ok(RecordIter {
             file,
-            offset: HEADER_SIZE as u64,
+            offset: start,
             done: false,
         })
+    }
+
+    /// Return the current write position (bytes from file start).
+    /// Used by `aux_save` to snapshot the WAL cursor before an RDB save.
+    pub fn current_offset(&self) -> WalResult<u64> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| WalError::Io(std::io::Error::other("WAL mutex poisoned")))?;
+        Ok(guard.file.stream_position()?)
     }
 
     /// Truncate the WAL file to `offset` bytes and seek to the new end.
@@ -737,6 +754,60 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(records.len(), 200);
+    }
+
+    // ── iter_records_from ─────────────────────────────────────────────────────
+
+    #[test]
+    fn iter_from_zero_equals_iter_records() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("from_zero.wal");
+        let wal = Wal::open(&path, WalSyncMode::No).unwrap();
+        for i in 0..5u64 {
+            wal.append(put_op(i)).unwrap();
+        }
+        let all: Vec<_> = wal
+            .iter_records()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let from_zero: Vec<_> = wal
+            .iter_records_from(0)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(all, from_zero);
+    }
+
+    #[test]
+    fn iter_from_mid_skips_earlier_records() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("from_mid.wal");
+        let wal = Wal::open(&path, WalSyncMode::No).unwrap();
+        wal.append(put_op(1)).unwrap();
+        wal.append(put_op(2)).unwrap();
+        // Capture position after first record.
+        let cursor = wal.current_offset().unwrap();
+        wal.append(put_op(3)).unwrap();
+        wal.append(put_op(4)).unwrap();
+
+        let records: Vec<_> = wal
+            .iter_records_from(cursor)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(records, vec![put_op(3), put_op(4)]);
+    }
+
+    #[test]
+    fn current_offset_advances_after_appends() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("offset.wal");
+        let wal = Wal::open(&path, WalSyncMode::No).unwrap();
+        let before = wal.current_offset().unwrap();
+        wal.append(put_op(1)).unwrap();
+        let after = wal.current_offset().unwrap();
+        assert!(after > before);
     }
 
     // ── Op encoding round-trips ───────────────────────────────────────────────
