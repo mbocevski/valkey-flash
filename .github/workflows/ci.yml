@@ -437,13 +437,15 @@ jobs:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Install cargo-llvm-cov
       run: cargo install --version =0.8.5 --locked cargo-llvm-cov
-    - name: Generate lcov report
+    - name: Generate lcov report and enforce coverage gate
       run: |
         cargo llvm-cov \
           --lcov \
           --output-path lcov.info \
           --features enable-system-alloc \
-          --ignore-filename-regex 'src/wrapper/'
+          --fail-under-lines 85 \
+          --fail-under-functions 85 \
+          --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
     - name: Upload to Codecov
       uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
       with:
