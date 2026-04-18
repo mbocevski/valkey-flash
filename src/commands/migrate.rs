@@ -2,6 +2,7 @@ use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 use crate::commands::migrate_probe::remote_probe;
 use crate::types::hash::{FlashHashObject, FLASH_HASH_TYPE};
+use crate::types::list::{FlashListObject, FLASH_LIST_TYPE};
 use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::types::Tier;
 
@@ -36,6 +37,17 @@ fn flash_key_bytes(ctx: &Context, key: &ValkeyString) -> Option<usize> {
                     .iter()
                     .map(|(k, v)| 8 + k.len() + v.len())
                     .sum::<usize>()
+            }
+            Tier::Cold { value_len, .. } => *value_len as usize,
+        });
+    }
+
+    // FlashList?
+    if let Ok(Some(obj)) = handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
+        return Some(match &obj.tier {
+            Tier::Hot(items) => {
+                // Mirrors list_serialize wire format: [u32 count] + per-elem [u32 len][bytes]
+                4 + items.iter().map(|e| 4 + e.len()).sum::<usize>()
             }
             Tier::Cold { value_len, .. } => *value_len as usize,
         });
@@ -171,6 +183,39 @@ mod tests {
             Tier::Cold { value_len, .. } => *value_len as usize,
         };
         assert_eq!(size, 256);
+    }
+
+    #[test]
+    fn hot_list_size_matches_serialize_format() {
+        // list_serialize: [u32 count] + per-elem [u32 len][bytes]
+        // 3 elems: "a"(1), "bb"(2), "ccc"(3) → 4 + (4+1) + (4+2) + (4+3) = 22
+        let items: std::collections::VecDeque<Vec<u8>> = [
+            b"a".to_vec(),
+            b"bb".to_vec(),
+            b"ccc".to_vec(),
+        ]
+        .into();
+        let tier = Tier::Hot(items);
+        let size = match &tier {
+            Tier::Hot(v) => 4 + v.iter().map(|e| 4 + e.len()).sum::<usize>(),
+            Tier::Cold { value_len, .. } => *value_len as usize,
+        };
+        assert_eq!(size, 22);
+    }
+
+    #[test]
+    fn cold_list_size_is_value_len_field() {
+        let tier: Tier<std::collections::VecDeque<Vec<u8>>> = Tier::Cold {
+            key_hash: 0,
+            backend_offset: 0,
+            num_blocks: 1,
+            value_len: 128,
+        };
+        let size = match &tier {
+            Tier::Hot(v) => 4 + v.iter().map(|e| 4 + e.len()).sum::<usize>(),
+            Tier::Cold { value_len, .. } => *value_len as usize,
+        };
+        assert_eq!(size, 128);
     }
 
     #[test]
