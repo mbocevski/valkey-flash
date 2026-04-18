@@ -81,6 +81,16 @@ pub const FLASH_IO_URING_ENTRIES_MAX: i64 = 65536;
 /// io_uring submission-queue depth. Immutable after module load.
 pub static FLASH_IO_URING_ENTRIES: AtomicI64 = AtomicI64::new(FLASH_IO_URING_ENTRIES_DEFAULT);
 
+// ── flash.compaction-interval-sec ────────────────────────────────────────────
+
+pub const FLASH_COMPACTION_INTERVAL_SEC_DEFAULT: i64 = 60;
+pub const FLASH_COMPACTION_INTERVAL_SEC_MIN: i64 = 1;
+pub const FLASH_COMPACTION_INTERVAL_SEC_MAX: i64 = 3600;
+
+/// How often the background compaction thread runs (seconds). Mutable via CONFIG SET.
+pub static FLASH_COMPACTION_INTERVAL_SEC: AtomicI64 =
+    AtomicI64::new(FLASH_COMPACTION_INTERVAL_SEC_DEFAULT);
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -174,5 +184,20 @@ mod tests {
     fn path_default_is_correct() {
         let path = FLASH_PATH.lock().unwrap();
         assert_eq!(path.as_str(), FLASH_PATH_DEFAULT);
+    }
+
+    #[test]
+    fn compaction_interval_default_is_60() {
+        assert_eq!(FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, 60);
+        assert_eq!(FLASH_COMPACTION_INTERVAL_SEC_MIN, 1);
+        assert_eq!(FLASH_COMPACTION_INTERVAL_SEC_MAX, 3600);
+    }
+
+    #[test]
+    fn compaction_interval_is_mutable() {
+        let original = FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed);
+        FLASH_COMPACTION_INTERVAL_SEC.store(120, Ordering::Relaxed);
+        assert_eq!(FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed), 120);
+        FLASH_COMPACTION_INTERVAL_SEC.store(original, Ordering::Relaxed);
     }
 }

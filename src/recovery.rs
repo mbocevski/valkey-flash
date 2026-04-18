@@ -215,6 +215,8 @@ mod tests {
                 capacity_bytes: capacity,
                 io_uring_entries: 256,
                 wal_cursor: cursor,
+                nvme_next_block: 0,
+                free_blocks: Vec::new(),
             },
             after: None,
         }

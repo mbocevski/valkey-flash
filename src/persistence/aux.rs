@@ -5,6 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use valkey_module::{logging, raw};
 
+use crate::storage::BlockRange;
+
 // ── Wire format constants ─────────────────────────────────────────────────────
 
 // "FLSX" little-endian
@@ -25,6 +27,19 @@ pub struct AuxTierEntry {
     pub bytes: u64,
 }
 
+/// v1 shape (no free_blocks / nvme_next_block) — used as fallback when loading
+/// an RDB written by an older module build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AuxBeforePayloadV1 {
+    magic: u32,
+    version: u8,
+    entries: Vec<AuxTierEntry>,
+    path: String,
+    capacity_bytes: u64,
+    io_uring_entries: u32,
+    wal_cursor: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuxBeforePayload {
     pub magic: u32,
@@ -34,6 +49,10 @@ pub struct AuxBeforePayload {
     pub capacity_bytes: u64,
     pub io_uring_entries: u32,
     pub wal_cursor: u64,
+    /// Last value of the NVMe bump-allocator pointer at save time.
+    pub nvme_next_block: u64,
+    /// Free-list snapshot at save time; seeded back on restart.
+    pub free_blocks: Vec<BlockRange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +104,16 @@ pub unsafe extern "C" fn aux_save(io: *mut raw::RedisModuleIO, when: c_int) {
             .and_then(|wal| wal.current_offset().ok())
             .unwrap_or(0);
 
+        // Snapshot NVMe allocator state for cross-session free-list reclaim.
+        let nvme_next_block = crate::STORAGE
+            .get()
+            .map(|s| s.next_block_snapshot())
+            .unwrap_or(0);
+        let free_blocks = crate::STORAGE
+            .get()
+            .map(|s| s.free_list_snapshot())
+            .unwrap_or_default();
+
         let payload = AuxBeforePayload {
             magic: AUX_MAGIC,
             version: AUX_ENCODING_VERSION,
@@ -94,6 +123,8 @@ pub unsafe extern "C" fn aux_save(io: *mut raw::RedisModuleIO, when: c_int) {
             capacity_bytes,
             io_uring_entries,
             wal_cursor,
+            nvme_next_block,
+            free_blocks,
         };
 
         match bincode::serialize(&payload) {
@@ -156,14 +187,34 @@ pub unsafe extern "C" fn aux_load(
     let bytes = buf.as_ref();
 
     if when == AUX_BEFORE_RDB {
+        // Try current (v2) shape first; fall back to v1 (no nvme_next_block /
+        // free_blocks) for RDB files written by an older module build.
         let payload: AuxBeforePayload = match bincode::deserialize(bytes) {
             Ok(p) => p,
-            Err(e) => {
-                logging::log_warning(
-                    format!("flash: aux_load BEFORE: deserialization error: {e}").as_str(),
-                );
-                return raw::Status::Err as c_int;
-            }
+            Err(_) => match bincode::deserialize::<AuxBeforePayloadV1>(bytes) {
+                Ok(v1) => {
+                    logging::log_notice(
+                        "flash: aux_load BEFORE: v1 aux detected, promoting (free_blocks=empty)",
+                    );
+                    AuxBeforePayload {
+                        magic: v1.magic,
+                        version: v1.version,
+                        entries: v1.entries,
+                        path: v1.path,
+                        capacity_bytes: v1.capacity_bytes,
+                        io_uring_entries: v1.io_uring_entries,
+                        wal_cursor: v1.wal_cursor,
+                        nvme_next_block: 0,
+                        free_blocks: Vec::new(),
+                    }
+                }
+                Err(e) => {
+                    logging::log_warning(
+                        format!("flash: aux_load BEFORE: deserialization error: {e}").as_str(),
+                    );
+                    return raw::Status::Err as c_int;
+                }
+            },
         };
 
         if payload.magic != AUX_MAGIC {
@@ -190,11 +241,13 @@ pub unsafe extern "C" fn aux_load(
         logging::log_notice(
             format!(
                 "flash: aux_load BEFORE: loaded {} tiering entries, path='{}', \
-                 capacity={}, wal_cursor={}",
+                 capacity={}, wal_cursor={}, nvme_next_block={}, free_ranges={}",
                 payload.entries.len(),
                 payload.path,
                 payload.capacity_bytes,
                 payload.wal_cursor,
+                payload.nvme_next_block,
+                payload.free_blocks.len(),
             )
             .as_str(),
         );
@@ -277,6 +330,27 @@ mod tests {
             capacity_bytes: 1 << 30,
             io_uring_entries: 256,
             wal_cursor: 42,
+            nvme_next_block: 0,
+            free_blocks: Vec::new(),
+        };
+        bincode::serialize(&payload).unwrap()
+    }
+
+    fn make_before_v1(n_entries: usize, version: u8, magic: u32) -> Vec<u8> {
+        let payload = AuxBeforePayloadV1 {
+            magic,
+            version,
+            entries: (0..n_entries as u64)
+                .map(|i| AuxTierEntry {
+                    key_hash: i,
+                    tier_tag: 0,
+                    bytes: 1024,
+                })
+                .collect(),
+            path: "/tmp/test.bin".to_string(),
+            capacity_bytes: 1 << 30,
+            io_uring_entries: 256,
+            wal_cursor: 99,
         };
         bincode::serialize(&payload).unwrap()
     }
@@ -376,5 +450,49 @@ mod tests {
     fn aux_magic_constant() {
         // "FLSX" in little-endian: 0x46='F', 0x4C='L', 0x53='S', 0x58='X'
         assert_eq!(AUX_MAGIC, 0x5853_4C46);
+    }
+
+    #[test]
+    fn before_roundtrip_with_free_blocks() {
+        let free = vec![
+            BlockRange { start: 5, len: 2 },
+            BlockRange { start: 10, len: 3 },
+        ];
+        let payload = AuxBeforePayload {
+            magic: AUX_MAGIC,
+            version: AUX_ENCODING_VERSION,
+            entries: Vec::new(),
+            path: "/tmp/test.bin".to_string(),
+            capacity_bytes: 1 << 30,
+            io_uring_entries: 256,
+            wal_cursor: 0,
+            nvme_next_block: 20,
+            free_blocks: free.clone(),
+        };
+        let bytes = bincode::serialize(&payload).unwrap();
+        let decoded: AuxBeforePayload = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(decoded.nvme_next_block, 20);
+        assert_eq!(decoded.free_blocks, free);
+    }
+
+    #[test]
+    fn v1_bytes_deserialize_as_v2_with_empty_free_blocks() {
+        // Simulate loading an RDB written by the old module (no free_blocks field).
+        let v1_bytes = make_before_v1(3, AUX_ENCODING_VERSION, AUX_MAGIC);
+        // Must NOT decode as v2 (it will hit EOF on free_blocks Vec).
+        assert!(bincode::deserialize::<AuxBeforePayload>(&v1_bytes).is_err());
+        // Must decode as v1 successfully.
+        let v1: AuxBeforePayloadV1 = bincode::deserialize(&v1_bytes).unwrap();
+        assert_eq!(v1.entries.len(), 3);
+        assert_eq!(v1.wal_cursor, 99);
+    }
+
+    #[test]
+    fn v2_bytes_deserialize_correctly() {
+        let v2_bytes = make_before(2, AUX_ENCODING_VERSION, AUX_MAGIC);
+        let decoded: AuxBeforePayload = bincode::deserialize(&v2_bytes).unwrap();
+        assert_eq!(decoded.entries.len(), 2);
+        assert_eq!(decoded.nvme_next_block, 0);
+        assert!(decoded.free_blocks.is_empty());
     }
 }

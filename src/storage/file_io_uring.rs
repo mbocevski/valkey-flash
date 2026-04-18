@@ -8,6 +8,15 @@ use io_uring::{opcode, types, IoUring};
 use libc::{c_void, fallocate, ftruncate64, posix_memalign};
 
 use super::backend::{KvPair, StorageBackend, StorageError, StorageResult};
+use super::BlockRange;
+
+// ── Compaction metrics ────────────────────────────────────────────────────────
+
+/// Total number of compaction ticks that have run since module load.
+pub static COMPACTION_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative NVMe bytes returned to the free-list (delete + overwrite).
+pub static BYTES_RECLAIMED: AtomicU64 = AtomicU64::new(0);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -89,6 +98,7 @@ pub struct FileIoUringBackend {
     index: Mutex<HashMap<Vec<u8>, IndexEntry>>,
     next_block: AtomicU64,
     capacity_blocks: u64,
+    free_list: Mutex<Vec<BlockRange>>,
 }
 
 impl FileIoUringBackend {
@@ -111,6 +121,7 @@ impl FileIoUringBackend {
             index: Mutex::new(HashMap::new()),
             next_block: AtomicU64::new(0),
             capacity_blocks,
+            free_list: Mutex::new(Vec::new()),
         })
     }
 
@@ -161,11 +172,74 @@ impl FileIoUringBackend {
     }
 
     fn alloc_blocks(&self, n: u32) -> StorageResult<u64> {
+        // First-fit from free-list: reuse previously freed blocks before bumping.
+        {
+            let mut fl = self
+                .free_list
+                .lock()
+                .map_err(|e| StorageError::Other(format!("free_list lock poisoned: {e}")))?;
+            if let Some(pos) = fl.iter().position(|r| r.len >= n) {
+                let range = fl[pos];
+                if range.len == n {
+                    fl.swap_remove(pos);
+                } else {
+                    fl[pos].start += n as u64;
+                    fl[pos].len -= n;
+                }
+                return Ok(range.start);
+            }
+        }
+        // Fall back to bump allocator for fresh blocks.
         let start = self.next_block.fetch_add(n as u64, Ordering::Relaxed);
         if start + n as u64 > self.capacity_blocks {
             return Err(StorageError::Other("storage capacity exhausted".into()));
         }
         Ok(start)
+    }
+
+    fn push_free_range(&self, start: u64, len: u32) {
+        if let Ok(mut fl) = self.free_list.lock() {
+            fl.push(BlockRange { start, len });
+        }
+    }
+
+    // ── Free-list management (public for compaction command + aux persistence) ──
+
+    /// Run one compaction tick: coalesce adjacent/overlapping free ranges.
+    pub fn run_compaction_tick(&self) {
+        if let Ok(mut fl) = self.free_list.lock() {
+            coalesce_ranges(&mut fl);
+        }
+        COMPACTION_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snapshot the free-list for aux persistence.
+    pub fn free_list_snapshot(&self) -> Vec<BlockRange> {
+        self.free_list
+            .lock()
+            .map(|fl| fl.clone())
+            .unwrap_or_default()
+    }
+
+    /// Current value of the bump-allocator pointer, for aux persistence.
+    pub fn next_block_snapshot(&self) -> u64 {
+        self.next_block.load(Ordering::Relaxed)
+    }
+
+    /// Number of free NVMe 4 KiB blocks tracked in the free-list.
+    pub fn free_block_count(&self) -> u64 {
+        self.free_list
+            .lock()
+            .map(|fl| fl.iter().map(|r| r.len as u64).sum())
+            .unwrap_or(0)
+    }
+
+    /// Restore allocator state from aux (called once after `open()` on restart).
+    pub fn restore_state(&self, next_block: u64, free_blocks: Vec<BlockRange>) {
+        self.next_block.store(next_block, Ordering::Relaxed);
+        if let Ok(mut fl) = self.free_list.lock() {
+            *fl = free_blocks;
+        }
     }
 
     /// Submit one sqe and wait for its cqe; return `cqe.result()`.
@@ -252,6 +326,33 @@ impl FileIoUringBackend {
     }
 }
 
+// ── Free-list coalescing ──────────────────────────────────────────────────────
+
+/// Sort ranges by start, then merge adjacent or overlapping ranges in-place.
+/// After coalescing, no two ranges share or overlap any block.
+pub fn coalesce_ranges(ranges: &mut Vec<BlockRange>) {
+    if ranges.len() < 2 {
+        return;
+    }
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut out: Vec<BlockRange> = Vec::with_capacity(ranges.len());
+    for &r in ranges.iter() {
+        if let Some(last) = out.last_mut() {
+            let last_end = last.start + last.len as u64;
+            if r.start <= last_end {
+                // Adjacent or overlapping: extend the last range if needed.
+                let new_end = r.start + r.len as u64;
+                if new_end > last_end {
+                    last.len = (new_end - last.start) as u32;
+                }
+                continue;
+            }
+        }
+        out.push(r);
+    }
+    *ranges = out;
+}
+
 impl StorageBackend for FileIoUringBackend {
     fn get(&self, key: &[u8]) -> StorageResult<Option<Vec<u8>>> {
         let entry = {
@@ -271,26 +372,39 @@ impl StorageBackend for FileIoUringBackend {
         let n_blocks = Self::blocks_needed(value.len());
         let block_offset = self.alloc_blocks(n_blocks)?;
         self.write_value_at(block_offset, value)?;
-        let entry = IndexEntry {
+        let new_entry = IndexEntry {
             block_offset,
             value_len: value.len() as u32,
             num_blocks: n_blocks,
         };
-        let mut index = self
-            .index
-            .lock()
-            .map_err(|e| StorageError::Other(format!("index lock poisoned: {e}")))?;
-        index.insert(key.to_vec(), entry);
+        // Atomically swap new entry in and capture the old one (if overwrite).
+        let old_entry = {
+            let mut index = self
+                .index
+                .lock()
+                .map_err(|e| StorageError::Other(format!("index lock poisoned: {e}")))?;
+            index.insert(key.to_vec(), new_entry)
+        };
+        // Free old blocks outside the index lock.
+        if let Some(old) = old_entry {
+            self.push_free_range(old.block_offset, old.num_blocks);
+            BYTES_RECLAIMED.fetch_add(old.num_blocks as u64 * BLOCK_SIZE as u64, Ordering::Relaxed);
+        }
         Ok(block_offset * BLOCK_SIZE as u64)
     }
 
     fn delete(&self, key: &[u8]) -> StorageResult<()> {
-        let mut index = self
-            .index
-            .lock()
-            .map_err(|e| StorageError::Other(format!("index lock poisoned: {e}")))?;
-        index.remove(key);
-        // Blocks are leaked until compaction (task #50).
+        let old_entry = {
+            let mut index = self
+                .index
+                .lock()
+                .map_err(|e| StorageError::Other(format!("index lock poisoned: {e}")))?;
+            index.remove(key)
+        };
+        if let Some(old) = old_entry {
+            self.push_free_range(old.block_offset, old.num_blocks);
+            BYTES_RECLAIMED.fetch_add(old.num_blocks as u64 * BLOCK_SIZE as u64, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -435,6 +549,147 @@ mod tests {
         assert_eq!(FileIoUringBackend::blocks_needed(4089), 2); // 8+4089=4097 → 2 blocks
         assert_eq!(FileIoUringBackend::blocks_needed(8184), 2); // 8+8184=8192 → exactly 2 blocks
         assert_eq!(FileIoUringBackend::blocks_needed(8185), 3); // 8+8185=8193 → 3 blocks
+    }
+
+    // ── Free-list + coalescing tests ──────────────────────────────────────────
+
+    #[test]
+    fn delete_frees_blocks_visible_in_free_list() {
+        let (b, _tmp) = open_backend();
+        b.put(b"k", b"v").unwrap();
+        assert_eq!(b.free_block_count(), 0);
+        b.delete(b"k").unwrap();
+        assert_eq!(b.free_block_count(), 1); // 1 block freed (small value)
+    }
+
+    #[test]
+    fn overwrite_frees_old_blocks() {
+        let (b, _tmp) = open_backend();
+        b.put(b"k", b"v1").unwrap();
+        b.put(b"k", b"v2").unwrap();
+        // Old allocation freed; free_list has 1 block from v1's allocation.
+        assert_eq!(b.free_block_count(), 1);
+    }
+
+    #[test]
+    fn freed_blocks_reused_by_next_put() {
+        let (b, _tmp) = open_backend();
+        b.put(b"k1", b"hello").unwrap();
+        let next_before_delete = b.next_block_snapshot();
+        b.delete(b"k1").unwrap();
+        // next_block has not advanced; the freed block is in the free-list.
+        b.put(b"k2", b"world").unwrap();
+        // next_block should still equal next_before_delete (reused freed block).
+        assert_eq!(
+            b.next_block_snapshot(),
+            next_before_delete,
+            "freed block should be reused, not bump-allocated"
+        );
+    }
+
+    #[test]
+    fn compaction_tick_coalesces_adjacent_ranges() {
+        let (b, _tmp) = open_backend();
+        // Write 3 small values, each takes 1 block; they land at blocks 0, 1, 2.
+        b.put(b"a", b"v").unwrap();
+        b.put(b"b", b"v").unwrap();
+        b.put(b"c", b"v").unwrap();
+        b.delete(b"a").unwrap();
+        b.delete(b"b").unwrap();
+        b.delete(b"c").unwrap();
+        // 3 separate 1-block ranges in the free-list.
+        {
+            let fl = b.free_list.lock().unwrap();
+            assert_eq!(fl.len(), 3);
+        }
+        b.run_compaction_tick();
+        // After coalesce: 1 merged range covering all 3 blocks.
+        {
+            let fl = b.free_list.lock().unwrap();
+            assert_eq!(fl.len(), 1);
+            assert_eq!(fl[0].len, 3);
+        }
+        assert_eq!(COMPACTION_RUNS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn restore_state_sets_next_block_and_free_list() {
+        let (b, _tmp) = open_backend();
+        let ranges = vec![
+            BlockRange { start: 5, len: 2 },
+            BlockRange { start: 10, len: 3 },
+        ];
+        b.restore_state(20, ranges.clone());
+        assert_eq!(b.next_block_snapshot(), 20);
+        assert_eq!(b.free_list_snapshot(), ranges);
+    }
+
+    #[test]
+    fn bytes_reclaimed_incremented_on_delete() {
+        // Reset global counter to a known baseline.
+        let before = BYTES_RECLAIMED.load(Ordering::Relaxed);
+        let (b, _tmp) = open_backend();
+        b.put(b"k", b"v").unwrap();
+        b.delete(b"k").unwrap();
+        let after = BYTES_RECLAIMED.load(Ordering::Relaxed);
+        // 1 block freed → BLOCK_SIZE bytes reclaimed.
+        assert_eq!(after - before, BLOCK_SIZE as u64);
+    }
+
+    #[test]
+    fn coalesce_empty_is_noop() {
+        let mut v: Vec<BlockRange> = Vec::new();
+        coalesce_ranges(&mut v);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn coalesce_single_is_noop() {
+        let mut v = vec![BlockRange { start: 3, len: 2 }];
+        coalesce_ranges(&mut v);
+        assert_eq!(v, vec![BlockRange { start: 3, len: 2 }]);
+    }
+
+    #[test]
+    fn coalesce_adjacent_merged() {
+        let mut v = vec![
+            BlockRange { start: 5, len: 3 }, // blocks 5,6,7
+            BlockRange { start: 8, len: 2 }, // blocks 8,9 — adjacent
+        ];
+        coalesce_ranges(&mut v);
+        assert_eq!(v, vec![BlockRange { start: 5, len: 5 }]);
+    }
+
+    #[test]
+    fn coalesce_overlapping_merged() {
+        let mut v = vec![
+            BlockRange { start: 5, len: 4 }, // blocks 5-8
+            BlockRange { start: 7, len: 4 }, // blocks 7-10 — overlaps
+        ];
+        coalesce_ranges(&mut v);
+        assert_eq!(v, vec![BlockRange { start: 5, len: 6 }]);
+    }
+
+    #[test]
+    fn coalesce_non_adjacent_kept_separate() {
+        let mut v = vec![
+            BlockRange { start: 0, len: 2 }, // blocks 0,1
+            BlockRange { start: 5, len: 2 }, // blocks 5,6 — gap at 2,3,4
+        ];
+        coalesce_ranges(&mut v);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn coalesce_unsorted_input_sorted_first() {
+        let mut v = vec![
+            BlockRange { start: 10, len: 2 }, // blocks 10,11
+            BlockRange { start: 0, len: 5 },  // blocks 0-4
+            BlockRange { start: 5, len: 5 },  // blocks 5-9 (adjacent to above)
+        ];
+        coalesce_ranges(&mut v);
+        // 5+5+2 = 12 blocks merged into one range starting at 0.
+        assert_eq!(v, vec![BlockRange { start: 0, len: 12 }]);
     }
 
     #[test]

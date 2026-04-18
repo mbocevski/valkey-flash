@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
@@ -21,9 +21,11 @@ use crate::config::{
     flash_io_threads, FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT,
     FLASH_CACHE_SIZE_BYTES_MAX, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CAPACITY_BYTES,
     FLASH_CAPACITY_BYTES_DEFAULT, FLASH_CAPACITY_BYTES_MAX, FLASH_CAPACITY_BYTES_MIN,
-    FLASH_IO_THREADS, FLASH_IO_THREADS_DEFAULT, FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN,
-    FLASH_IO_URING_ENTRIES, FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MAX,
-    FLASH_IO_URING_ENTRIES_MIN, FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_SYNC,
+    FLASH_COMPACTION_INTERVAL_SEC, FLASH_COMPACTION_INTERVAL_SEC_DEFAULT,
+    FLASH_COMPACTION_INTERVAL_SEC_MAX, FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_IO_THREADS,
+    FLASH_IO_THREADS_DEFAULT, FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN, FLASH_IO_URING_ENTRIES,
+    FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MAX, FLASH_IO_URING_ENTRIES_MIN,
+    FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_SYNC,
 };
 use crate::recovery::{ModuleState, TierEntry};
 use crate::storage::cache::FlashCache;
@@ -33,6 +35,9 @@ use crate::types::hash::FLASH_HASH_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 
 use crate::commands::aux_info::flash_aux_info_command;
+use crate::commands::compaction::{
+    flash_compaction_stats_command, flash_compaction_trigger_command,
+};
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::get::flash_get_command;
@@ -64,6 +69,9 @@ pub static TIERING_MAP: LazyLock<Mutex<HashMap<u64, TierEntry>>> =
 /// (or `Error` on unrecoverable failure). Readable via `FLASH.DEBUG.STATE`.
 pub static MODULE_STATE: LazyLock<Mutex<ModuleState>> =
     LazyLock::new(|| Mutex::new(ModuleState::Recovering));
+
+/// Signal the background compaction thread to exit on module unload.
+static COMPACTION_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
@@ -161,6 +169,20 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
         }
     }
 
+    // Restore NVMe allocator state from aux so freed blocks survive restarts.
+    if let Some(ref state) = aux_state {
+        if let Some(storage) = STORAGE.get() {
+            let nb = state.before.nvme_next_block;
+            let free = state.before.free_blocks.clone();
+            let n_ranges = free.len();
+            storage.restore_state(nb, free);
+            logging::log_notice(
+                format!("flash: restored NVMe allocator: next_block={nb}, free_ranges={n_ranges}")
+                    .as_str(),
+            );
+        }
+    }
+
     // ── Open operational WAL ──────────────────────────────────────────────────
 
     match Wal::open(&wal_path, wal_sync_mode) {
@@ -178,6 +200,29 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
     let _ = CACHE.set(FlashCache::new(cache_size));
     let _ = POOL.set(AsyncThreadPool::new(io_threads));
 
+    // Background compaction thread: coalesces the free-list every
+    // flash.compaction-interval-sec seconds. Sleeps in 100 ms increments so
+    // module unload (COMPACTION_SHUTDOWN) is noticed quickly.
+    COMPACTION_SHUTDOWN.store(false, Ordering::Relaxed);
+    std::thread::spawn(|| {
+        let mut elapsed_decisecs: u64 = 0; // units of 100 ms
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if COMPACTION_SHUTDOWN.load(Ordering::Relaxed) {
+                return;
+            }
+            elapsed_decisecs += 1;
+            let interval_decisecs =
+                FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed) as u64 * 10;
+            if elapsed_decisecs >= interval_decisecs {
+                elapsed_decisecs = 0;
+                if let Some(storage) = STORAGE.get() {
+                    storage.run_compaction_tick();
+                }
+            }
+        }
+    });
+
     if let Ok(mut state) = MODULE_STATE.lock() {
         *state = ModuleState::Ready;
     }
@@ -186,6 +231,7 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
 }
 
 fn deinitialize(_ctx: &Context) -> Status {
+    COMPACTION_SHUTDOWN.store(true, Ordering::Relaxed);
     Status::Ok
 }
 
@@ -205,6 +251,8 @@ valkey_module! {
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
         ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "read flash"],
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "read flash"],
+        ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "read flash"],
+        ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "write flash"],
     ],
     configurations: [
         i64: [
@@ -212,8 +260,9 @@ valkey_module! {
             ["capacity-bytes", &FLASH_CAPACITY_BYTES, FLASH_CAPACITY_BYTES_DEFAULT, FLASH_CAPACITY_BYTES_MIN, FLASH_CAPACITY_BYTES_MAX, ConfigurationFlags::IMMUTABLE, None],
             ["io-threads",     &FLASH_IO_THREADS,     FLASH_IO_THREADS_DEFAULT,     FLASH_IO_THREADS_MIN,     FLASH_IO_THREADS_MAX,     ConfigurationFlags::IMMUTABLE, None],
             ["io-uring-entries", &FLASH_IO_URING_ENTRIES, FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MIN, FLASH_IO_URING_ENTRIES_MAX, ConfigurationFlags::IMMUTABLE, None],
-            // mutable knob
+            // mutable knobs
             ["cache-size-bytes", &FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CACHE_SIZE_BYTES_MAX, ConfigurationFlags::DEFAULT, None],
+            ["compaction-interval-sec", &FLASH_COMPACTION_INTERVAL_SEC, FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_COMPACTION_INTERVAL_SEC_MAX, ConfigurationFlags::DEFAULT, None],
         ],
         string: [
             ["path", &*FLASH_PATH, FLASH_PATH_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
