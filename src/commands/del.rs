@@ -1,4 +1,4 @@
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::CACHE;
@@ -101,6 +101,9 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
 
     // Replicate before blocking — must be on the event-loop thread.
     ctx.replicate_verbatim();
+    for key in &present {
+        ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.del", key);
+    }
 
     // Phase 3: async NVMe tombstone writes.
     #[cfg(not(test))]

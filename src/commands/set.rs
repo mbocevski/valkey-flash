@@ -1,5 +1,5 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::types::Tier;
@@ -203,6 +203,7 @@ pub fn flash_set_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
 
     // Replicate before blocking — must execute on the event-loop thread.
     ctx.replicate_verbatim();
+    ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.set", key);
 
     // Block the client and dispatch the NVMe write asynchronously.
     // submit_or_complete guarantees complete() is called even when the pool is full.

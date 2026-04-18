@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::types::hash::{
     hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
@@ -128,6 +128,7 @@ pub fn flash_hset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
+    ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.hset", key);
 
     #[cfg(not(test))]
     {

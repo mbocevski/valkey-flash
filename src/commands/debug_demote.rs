@@ -1,4 +1,4 @@
-use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::storage::backend::StorageBackend;
 use crate::storage::file_io_uring::FileIoUringBackend;
@@ -50,7 +50,11 @@ pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
                 Tier::Hot(v) => v.clone(),
                 Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
             };
-            return demote_bytes(key, storage, &value, &mut obj.tier);
+            let result = demote_bytes(key, storage, &value, &mut obj.tier);
+            if result.is_ok() {
+                ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", key);
+            }
+            return result;
         }
         Ok(None) => return Err(ValkeyError::Str("ERR key does not exist")),
         Err(_) => {} // wrong type for string — fall through to hash probe
@@ -64,7 +68,11 @@ pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
                 Tier::Hot(fields) => hash_serialize(fields),
                 Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
             };
-            demote_bytes(key, storage, &bytes, &mut obj.tier)
+            let result = demote_bytes(key, storage, &bytes, &mut obj.tier);
+            if result.is_ok() {
+                ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", key);
+            }
+            result
         }
         Ok(None) => Err(ValkeyError::Str("ERR key does not exist")),
         Err(_) => Err(ValkeyError::WrongType),

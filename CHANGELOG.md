@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Keyspace notifications for FLASH mutations: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict` events via `notify-keyspace-events`
 - FLASH.SET command — async NVMe write-through with replication support
 - FLASH.GET command — hot-path cache hit and cold-path async NVMe read with hot promotion
 - FLASH.DEL command — variadic async tombstone with replication
