@@ -26,6 +26,15 @@ jobs:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
       run: echo "SERVER_VERSION=${{ matrix.server_version }}" >> $GITHUB_ENV
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
     - name: Cargo fmt and clippy
       run: |
         cargo fmt --check
@@ -39,7 +48,22 @@ jobs:
         else
           RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
         fi
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ matrix.server_version }}" \
+          "refs/tags/${{ matrix.server_version }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache Valkey server binary
+      id: cache-valkey
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: tests/build/binaries/${{ matrix.server_version }}
+        key: valkey-server-${{ matrix.server_version }}-${{ steps.valkey-sha.outputs.sha }}
     - name: Build valkey-server
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
       run: |
         mkdir -p "tests/build/binaries/${{ matrix.server_version }}"
         cd tests/build
@@ -51,7 +75,19 @@ jobs:
         if [ -f src/modules/lua/libvalkeylua.so ]; then
           cp src/modules/lua/libvalkeylua.so ../binaries/${{ matrix.server_version }}/
         fi
+    - name: Get test framework HEAD SHA
+      id: tf-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.TEST_FRAMEWORK_REPO }}" refs/heads/main | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache test framework
+      id: cache-tf
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: ${{ env.TEST_FRAMEWORK_DIR }}
+        key: valkey-test-framework-${{ steps.tf-sha.outputs.sha }}
     - name: Set up test framework
+      if: steps.cache-tf.outputs.cache-hit != 'true'
       run: |
         git clone ${{ env.TEST_FRAMEWORK_REPO }}
         mkdir -p ${{ env.TEST_FRAMEWORK_DIR }}
@@ -80,6 +116,15 @@ jobs:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
       run: echo "SERVER_VERSION=${{ matrix.server_version }}" >> $GITHUB_ENV
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
     - name: Cargo fmt and clippy
       run: |
         cargo fmt --check
@@ -93,7 +138,22 @@ jobs:
         else
           RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
         fi
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ matrix.server_version }}" \
+          "refs/tags/${{ matrix.server_version }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache Valkey server binary (ASAN)
+      id: cache-valkey
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: tests/build/binaries/${{ matrix.server_version }}
+        key: valkey-server-asan-${{ matrix.server_version }}-${{ steps.valkey-sha.outputs.sha }}
     - name: Build valkey-server with ASAN
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
       run: |
         mkdir -p "tests/build/binaries/${{ matrix.server_version }}"
         cd tests/build
@@ -106,7 +166,19 @@ jobs:
         if [ -f src/modules/lua/libvalkeylua.so ]; then
           cp src/modules/lua/libvalkeylua.so ../binaries/${{ matrix.server_version }}/
         fi
+    - name: Get test framework HEAD SHA
+      id: tf-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.TEST_FRAMEWORK_REPO }}" refs/heads/main | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache test framework
+      id: cache-tf
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: ${{ env.TEST_FRAMEWORK_DIR }}
+        key: valkey-test-framework-${{ steps.tf-sha.outputs.sha }}
     - name: Set up test framework
+      if: steps.cache-tf.outputs.cache-hit != 'true'
       run: |
         git clone ${{ env.TEST_FRAMEWORK_REPO }}
         mkdir -p ${{ env.TEST_FRAMEWORK_DIR }}
