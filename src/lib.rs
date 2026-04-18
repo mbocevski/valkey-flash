@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
-    configuration::ConfigurationFlags, logging, valkey_module, Context, ContextFlags, InfoContext,
-    Status, ValkeyResult, ValkeyString,
+    configuration::{ConfigurationContext, ConfigurationFlags},
+    logging, valkey_module, Context, ContextFlags, InfoContext, Status, ValkeyResult, ValkeyString,
 };
 use valkey_module_macros::info_command_handler;
 
@@ -416,6 +416,13 @@ pub(crate) fn init_nvme_backend() {
     logging::log_notice("flash: promotion to primary complete — NVMe backend initialized");
 }
 
+/// Wake the compaction thread so the new `flash.compaction-interval-sec` takes
+/// effect immediately rather than waiting for the current 100 ms sleep to expire.
+pub(crate) fn wake_compaction() {
+    let (_, cvar) = &*COMPACTION_SHUTDOWN;
+    cvar.notify_all();
+}
+
 #[info_command_handler]
 fn info_handler(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
     metrics::flash_info_handler(ctx)
@@ -456,16 +463,35 @@ valkey_module! {
             ["capacity-bytes", &FLASH_CAPACITY_BYTES, FLASH_CAPACITY_BYTES_DEFAULT, FLASH_CAPACITY_BYTES_MIN, FLASH_CAPACITY_BYTES_MAX, ConfigurationFlags::IMMUTABLE, None],
             ["io-threads",     &FLASH_IO_THREADS,     FLASH_IO_THREADS_DEFAULT,     FLASH_IO_THREADS_MIN,     FLASH_IO_THREADS_MAX,     ConfigurationFlags::IMMUTABLE, None],
             ["io-uring-entries", &FLASH_IO_URING_ENTRIES, FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MIN, FLASH_IO_URING_ENTRIES_MAX, ConfigurationFlags::IMMUTABLE, None],
-            // mutable knobs
-            ["cache-size-bytes", &FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CACHE_SIZE_BYTES_MAX, ConfigurationFlags::DEFAULT, None],
-            ["compaction-interval-sec", &FLASH_COMPACTION_INTERVAL_SEC, FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_COMPACTION_INTERVAL_SEC_MAX, ConfigurationFlags::DEFAULT, None],
+            // mutable knobs — on_changed callback applies the new value at runtime
+            ["cache-size-bytes", &FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CACHE_SIZE_BYTES_MAX, ConfigurationFlags::DEFAULT,
+             Some(Box::new(|_ctx: &ConfigurationContext, _name: &str, variable: &'static std::sync::atomic::AtomicI64| {
+                 let new_capacity = variable.load(Ordering::Relaxed) as u64;
+                 if let Some(cache) = CACHE.get() {
+                     cache.resize(new_capacity);
+                 }
+             }))],
+            ["compaction-interval-sec", &FLASH_COMPACTION_INTERVAL_SEC, FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_COMPACTION_INTERVAL_SEC_MAX, ConfigurationFlags::DEFAULT,
+             Some(Box::new(|_ctx: &ConfigurationContext, _name: &str, _variable: &'static std::sync::atomic::AtomicI64| {
+                 wake_compaction();
+             }))],
         ],
         string: [
             ["path", &*FLASH_PATH, FLASH_PATH_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
         ],
         bool: [],
         enum: [
-            ["sync", &*FLASH_SYNC, SyncMode::everysec, ConfigurationFlags::DEFAULT, None],
+            ["sync", &*FLASH_SYNC, SyncMode::everysec, ConfigurationFlags::DEFAULT,
+             Some(Box::new(|_ctx: &ConfigurationContext, _name: &str, variable: &'static Mutex<SyncMode>| {
+                 let mode = match *variable.lock().unwrap_or_else(|e| e.into_inner()) {
+                     SyncMode::always => WalSyncMode::Always,
+                     SyncMode::everysec => WalSyncMode::Everysec,
+                     SyncMode::no => WalSyncMode::No,
+                 };
+                 if let Some(wal) = WAL.get() {
+                     wal.set_sync_mode(mode);
+                 }
+             }))],
         ],
         module_args_as_configuration: true,
     ]

@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Mutex,
+    Arc, Mutex, RwLock,
 };
 
 use quick_cache::{sync::Cache, Weighter};
+
+type InnerCache = Cache<Vec<u8>, Vec<u8>, BytesWeighter>;
 
 // ── BytesWeighter ─────────────────────────────────────────────────────────────
 
@@ -32,8 +34,8 @@ pub struct CacheMetrics {
 const MAX_CANDIDATES: usize = 65_536;
 
 pub struct FlashCache {
-    inner: Cache<Vec<u8>, Vec<u8>, BytesWeighter>,
-    capacity_bytes: u64,
+    inner: RwLock<Arc<InnerCache>>,
+    capacity_bytes: AtomicU64,
     approx_bytes: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -48,8 +50,12 @@ impl FlashCache {
         // Assume average 256-byte entry for pre-sizing the item count estimate.
         let estimated_items = ((capacity_bytes / 256).max(16)) as usize;
         FlashCache {
-            inner: Cache::with_weighter(estimated_items, capacity_bytes, BytesWeighter),
-            capacity_bytes,
+            inner: RwLock::new(Arc::new(Cache::with_weighter(
+                estimated_items,
+                capacity_bytes,
+                BytesWeighter,
+            ))),
+            capacity_bytes: AtomicU64::new(capacity_bytes),
             approx_bytes: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -58,8 +64,36 @@ impl FlashCache {
         }
     }
 
+    fn cache_ref(&self) -> Arc<InnerCache> {
+        self.inner.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Resize the cache to `new_capacity` bytes.
+    ///
+    /// Existing entries are migrated into the new cache. If the new capacity is
+    /// smaller, the new cache's W-TinyLFU policy auto-evicts the least-valuable
+    /// entries during migration (eager eviction). If larger, all existing entries
+    /// are preserved and the extra space fills on future puts.
+    pub fn resize(&self, new_capacity: u64) {
+        let estimated_items = ((new_capacity / 256).max(16)) as usize;
+        let new_cache = Arc::new(Cache::with_weighter(
+            estimated_items,
+            new_capacity,
+            BytesWeighter,
+        ));
+        // Migrate entries; new cache enforces new capacity via auto-eviction.
+        let old = self.cache_ref();
+        for (k, v) in old.iter() {
+            new_cache.insert(k, v);
+        }
+        *self.inner.write().unwrap_or_else(|e| e.into_inner()) = new_cache;
+        self.capacity_bytes.store(new_capacity, Ordering::Relaxed);
+        // Reset byte counter; it will repopulate naturally via subsequent puts.
+        self.approx_bytes.store(0, Ordering::Relaxed);
+    }
+
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        match self.inner.get(key) {
+        match self.cache_ref().get(key) {
             Some(val) => {
                 self.hits.fetch_add(1, Ordering::Relaxed);
                 Some(val)
@@ -72,10 +106,10 @@ impl FlashCache {
     }
 
     pub fn put(&self, key: &[u8], value: Vec<u8>) {
+        let cache = self.cache_ref();
         let new_weight = (key.len() + value.len()) as u64;
         // Use peek (no recency update) to check for an existing entry.
-        let old_weight = self
-            .inner
+        let old_weight = cache
             .peek(key)
             .map(|v| (key.len() + v.len()) as u64)
             .unwrap_or(0);
@@ -87,7 +121,7 @@ impl FlashCache {
                 }
             }
         }
-        self.inner.insert(key.to_vec(), value);
+        cache.insert(key.to_vec(), value);
         self.approx_bytes.fetch_add(new_weight, Ordering::Relaxed);
         if old_weight > 0 {
             self.approx_bytes
@@ -101,7 +135,7 @@ impl FlashCache {
     /// Remove `key`. Returns `true` if the key was present.
     pub fn delete(&self, key: &[u8]) -> bool {
         // remove() returns the (Key, Val) pair so we can compute the freed weight.
-        match self.inner.remove(key) {
+        match self.cache_ref().remove(key) {
             Some((k, v)) => {
                 let weight = (k.len() + v.len()) as u64;
                 self.approx_bytes
@@ -118,8 +152,8 @@ impl FlashCache {
 
     /// Update `key`'s recency without returning its value.
     pub fn touch(&self, key: &[u8]) {
-        // inner.get() updates S3-FIFO recency bits.
-        let _ = self.inner.get(key);
+        // cache.get() updates S3-FIFO recency bits.
+        let _ = self.cache_ref().get(key);
     }
 
     /// Return the oldest-inserted key that is still present in the cache.
@@ -127,10 +161,11 @@ impl FlashCache {
     /// then calling `delete` to free the RAM slot.
     /// Returns `None` when no candidates remain.
     pub fn evict_candidate(&self) -> Option<Vec<u8>> {
+        let cache = self.cache_ref();
         let mut q = self.candidates.lock().ok()?;
         while let Some(key) = q.pop_front() {
             // Use peek so the existence check doesn't update recency.
-            if self.inner.peek(key.as_slice()).is_some() {
+            if cache.peek(key.as_slice()).is_some() {
                 return Some(key);
             }
             // Already auto-evicted or explicitly deleted — skip.
@@ -140,7 +175,7 @@ impl FlashCache {
 
     pub fn contains(&self, key: &[u8]) -> bool {
         // peek doesn't update recency; correct for a pure existence check.
-        self.inner.peek(key).is_some()
+        self.cache_ref().peek(key).is_some()
     }
 
     /// Approximate total byte footprint of all current entries (key + value).
@@ -150,9 +185,9 @@ impl FlashCache {
         self.approx_bytes.load(Ordering::Relaxed)
     }
 
-    /// Configured capacity in bytes (set at construction).
+    /// Configured capacity in bytes. Updated on `resize()`.
     pub fn capacity_bytes(&self) -> u64 {
-        self.capacity_bytes
+        self.capacity_bytes.load(Ordering::Relaxed)
     }
 
     pub fn metrics(&self) -> CacheMetrics {

@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -199,12 +199,33 @@ pub enum WalSyncMode {
     No,
 }
 
-// ── Background everysec flusher ───────────────────────────────────────────────
+impl WalSyncMode {
+    fn to_u8(self) -> u8 {
+        match self {
+            WalSyncMode::Always => 0,
+            WalSyncMode::Everysec => 1,
+            WalSyncMode::No => 2,
+        }
+    }
 
-fn spawn_everysec_flusher(
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => WalSyncMode::Always,
+            1 => WalSyncMode::Everysec,
+            _ => WalSyncMode::No,
+        }
+    }
+}
+
+// ── Background flusher ────────────────────────────────────────────────────────
+
+// Always spawned; calls sync_data() only when sync_mode is Everysec so that
+// runtime mode changes take effect on the next tick without restarting the thread.
+fn spawn_flusher(
     inner: Arc<Mutex<WalInner>>,
     shutdown: Arc<AtomicBool>,
     signal: Arc<(Mutex<()>, Condvar)>,
+    sync_mode: Arc<AtomicU8>,
 ) -> WalResult<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("wal-flusher".into())
@@ -216,16 +237,15 @@ fn spawn_everysec_flusher(
                 !shutdown.load(Ordering::Relaxed)
             });
             if shutdown.load(Ordering::Relaxed) {
-                // No final sync on exit: Everysec guarantees at-most-1s lag,
-                // not a flush-before-close guarantee. Caller must use Always
-                // mode if close-time durability is required.
                 break;
             }
-            let guard = match inner.lock() {
-                Ok(g) => g,
-                Err(_) => break,
-            };
-            let _ = guard.file.sync_data();
+            if WalSyncMode::from_u8(sync_mode.load(Ordering::Relaxed)) == WalSyncMode::Everysec {
+                let guard = match inner.lock() {
+                    Ok(g) => g,
+                    Err(_) => break,
+                };
+                let _ = guard.file.sync_data();
+            }
         })
         .map_err(WalError::Io)
 }
@@ -243,14 +263,17 @@ impl std::fmt::Debug for Wal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Wal")
             .field("path", &self.path)
-            .field("sync_mode", &self.sync_mode)
+            .field(
+                "sync_mode",
+                &WalSyncMode::from_u8(self.sync_mode.load(Ordering::Relaxed)),
+            )
             .finish_non_exhaustive()
     }
 }
 
 pub struct Wal {
     inner: Arc<Mutex<WalInner>>,
-    sync_mode: WalSyncMode,
+    sync_mode: Arc<AtomicU8>,
     path: PathBuf,
     shutdown: Arc<AtomicBool>,
     flusher_signal: Arc<(Mutex<()>, Condvar)>,
@@ -303,20 +326,18 @@ impl Wal {
         let inner = Arc::new(Mutex::new(WalInner { file }));
         let shutdown = Arc::new(AtomicBool::new(false));
         let flusher_signal = Arc::new((Mutex::new(()), Condvar::new()));
+        let sync_mode_atomic = Arc::new(AtomicU8::new(sync_mode.to_u8()));
 
-        let flusher = if sync_mode == WalSyncMode::Everysec {
-            Some(spawn_everysec_flusher(
-                Arc::clone(&inner),
-                Arc::clone(&shutdown),
-                Arc::clone(&flusher_signal),
-            )?)
-        } else {
-            None
-        };
+        let flusher = Some(spawn_flusher(
+            Arc::clone(&inner),
+            Arc::clone(&shutdown),
+            Arc::clone(&flusher_signal),
+            Arc::clone(&sync_mode_atomic),
+        )?);
 
         Ok(Wal {
             inner,
-            sync_mode,
+            sync_mode: sync_mode_atomic,
             path,
             shutdown,
             flusher_signal,
@@ -339,12 +360,20 @@ impl Wal {
         guard.file.write_all(&crc.to_le_bytes())?;
         guard.file.write_all(&payload)?;
 
-        match self.sync_mode {
+        match WalSyncMode::from_u8(self.sync_mode.load(Ordering::Relaxed)) {
             WalSyncMode::Always => guard.file.sync_data()?,
             WalSyncMode::Everysec | WalSyncMode::No => guard.file.flush()?,
         }
 
         Ok(())
+    }
+
+    /// Update the sync mode at runtime. The flusher observes the new mode on its
+    /// next 1-second tick; `append()` observes it immediately.
+    pub fn set_sync_mode(&self, mode: WalSyncMode) {
+        self.sync_mode.store(mode.to_u8(), Ordering::Relaxed);
+        let (_, cvar) = &*self.flusher_signal;
+        cvar.notify_all();
     }
 
     /// Iterate over WAL records starting from the record area (after the header).
