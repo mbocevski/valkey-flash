@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI job tier for Docker-based integration tests (`docker-integration`): matrix over topology (single, cluster), triggered on push to `main` and on PRs with the `slow-tests` label; Docker layer cache keyed on `Dockerfile + Cargo.lock` hash; compose logs uploaded as artifact on failure
 - `docs/docker-tests.md` — developer guide for running Docker-based tests locally: prerequisites, image build, single-node and cluster startup/teardown, pytest invocation, debugging, and seccomp/io_uring caveat
 - `Makefile` with `docker-build`, `docker-test-single`, `docker-test-cluster`, `docker-test`, and `docker-clean` targets
+- Replication integration test suite (`tests/test_flash_replication_integration.py`): basic SET/DEL/HSET/HDEL propagation, post-promotion writes, RDB full sync, diskless resync, PSYNC reconnect after connection kill, and cluster topology replication (docker-only)
 
 ### Changed
 
