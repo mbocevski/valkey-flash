@@ -43,43 +43,45 @@ valkey-flash's NVMe I/O path uses `io_uring` (syscalls `io_uring_setup`, `io_uri
 
 **Kernel requirement:** Linux ≥5.6. Earlier kernels lack the required io_uring APIs entirely.
 
+### Seccomp profile
+
+[`docker/seccomp-flash.json`](docker/seccomp-flash.json) is the recommended profile. It is Docker's default syscall allowlist extended with only the three `io_uring` syscalls (`io_uring_setup`, `io_uring_enter`, `io_uring_register`, min kernel 5.1). All other restrictions from the default profile remain in place.
+
+For quick-start / CI, `--security-opt seccomp=unconfined` also works but removes all syscall filtering.
+
 ### Docker
 
-**Development / CI — disable seccomp:**
+**With the custom profile (recommended):**
 
 ```sh
 docker run --rm \
-  --security-opt seccomp=unconfined \
+  --security-opt seccomp=docker/seccomp-flash.json \
   -e FLASH_PATH=/data/flash \
   -e FLASH_CAPACITY_BYTES=1073741824 \
   -v flash-data:/data \
   valkey-flash:dev
 ```
 
-**Docker Compose** — add `security_opt` to the service:
+**Docker Compose** — the bundled [`docker/compose.single.yml`](docker/compose.single.yml) already uses the profile:
 
 ```yaml
-services:
-  valkey-flash:
-    image: valkey-flash:dev
-    security_opt:
-      - seccomp=unconfined
-    volumes:
-      - flash-data:/data
-    environment:
-      FLASH_PATH: /data/flash
-      FLASH_CAPACITY_BYTES: 1073741824
+security_opt:
+  - seccomp:./seccomp-flash.json
 ```
 
-**Production:** avoid `unconfined` — use a tight custom profile that allows only the three io_uring syscalls. A ready-made profile is tracked in issue #89 (coming soon); pass it via `--security-opt seccomp=/path/to/valkey-flash-io_uring.json`.
+To revert to `unconfined` for quick iteration, overlay with the dev override:
+
+```sh
+docker compose -f docker/compose.single.yml -f docker/compose.single.dev.yml up
+```
 
 ### Podman
 
-**Rootful Podman** behaves identically to Docker:
+**Rootful Podman** uses the same flag:
 
 ```sh
 sudo podman run --rm \
-  --security-opt seccomp=unconfined \
+  --security-opt seccomp=docker/seccomp-flash.json \
   -e FLASH_PATH=/data/flash \
   -e FLASH_CAPACITY_BYTES=1073741824 \
   -v flash-data:/data \
@@ -91,39 +93,30 @@ sudo podman run --rm \
 - **Kernel <5.11:** the kernel blocks `io_uring` inside user namespaces; upgrade to ≥5.11 for rootless io_uring support.
 - **SELinux (enforcing):** add `--security-opt label=disable`, or write a policy allowing io_uring from the container's label.
 - **AppArmor:** if the default AppArmor profile is loaded, also pass `--security-opt apparmor=unconfined`.
-- **systemd user units with `NoNewPrivileges=yes`:** override with `NoNewPrivileges=no` in the unit's `[Service]` section; `NoNewPrivileges` prevents seccomp profile changes at runtime.
+- **systemd user units with `NoNewPrivileges=yes`:** override with `NoNewPrivileges=no` in the unit's `[Service]` section; `NoNewPrivileges` prevents applying seccomp profiles at container start.
 
-```sh
-podman run --rm \
-  --security-opt seccomp=unconfined \
-  -e FLASH_PATH=/data/flash \
-  -e FLASH_CAPACITY_BYTES=1073741824 \
-  -v flash-data:/data \
-  valkey-flash:dev
-```
-
-**podman-compose** — identical `security_opt` syntax to Docker Compose above.
+**podman-compose** — same `security_opt` syntax as Docker Compose.
 
 ### Kubernetes
 
-Set `seccompProfile.type: Unconfined` on the container (dev/staging) or `Localhost` with a custom profile (production):
+Copy `docker/seccomp-flash.json` to each node's seccomp profile directory (typically `/var/lib/kubelet/seccomp/profiles/`) and reference it:
 
 ```yaml
-# dev / staging
+# recommended for production
+securityContext:
+  seccompProfile:
+    type: Localhost
+    localhostProfile: profiles/seccomp-flash.json
+```
+
+```yaml
+# dev / staging only
 securityContext:
   seccompProfile:
     type: Unconfined
 ```
 
-```yaml
-# production — requires the profile from issue #89 deployed to each node
-securityContext:
-  seccompProfile:
-    type: Localhost
-    localhostProfile: profiles/valkey-flash-io_uring.json
-```
-
-**Pod Security Standards note:** the `restricted` profile mandates `seccompProfile.type: RuntimeDefault` or `Localhost`. To run valkey-flash you need the `baseline` (or `privileged`) namespace label, or a per-namespace exemption, until the custom profile from #89 is available.
+**Pod Security Standards note:** the `restricted` profile mandates `seccompProfile.type: RuntimeDefault` or `Localhost`. The `Localhost` + `seccomp-flash.json` approach satisfies the `restricted` standard once the profile file is deployed to nodes.
 
 > `PodSecurityPolicy` was removed in Kubernetes 1.25. The examples above use the current `securityContext.seccompProfile` field (stable since Kubernetes 1.19).
 

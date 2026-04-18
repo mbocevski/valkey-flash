@@ -382,6 +382,17 @@ jobs:
         python-version: '3.11'
     - name: Install test dependencies
       run: pip install -r requirements.txt
+    - name: Smoke-test custom seccomp profile
+      run: |
+        docker run -d --name seccomp-smoke \
+          --security-opt seccomp=docker/seccomp-flash.json \
+          -e FLASH_PATH=/tmp/flash.bin \
+          -e FLASH_CAPACITY_BYTES=67108864 \
+          valkey-flash:dev
+        timeout 30 sh -c 'until docker exec seccomp-smoke valkey-cli ping 2>/dev/null | grep -q PONG; do sleep 1; done'
+        docker exec seccomp-smoke valkey-cli FLASH.SET smokekey smokeval
+        docker exec seccomp-smoke valkey-cli FLASH.GET smokekey | grep -q smokeval
+        docker rm -f seccomp-smoke
     - name: Run Docker integration tests
       run: USE_DOCKER=1 python -m pytest --cache-clear -v tests/test_docker_smoke.py -m docker_${{ matrix.topology }}
     - name: Collect compose logs on failure

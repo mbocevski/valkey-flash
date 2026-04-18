@@ -17,12 +17,10 @@ services:
       FLASH_IO_THREADS: ""
       FLASH_IO_URING_ENTRIES: ""
       FLASH_COMPACTION_INTERVAL_SEC: ""
-    # io_uring requires several ring-related syscalls that Docker's default seccomp
-    # profile blocks (io_uring_setup, io_uring_enter, io_uring_register).
-    # seccomp:unconfined is the simplest workaround; a tighter custom profile can
-    # allowlist only those three ops for production hardening.
+    # Tight seccomp profile: Docker default + io_uring_{setup,enter,register}.
+    # For quick-start without the profile, overlay with compose.single.dev.yml.
     security_opt:
-      - seccomp:unconfined
+      - seccomp:./seccomp-flash.json
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s

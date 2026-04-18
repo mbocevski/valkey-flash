@@ -14,10 +14,9 @@ x-flash-node: &flash-node
   build:
     context: ..
     dockerfile: docker/Dockerfile
-  # io_uring requires syscalls blocked by Docker's default seccomp profile.
-  # See docker/Dockerfile note. Use a custom allowlist profile for production.
+  # Tight seccomp profile: Docker default + io_uring_{setup,enter,register}.
   security_opt:
-    - seccomp:unconfined
+    - seccomp:./seccomp-flash.json
   environment: &flash-env
     FLASH_PATH: /var/lib/valkey-flash/flash.bin
     FLASH_CAPACITY_BYTES: "67108864"   # 64 MiB per node
