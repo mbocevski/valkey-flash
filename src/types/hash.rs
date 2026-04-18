@@ -54,7 +54,24 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
     // in a command handler. Valkey calls this callback exactly once per key
     // deletion / eviction — never while the key is still accessible.
-    drop(Box::from_raw(value.cast::<FlashHashObject>()));
+    let obj = Box::from_raw(value.cast::<FlashHashObject>());
+    if let Tier::Cold {
+        key_hash,
+        backend_offset,
+        num_blocks,
+        ..
+    } = obj.tier
+    {
+        if let Some(storage) = crate::STORAGE.get() {
+            storage.release_cold_blocks(backend_offset, num_blocks);
+        }
+        if let Some(wal) = crate::WAL.get() {
+            let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
+        }
+        if let Ok(mut map) = crate::TIERING_MAP.lock() {
+            map.remove(&key_hash);
+        }
+    }
 }
 
 /// # Safety
@@ -151,10 +168,15 @@ mod tests {
     #[test]
     fn flash_hash_object_cold() {
         let obj = FlashHashObject {
-            tier: Tier::Cold { size_hint: 2048 },
+            tier: Tier::Cold {
+                key_hash: 0xdeadbeef,
+                backend_offset: 4096,
+                num_blocks: 1,
+                value_len: 64,
+            },
             ttl_ms: Some(5000),
         };
-        assert!(matches!(obj.tier, Tier::Cold { size_hint: 2048 }));
+        assert!(matches!(obj.tier, Tier::Cold { .. }));
         assert_eq!(obj.ttl_ms, Some(5000));
     }
 
@@ -191,7 +213,12 @@ mod tests {
     #[test]
     fn mem_usage2_cold_reports_struct_only() {
         let obj = Box::new(FlashHashObject {
-            tier: Tier::Cold { size_hint: 4096 },
+            tier: Tier::Cold {
+                key_hash: 0,
+                backend_offset: 0,
+                num_blocks: 1,
+                value_len: 0,
+            },
             ttl_ms: None,
         });
         let ptr = Box::into_raw(obj) as *const c_void;

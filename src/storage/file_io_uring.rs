@@ -242,6 +242,45 @@ impl FileIoUringBackend {
         }
     }
 
+    /// Release cold-tier NVMe blocks into the free-list.
+    /// Called from the `free()` type callback on TTL expiry for cold keys.
+    /// Does NOT touch the STORAGE index — ownership already left the index at demotion time.
+    pub fn release_cold_blocks(&self, backend_offset: u64, num_blocks: u32) {
+        let block_start = backend_offset / BLOCK_SIZE as u64;
+        self.push_free_range(block_start, num_blocks);
+        BYTES_RECLAIMED.fetch_add(num_blocks as u64 * BLOCK_SIZE as u64, Ordering::Relaxed);
+    }
+
+    /// Remove a key from the STORAGE index without freeing its blocks.
+    /// Used by demotion: after `put()` writes the value, ownership transfers to
+    /// `Tier::Cold`, so the index entry must be removed to prevent double-free on
+    /// TTL expiry (which reclaims via `release_cold_blocks`).
+    pub fn remove_from_index(&self, key: &[u8]) {
+        if let Ok(mut idx) = self.index.lock() {
+            idx.remove(key);
+        }
+    }
+
+    /// Read `value_len` bytes from NVMe starting at byte offset `backend_offset`.
+    /// Used by the cold-tier read path (FLASH.GET) and rdb_save for cold objects.
+    pub fn read_at_offset(&self, backend_offset: u64, value_len: u32) -> StorageResult<Vec<u8>> {
+        let num_blocks = Self::blocks_needed(value_len as usize);
+        let buf_size = num_blocks as usize * BLOCK_SIZE;
+        let mut buf = AlignedBuf::new(buf_size)?;
+        self.do_read(backend_offset, &mut buf)?;
+        let slice = buf.as_slice();
+        let len_bytes: [u8; 8] = slice[..8]
+            .try_into()
+            .map_err(|_| StorageError::Other("corrupt record: header too short".into()))?;
+        let stored_len = u64::from_le_bytes(len_bytes) as usize;
+        if stored_len != value_len as usize {
+            return Err(StorageError::Other(format!(
+                "header len {stored_len} != expected len {value_len}"
+            )));
+        }
+        Ok(slice[8..8 + stored_len].to_vec())
+    }
+
     /// Submit one sqe and wait for its cqe; return `cqe.result()`.
     fn submit_and_await(ring: &mut IoUring, entry: io_uring::squeue::Entry) -> StorageResult<i32> {
         // SAFETY: the buffer referenced by `entry` must outlive this call.

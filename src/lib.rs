@@ -38,6 +38,7 @@ use crate::commands::aux_info::flash_aux_info_command;
 use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
 };
+use crate::commands::debug_demote::flash_debug_demote_command;
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::get::flash_get_command;
@@ -288,6 +289,7 @@ valkey_module! {
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write flash"],
         ["FLASH.AUX.INFO", flash_aux_info_command, "readonly", 0, 0, 0, "read flash"],
+        ["FLASH.DEBUG.DEMOTE", flash_debug_demote_command, "write", 1, 1, 1, "write flash"],
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "read flash"],
         ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "read flash"],
         ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "write flash"],

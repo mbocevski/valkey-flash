@@ -78,9 +78,12 @@ pub fn flash_get_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    // Open key read-only, type-check, and extract the tier.
+    // Open key read-only, type-check, and extract tier info.
     // Scoped so key_handle is dropped before any blocking operation.
-    let tier_value: Option<Vec<u8>> = {
+    let tier_value: Option<Vec<u8>>;
+    let cold_info: Option<(u64, u32)>; // (backend_offset, value_len) for cold keys
+
+    {
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
@@ -97,11 +100,21 @@ pub fn flash_get_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         GET_MISSES.fetch_add(1, Ordering::Relaxed);
 
         match &obj.tier {
-            Tier::Hot(v) => Some(v.clone()),
-            Tier::Cold { .. } => None,
+            Tier::Hot(v) => {
+                tier_value = Some(v.clone());
+                cold_info = None;
+            }
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                tier_value = None;
+                cold_info = Some((*backend_offset, *value_len));
+            }
         }
         // key_handle (and borrow of obj) dropped here
-    };
+    }
 
     match tier_value {
         Some(value) => {
@@ -111,32 +124,33 @@ pub fn flash_get_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
             Ok(ValkeyValue::StringBuffer(value))
         }
         None => {
-            // Truly cold: value lives only on NVMe.
+            // Truly cold: value lives only on NVMe. Read via the stored offset so
+            // we don't need the STORAGE index (which is cleared on demotion).
+            let (backend_offset, value_len) = cold_info.unwrap();
+
             #[cfg(not(test))]
             {
-                use crate::storage::backend::StorageBackend;
-                let key_bytes = key.as_slice().to_vec();
                 let storage = crate::STORAGE
                     .get()
                     .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
                 let pool = crate::POOL
                     .get()
                     .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
+                let key_bytes = key.as_slice().to_vec();
                 let bc = ctx.block_client();
-                let handle = Box::new(GetCompletionHandle::new(bc, key_bytes.clone(), cache));
+                let handle = Box::new(GetCompletionHandle::new(bc, key_bytes, cache));
                 pool.submit_or_complete(handle, move || {
-                    storage.get(&key_bytes).and_then(|opt| {
-                        opt.ok_or(crate::storage::backend::StorageError::Other(
-                            "key not found on NVMe".into(),
-                        ))
-                    })
+                    storage.read_at_offset(backend_offset, value_len)
                 });
                 return Ok(ValkeyValue::NoReply);
             }
 
             // In test builds the server runtime is absent; return nil directly.
-            #[allow(unreachable_code)]
-            Ok(ValkeyValue::Null)
+            #[allow(unused_variables, unreachable_code)]
+            {
+                let _ = (backend_offset, value_len);
+                Ok(ValkeyValue::Null)
+            }
         }
     }
 }
@@ -186,7 +200,12 @@ mod tests {
 
     #[test]
     fn cold_tier_variant_matches_correctly() {
-        let tier: Tier<Vec<u8>> = Tier::Cold { size_hint: 256 };
+        let tier: Tier<Vec<u8>> = Tier::Cold {
+            key_hash: 0,
+            backend_offset: 0,
+            num_blocks: 1,
+            value_len: 0,
+        };
         assert!(matches!(tier, Tier::Cold { .. }));
         // Hot variant must NOT match Cold.
         let hot: Tier<Vec<u8>> = Tier::Hot(vec![1, 2, 3]);

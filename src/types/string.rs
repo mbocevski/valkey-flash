@@ -60,7 +60,28 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
     // in a command handler. Valkey calls this callback exactly once per key
     // deletion / eviction — never while the key is still accessible.
-    drop(Box::from_raw(value.cast::<FlashStringObject>()));
+    let obj = Box::from_raw(value.cast::<FlashStringObject>());
+    if let Tier::Cold {
+        key_hash,
+        backend_offset,
+        num_blocks,
+        ..
+    } = obj.tier
+    {
+        // Reclaim NVMe blocks so the space can be reused.
+        if let Some(storage) = crate::STORAGE.get() {
+            storage.release_cold_blocks(backend_offset, num_blocks);
+        }
+        // WAL tombstone: prevents recovery from re-promoting this key after a crash.
+        if let Some(wal) = crate::WAL.get() {
+            let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
+        }
+        // Remove from TIERING_MAP so recovery is not confused by a stale entry.
+        if let Ok(mut map) = crate::TIERING_MAP.lock() {
+            map.remove(&key_hash);
+        }
+    }
+    // obj (and any Hot payload) drops here
 }
 
 /// # Safety
@@ -105,14 +126,24 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
         Tier::Hot(v) => {
             raw::save_slice(io, v);
         }
-        Tier::Cold { .. } => {
-            // No key available here; cannot fetch from NVMe. Log and write empty
-            // bytes — the loaded key will have an empty value.
-            logging::log_warning(
-                "flash: rdb_save on Tier::Cold object — value cannot be materialised; \
-                 writing empty bytes (demotion support required)",
-            );
-            raw::save_slice(io, &[]);
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            // Fetch the value from NVMe using the offset stored in the Cold variant.
+            match crate::STORAGE
+                .get()
+                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+            {
+                Some(bytes) => raw::save_slice(io, &bytes),
+                None => {
+                    logging::log_warning(
+                        "flash: rdb_save on Tier::Cold: NVMe read failed; writing empty bytes",
+                    );
+                    raw::save_slice(io, &[]);
+                }
+            }
         }
     }
 }
@@ -372,10 +403,15 @@ mod tests {
     #[test]
     fn flash_string_object_cold() {
         let obj = FlashStringObject {
-            tier: Tier::Cold { size_hint: 1024 },
+            tier: Tier::Cold {
+                key_hash: 0xdeadbeef,
+                backend_offset: 4096,
+                num_blocks: 1,
+                value_len: 5,
+            },
             ttl_ms: Some(5000),
         };
-        assert!(matches!(obj.tier, Tier::Cold { size_hint: 1024 }));
+        assert!(matches!(obj.tier, Tier::Cold { .. }));
         assert_eq!(obj.ttl_ms, Some(5000));
     }
 
@@ -398,7 +434,12 @@ mod tests {
     #[test]
     fn mem_usage2_cold_reports_struct_only() {
         let obj = Box::new(FlashStringObject {
-            tier: Tier::Cold { size_hint: 4096 },
+            tier: Tier::Cold {
+                key_hash: 0,
+                backend_offset: 0,
+                num_blocks: 1,
+                value_len: 0,
+            },
             ttl_ms: None,
         });
         let ptr = Box::into_raw(obj) as *const c_void;
