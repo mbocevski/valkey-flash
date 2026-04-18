@@ -267,7 +267,7 @@ Each resharding operation requires:
 - **Network bandwidth**: normal MIGRATE traffic (depends on your key sizes and
   key count per slot)
 - **NVMe read bandwidth**: pre-warm phase reads Cold keys from NVMe on the source
-  node. At 100 Mbps (the default cap), a 10 GiB cold slot takes ~800 seconds to
+  node. At 100 Mbps (the default cap), a 10 GiB cold slot takes ~860 seconds to
   pre-warm fully. Increase `flash.migration-bandwidth-mbps` for faster reshards.
 
 **Concurrent reshards** multiply the NVMe read load. If your NVMe device sustains
@@ -381,9 +381,9 @@ keyspace size per slot.
 ### Replica not serving Flash keys after promotion
 
 If the promoted replica was running with `flash.replica-tier-enabled=false`, its
-NVMe backend opens on first write, not on promotion. Cold keys from the old primary
-are not immediately in the new primary's hot cache. Warm the cache by reading keys
-or waiting for traffic. For instant post-promotion availability of Cold keys, enable
+NVMe backend opens on promotion (`REPLICAOF NO ONE`), not deferred to the first
+write. Cold keys from the old primary are not immediately in the new primary's hot
+cache. Warm the cache by reading keys or waiting for traffic. For instant post-promotion availability of Cold keys, enable
 `flash.replica-tier-enabled=true` before the next failover.
 
 ---
