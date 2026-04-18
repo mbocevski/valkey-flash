@@ -330,8 +330,7 @@ If this is causing unacceptable latency spikes:
 
 Or manually promote oversized Cold keys to Hot before starting the migration:
 ```sh
-FLASH.DEBUG.DEMOTE <key>   # demote hot → cold (for testing)
-FLASH.GET <key>            # read triggers hot promotion
+FLASH.GET <key>   # read triggers hot promotion (Cold → Hot)
 ```
 
 ### `ERR FLASH-MIGRATE target <addr> invalid address`
