@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
@@ -70,12 +70,13 @@ pub static TIERING_MAP: LazyLock<Mutex<HashMap<u64, TierEntry>>> =
 pub static MODULE_STATE: LazyLock<Mutex<ModuleState>> =
     LazyLock::new(|| Mutex::new(ModuleState::Recovering));
 
-/// Signal the background compaction thread to exit on module unload.
-static COMPACTION_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+/// Shutdown signal for the background compaction thread.
+/// `deinitialize` locks the mutex, sets the flag, notifies the condvar, then
+/// joins the thread — guaranteeing exit before `dlclose()` unmaps the `.so`.
+static COMPACTION_SHUTDOWN: LazyLock<(Mutex<bool>, std::sync::Condvar)> =
+    LazyLock::new(|| (Mutex::new(false), std::sync::Condvar::new()));
 
 /// Join handle for the background compaction thread.
-/// `deinitialize` takes the handle and joins it so the thread exits before
-/// `dlclose()` unmaps the `.so` text segment.
 static COMPACTION_THREAD: LazyLock<Mutex<Option<std::thread::JoinHandle<()>>>> =
     LazyLock::new(|| Mutex::new(None));
 
@@ -206,17 +207,29 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
     let _ = CACHE.set(FlashCache::new(cache_size));
     let _ = POOL.set(AsyncThreadPool::new(io_threads));
 
+    // Reset shutdown flag before spawning (handles a re-load within the same process).
+    if let Ok(mut flag) = COMPACTION_SHUTDOWN.0.lock() {
+        *flag = false;
+    }
+
     // Background compaction thread: coalesces the free-list every
-    // flash.compaction-interval-sec seconds. Sleeps in 100 ms increments so
-    // module unload (COMPACTION_SHUTDOWN) is noticed quickly.
-    COMPACTION_SHUTDOWN.store(false, Ordering::Relaxed);
+    // flash.compaction-interval-sec seconds. Uses Condvar::wait_timeout so that
+    // a shutdown signal from deinitialize() wakes the thread immediately rather
+    // than waiting up to one full tick interval.
     let handle = std::thread::spawn(|| {
+        let (lock, cvar) = &*COMPACTION_SHUTDOWN;
         let mut elapsed_decisecs: u64 = 0; // units of 100 ms
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if COMPACTION_SHUTDOWN.load(Ordering::Relaxed) {
-                return;
+            // Sleep at most 100 ms, or until notified (shutdown).
+            let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            let (guard, _) = cvar
+                .wait_timeout(guard, std::time::Duration::from_millis(100))
+                .unwrap_or_else(|e| e.into_inner());
+            if *guard {
+                return; // shutdown flag set
             }
+            drop(guard);
+
             elapsed_decisecs += 1;
             let interval_decisecs =
                 FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed) as u64 * 10;
@@ -240,9 +253,18 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
 }
 
 fn deinitialize(_ctx: &Context) -> Status {
-    // Signal the compaction thread to stop, then join it (≤ 100 ms wait).
-    // This must complete before dlclose() unmaps the .so text segment.
-    COMPACTION_SHUTDOWN.store(true, Ordering::Relaxed);
+    // Set the shutdown flag and wake the compaction thread immediately via the
+    // condvar, then join it.  This guarantees the thread exits before
+    // dlclose() unmaps the .so text segment.  The wait is bounded by one
+    // condvar wait_timeout (≤ 100 ms) plus the duration of any in-progress
+    // compaction tick (purely in-memory, negligible).
+    {
+        let (lock, cvar) = &*COMPACTION_SHUTDOWN;
+        if let Ok(mut flag) = lock.lock() {
+            *flag = true;
+        }
+        cvar.notify_one();
+    }
     if let Ok(mut guard) = COMPACTION_THREAD.lock() {
         if let Some(handle) = guard.take() {
             let _ = handle.join();
