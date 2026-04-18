@@ -25,9 +25,11 @@ pub fn list_serialize(items: &VecDeque<Vec<u8>>) -> Vec<u8> {
 /// Decode bytes back to a list. Returns `None` on any structural corruption.
 ///
 /// Element count is capped at 1 << 20 (≈ 1 M) to prevent OOM from a corrupt
-/// 4-byte count field on a degraded NVMe device.
+/// 4-byte count field on a degraded NVMe device.  Individual elements are
+/// capped at 512 MiB to bound per-element allocation.
 pub fn list_deserialize(bytes: &[u8]) -> Option<VecDeque<Vec<u8>>> {
     const MAX_ELEMENTS: usize = 1 << 20;
+    const MAX_ELEMENT_BYTES: usize = 512 * 1024 * 1024;
     if bytes.len() < 4 {
         return None;
     }
@@ -43,6 +45,9 @@ pub fn list_deserialize(bytes: &[u8]) -> Option<VecDeque<Vec<u8>>> {
         }
         let elen = u32::from_le_bytes(bytes[pos..pos + 4].try_into().ok()?) as usize;
         pos += 4;
+        if elen > MAX_ELEMENT_BYTES {
+            return None;
+        }
         if pos + elen > bytes.len() {
             return None;
         }
@@ -82,7 +87,9 @@ pub struct FlashListObject {
 
 const ENCODING_VERSION: i32 = 1;
 
-// RDB format: [u64 encoding_version][u64 shape_tag][i64 ttl_ms][serialized_list_bytes]
+/// RDB format (v1):
+//   [u64 encoding_version=1][u64 shape_tag=0x03][i64 ttl_ms]
+//   [u64 count][save_slice(elem)×count]
 const SHAPE_TAG_LIST: u64 = 0x03;
 const TTL_NONE_SENTINEL: i64 = -1;
 
@@ -156,7 +163,8 @@ pub unsafe extern "C" fn mem_usage2(
 
 /// # Safety
 ///
-/// Wire format: [u64 encoding_version][u64 shape_tag=0x03][i64 ttl_ms][list_bytes]
+/// RDB format (v1): `[u64 encoding_version=1][u64 shape_tag=0x03][i64 ttl_ms]`
+///                  `[u64 count][save_slice(elem)×count]`
 pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
     let obj = &*value.cast::<FlashListObject>();
 
@@ -166,7 +174,10 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
 
     match &obj.tier {
         Tier::Hot(items) => {
-            raw::save_slice(io, &list_serialize(items));
+            raw::save_unsigned(io, items.len() as u64);
+            for elem in items {
+                raw::save_slice(io, elem);
+            }
         }
         Tier::Cold {
             backend_offset,
@@ -176,13 +187,20 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             match crate::STORAGE
                 .get()
                 .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                .and_then(|b| list_deserialize(&b))
             {
-                Some(bytes) => raw::save_slice(io, &bytes),
+                Some(items) => {
+                    raw::save_unsigned(io, items.len() as u64);
+                    for elem in &items {
+                        raw::save_slice(io, elem);
+                    }
+                }
                 None => {
                     logging::log_warning(
-                        "flash: rdb_save on Tier::Cold list: NVMe read failed; writing empty bytes",
+                        "flash: rdb_save on Tier::Cold list: NVMe read/deserialize failed; \
+                         writing empty list",
                     );
-                    raw::save_slice(io, &list_serialize(&VecDeque::new()));
+                    raw::save_unsigned(io, 0u64);
                 }
             }
         }
@@ -191,6 +209,9 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
+    const MAX_LIST_ELEMENTS: u64 = (1 << 20) as u64;
+    const MAX_ELEMENT_BYTES: usize = 512 * 1024 * 1024;
+
     if encver > ENCODING_VERSION {
         logging::log_warning(
             format!(
@@ -237,21 +258,48 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    let list_bytes = match raw::load_string_buffer(io) {
-        Ok(buf) => buf.as_ref().to_vec(),
-        Err(_) => {
-            logging::log_warning("flash: rdb_load list: short read on list bytes");
-            return null_mut();
-        }
-    };
 
-    let items = match list_deserialize(&list_bytes) {
-        Some(l) => l,
-        None => {
-            logging::log_warning("flash: rdb_load list: corrupt list bytes");
+    let count = match raw::load_unsigned(io) {
+        Ok(c) => c,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load list: short read on element count");
             return null_mut();
         }
     };
+    if count > MAX_LIST_ELEMENTS {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load list: element count {count} exceeds cap {MAX_LIST_ELEMENTS}"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    let mut items = VecDeque::with_capacity(count as usize);
+    for i in 0..count {
+        let elem_buf = match raw::load_string_buffer(io) {
+            Ok(buf) => buf,
+            Err(_) => {
+                logging::log_warning(
+                    format!("flash: rdb_load list: short read on element {i}").as_str(),
+                );
+                return null_mut();
+            }
+        };
+        if elem_buf.as_ref().len() > MAX_ELEMENT_BYTES {
+            logging::log_warning(
+                format!(
+                    "flash: rdb_load list: element {i} size {} exceeds 512 MiB cap",
+                    elem_buf.as_ref().len()
+                )
+                .as_str(),
+            );
+            return null_mut();
+        }
+        items.push_back(elem_buf.as_ref().to_vec());
+    }
+
     let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
         None
     } else {
@@ -267,8 +315,13 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
 
 /// # Safety
 ///
-/// Emit one `FLASH.RPUSH key elem` command per element to preserve list order.
-/// TTL emitted as a separate `PEXPIREAT` command.
+/// Emit `FLASH.RPUSH key e1 e2 … e128` commands in chunks of up to 128
+/// elements to preserve list order, then a `PEXPIREAT` if a TTL is set.
+///
+/// Uses the `'sv'` EmitAOF format (key as `s`, element array as `v`) so the
+/// number of elements per command is fully dynamic without variadic-arity
+/// tricks: `GetContextFromIO` + `CreateString` build the array; `FreeString`
+/// releases it after each emit call.
 pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
@@ -298,25 +351,77 @@ pub unsafe extern "C" fn aof_rewrite(
             return;
         }
     };
+    let get_ctx_fn = match raw::RedisModule_GetContextFromIO {
+        Some(f) => f,
+        None => {
+            logging::log_warning("flash: aof_rewrite list: GetContextFromIO is null");
+            return;
+        }
+    };
+    let create_str_fn = match raw::RedisModule_CreateString {
+        Some(f) => f,
+        None => {
+            logging::log_warning("flash: aof_rewrite list: CreateString is null");
+            return;
+        }
+    };
+    let free_str_fn = match raw::RedisModule_FreeString {
+        Some(f) => f,
+        None => {
+            logging::log_warning("flash: aof_rewrite list: FreeString is null");
+            return;
+        }
+    };
 
+    let ctx = get_ctx_fn(aof);
     let rpush_cmd = match CString::new("FLASH.RPUSH") {
         Ok(s) => s,
         Err(_) => return,
     };
-    let fmt_sb = match CString::new("sb") {
+    // 's' = RedisModuleString* (the key), 'v' = (RedisModuleString**, size_t) array
+    let fmt_sv = match CString::new("sv") {
         Ok(s) => s,
         Err(_) => return,
     };
 
-    for elem in items {
+    const CHUNK_SIZE: usize = 128;
+    let items_vec: Vec<&Vec<u8>> = items.iter().collect();
+    for chunk in items_vec.chunks(CHUNK_SIZE) {
+        // Allocate one RedisModuleString* per element in this chunk.
+        let mut strs: Vec<*mut raw::RedisModuleString> = Vec::with_capacity(chunk.len());
+        let mut alloc_ok = true;
+        for &elem in chunk {
+            let s = create_str_fn(ctx, elem.as_ptr().cast::<c_char>(), elem.len());
+            if s.is_null() {
+                alloc_ok = false;
+                break;
+            }
+            strs.push(s);
+        }
+        if !alloc_ok {
+            for &s in &strs {
+                free_str_fn(ctx, s);
+            }
+            logging::log_warning(
+                "flash: aof_rewrite list: CreateString returned null; aborting",
+            );
+            return;
+        }
+
+        // EmitAOF: FLASH.RPUSH key e1 … eN  (N ≤ 128)
+        // 'v' consumes (robj**, size_t) — equivalent to (*mut RedisModuleString*, usize).
         emit(
             aof,
             rpush_cmd.as_ptr(),
-            fmt_sb.as_ptr(),
+            fmt_sv.as_ptr(),
             key,
-            elem.as_ptr().cast::<c_char>(),
-            elem.len(),
+            strs.as_ptr(),
+            strs.len(),
         );
+
+        for &s in &strs {
+            free_str_fn(ctx, s);
+        }
     }
 
     if let Some(ttl) = obj.ttl_ms {
@@ -552,5 +657,39 @@ mod tests {
     #[test]
     fn struct_size_regression() {
         const { assert!(std::mem::size_of::<FlashListObject>() <= 96) };
+    }
+
+    #[test]
+    fn deserialize_oversized_element_returns_none() {
+        // Construct a list_serialize buffer that claims an element of 512 MiB + 1 byte.
+        // The count field (u32) says 1 element; the length field (u32) says MAX_ELEMENT_BYTES+1.
+        // Deserialize should reject it without trying to allocate.
+        const OVER: usize = 512 * 1024 * 1024 + 1;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        bytes.extend_from_slice(&(OVER as u32).to_le_bytes()); // elem len = OVER
+        // Don't actually append OVER bytes — the cap check must fire first.
+        assert!(list_deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn deserialize_element_at_cap_limit_works() {
+        // A single element whose claimed length equals MAX_ELEMENT_BYTES must
+        // still be rejected at the cap (not at elen > MAX_ELEMENT_BYTES).
+        // Verify that elements well under the cap pass through.
+        let mut list = VecDeque::new();
+        list.push_back(vec![0u8; 1024]); // 1 KiB — well under cap
+        let bytes = list_serialize(&list);
+        let out = list_deserialize(&bytes).unwrap();
+        assert_eq!(out[0].len(), 1024);
+    }
+
+    #[test]
+    fn deserialize_count_exceeds_cap_returns_none() {
+        // count = 1 << 20 + 1, which exceeds MAX_ELEMENTS.
+        let count: u32 = (1 << 20) + 1;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&count.to_le_bytes());
+        assert!(list_deserialize(&bytes).is_none());
     }
 }
