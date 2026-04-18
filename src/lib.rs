@@ -538,7 +538,7 @@ valkey_module! {
             ["cluster-mode-enabled", &*FLASH_CLUSTER_MODE_ENABLED, FLASH_CLUSTER_MODE_ENABLED_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
         ],
         bool: [
-            ["replica-tier-enabled", &FLASH_REPLICA_TIER_ENABLED, false, ConfigurationFlags::DEFAULT, None],
+            ["replica-tier-enabled", &FLASH_REPLICA_TIER_ENABLED, false, ConfigurationFlags::IMMUTABLE, None],
         ],
         enum: [
             ["sync", &*FLASH_SYNC, SyncMode::everysec, ConfigurationFlags::DEFAULT,
