@@ -177,10 +177,11 @@ def scenario_flash_set_vs_set(module_path: str, server_bin: str,
                 results[f"flash_set_{label}"] = compute_stats(flash_times)
                 results[f"native_set_{label}"] = compute_stats(set_times)
     finally:
-        try:
-            os.unlink(flash_path)
-        except OSError:
-            pass
+        for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
     return results
 
 
@@ -210,10 +211,11 @@ def scenario_flash_get_hot(module_path: str, server_bin: str,
             for i in range(OPS):
                 times.append(measure_get(client, "FLASH.GET", f"hot:{i % n_keys}"))
     finally:
-        try:
-            os.unlink(flash_path)
-        except OSError:
-            pass
+        for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
     return {"flash_get_hot": compute_stats(times)}
 
 
@@ -245,10 +247,11 @@ def scenario_flash_get_cold(module_path: str, server_bin: str,
                 key_idx = i % n_keys  # cycle through entire working set
                 times.append(measure_get(client, "FLASH.GET", f"cold:{key_idx}"))
     finally:
-        try:
-            os.unlink(flash_path)
-        except OSError:
-            pass
+        for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
     return {"flash_get_cold": compute_stats(times)}
 
 
@@ -327,6 +330,7 @@ def main() -> None:
     results["_meta"] = {
         "valkey_version": server_version,
         "ops_per_scenario": OPS,
+        "thresholds_unit": "µs",
         "thresholds": THRESHOLDS,
     }
 
