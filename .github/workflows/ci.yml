@@ -98,7 +98,7 @@ jobs:
     - name: Set module path
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests
-      run: python -m pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
+      run: python -m pytest --cache-clear -v tests/
 
   asan-build:
     name: ASAN / Valkey ${{ matrix.server_version }}
@@ -186,7 +186,7 @@ jobs:
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests with ASAN
       run: |
-        python -m pytest --capture=sys --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py -m "not skip_for_asan" 2>&1 | tee test_output.tmp
+        python -m pytest --capture=sys --cache-clear -v tests/ -m "not skip_for_asan" 2>&1 | tee test_output.tmp
 
         if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
           echo "Memory leaks detected in the following tests:"

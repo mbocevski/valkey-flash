@@ -1,6 +1,8 @@
 import sys
 import os
 
+import pytest
+
 _tests_dir = os.path.abspath(os.path.dirname(__file__))
 
 # Make test helpers and the vendored test framework importable
@@ -11,3 +13,11 @@ sys.path.insert(0, os.path.join(_tests_dir, "build/valkeytestframework"))
 # Register Docker-based fixtures when USE_DOCKER=1.
 if os.environ.get("USE_DOCKER", "0") == "1":
     from docker_fixtures import docker_single, docker_cluster  # noqa: F401
+
+
+def pytest_collection_modifyitems(config, items):
+    if os.environ.get("USE_DOCKER") != "1":
+        skip_docker = pytest.mark.skip(reason="USE_DOCKER=1 not set")
+        for item in items:
+            if any(m.name.startswith("docker_") for m in item.iter_markers()):
+                item.add_marker(skip_docker)
