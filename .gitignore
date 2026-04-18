@@ -29,3 +29,8 @@ fuzz/corpus/
 # OS
 .DS_Store
 Thumbs.db
+
+# Valkey default RDB/AOF dumps (generated when valkey-server runs from repo root)
+/dump.rdb
+/appendonly.aof
+/appendonly.aof.*
