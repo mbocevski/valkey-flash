@@ -244,10 +244,11 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
 ///
 /// Emit a `FLASH.SET key value [PXAT <ms>]` command into the AOF rewrite buffer.
 ///
-/// Cold-tier limitation (v1): `aof_rewrite` receives no key bytes, so cold
-/// objects cannot be fetched from NVMe. Since no code currently creates
-/// `Tier::Cold` objects, this branch is unreachable. If reached, a warning is
-/// logged and the key is skipped (tracked in task #57).
+/// Cold-tier limitation (v1): `aof_rewrite` receives no key bytes and no NVMe
+/// offset, so cold objects cannot be reconstructed. Unlike `rdb_save` (which
+/// has the byte offset in `Tier::Cold` and can call `read_at_offset`), AOF
+/// rewrite has no equivalent hook. Keys demoted via `FLASH.DEBUG.DEMOTE` will
+/// reach this branch — a warning is logged and the key is skipped.
 pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,

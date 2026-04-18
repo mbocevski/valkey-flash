@@ -12,6 +12,11 @@ use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
 /// integration tests that need to exercise the cold-tier read and TTL-expiry
 /// paths without real eviction pressure.
 ///
+/// **Production note:** This command should be restricted via ACL in production
+/// deployments: `ACL SETUSER default -FLASH.DEBUG.DEMOTE`. The NVMe write runs
+/// synchronously on the event loop, which is acceptable for tests but not for
+/// production traffic.
+///
 /// Steps:
 ///   1. Write the hot value to NVMe via `storage.put()` (returns byte offset).
 ///   2. Remove from STORAGE index (`remove_from_index`): ownership transfers to
