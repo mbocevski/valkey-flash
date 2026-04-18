@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::os::raw::c_void;
+use std::ffi::CString;
+use std::os::raw::{c_char, c_void};
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
@@ -101,16 +102,20 @@ pub struct FlashHashObject {
 
 const ENCODING_VERSION: i32 = 1;
 
+// RDB format constants (spec #51, v1 inline format):
+//   [u64 encoding_version][u64 shape_tag][i64 ttl_ms][serialized_hash_bytes]
+const SHAPE_TAG_HASH: u64 = 0x02;
+// Sentinel stored in the RDB ttl_ms field when the key has no expiry.
+const TTL_NONE_SENTINEL: i64 = -1;
+
 // "flashhsh1" is exactly 9 chars — satisfies the module-type-id constraint.
 pub static FLASH_HASH_TYPE: ValkeyType = ValkeyType::new(
     "flashhsh1",
     ENCODING_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
-        // rdb_save/rdb_load are None until task #25: a registered rdb_load returning
-        // null_mut() triggers rdbReportCorruptRDB → server exit (rdb.c:2942).
-        rdb_load: None,
-        rdb_save: None,
+        rdb_load: Some(rdb_load),
+        rdb_save: Some(rdb_save),
         aof_rewrite: Some(aof_rewrite),
         digest: Some(digest),
         // mem_usage (v1) intentionally None; real accounting is in mem_usage2 (v2).
@@ -178,12 +183,223 @@ pub unsafe extern "C" fn mem_usage2(
 }
 
 /// # Safety
+///
+/// Serialise a `FlashHashObject` into the RDB stream.
+///
+/// Wire format (spec #51 v1):
+///   [u64 encoding_version = 1][u64 shape_tag = 0x02][i64 ttl_ms|-1][hash_bytes]
+///
+/// `hash_bytes` is the `hash_serialize` encoding (same format used for NVMe/cache).
+/// For Cold objects, the bytes are fetched from NVMe via `read_at_offset`.
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+    let obj = &*value.cast::<FlashHashObject>();
+
+    raw::save_unsigned(io, ENCODING_VERSION as u64);
+    raw::save_unsigned(io, SHAPE_TAG_HASH);
+
+    let ttl = obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL);
+    raw::save_signed(io, ttl);
+
+    match &obj.tier {
+        Tier::Hot(fields) => {
+            let bytes = hash_serialize(fields);
+            raw::save_slice(io, &bytes);
+        }
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            match crate::STORAGE
+                .get()
+                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+            {
+                Some(bytes) => raw::save_slice(io, &bytes),
+                None => {
+                    logging::log_warning(
+                        "flash: rdb_save on Tier::Cold hash: NVMe read failed; writing empty bytes",
+                    );
+                    raw::save_slice(io, &hash_serialize(&HashMap::new()));
+                }
+            }
+        }
+    }
+}
+
+/// # Safety
+///
+/// Deserialise a `FlashHashObject` from the RDB stream. Returns a raw pointer
+/// to a heap-allocated object owned by Valkey, or `null_mut()` on any error.
+///
+/// All loaded values come back as `Tier::Hot` — cold tiering happens later via
+/// the eviction path.
+pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
+    if encver > ENCODING_VERSION {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load hash: unsupported module encoding version {encver} \
+                 (max supported: {ENCODING_VERSION})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    let version = match raw::load_unsigned(io) {
+        Ok(v) => v,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load hash: short read on encoding_version");
+            return null_mut();
+        }
+    };
+    if version > ENCODING_VERSION as u64 {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load hash: unsupported in-stream encoding_version {version} \
+                 (max supported: {ENCODING_VERSION})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    let tag = match raw::load_unsigned(io) {
+        Ok(t) => t,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load hash: short read on shape_tag");
+            return null_mut();
+        }
+    };
+    if tag != SHAPE_TAG_HASH {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load hash: unexpected shape_tag {tag:#04x} \
+                 (expected {SHAPE_TAG_HASH:#04x})"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    let ttl_raw = match raw::load_signed(io) {
+        Ok(t) => t,
+        Err(_) => {
+            logging::log_warning("flash: rdb_load hash: short read on ttl_ms");
+            return null_mut();
+        }
+    };
+    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
+        None
+    } else {
+        Some(ttl_raw)
+    };
+
+    let hash_bytes = match raw::load_string_buffer(io) {
+        Ok(buf) => buf.as_ref().to_vec(),
+        Err(_) => {
+            logging::log_warning("flash: rdb_load hash: short read on hash bytes");
+            return null_mut();
+        }
+    };
+
+    let fields = match hash_deserialize(&hash_bytes) {
+        Some(m) => m,
+        None => {
+            logging::log_warning("flash: rdb_load hash: corrupt hash bytes in RDB");
+            return null_mut();
+        }
+    };
+
+    let obj = Box::new(FlashHashObject {
+        tier: Tier::Hot(fields),
+        ttl_ms,
+    });
+
+    Box::into_raw(obj).cast::<c_void>()
+}
+
+/// # Safety
+///
+/// Emit `FLASH.HSET key field value` commands for each field in the hash.
+/// One command per field-value pair.  TTL (if any) is emitted as a separate
+/// `PEXPIREAT key abs_ms` command after all fields are written.
+///
+/// Cold-tier limitation (v1): cannot fetch from NVMe in this callback (no key
+/// bytes, no offset). Cold objects reach this branch only via FLASH.DEBUG.DEMOTE
+/// — a warning is logged and the key is skipped.
 pub unsafe extern "C" fn aof_rewrite(
-    _aof: *mut raw::RedisModuleIO,
-    _key: *mut raw::RedisModuleString,
-    _value: *mut c_void,
+    aof: *mut raw::RedisModuleIO,
+    key: *mut raw::RedisModuleString,
+    value: *mut c_void,
 ) {
-    // stub — AOF rewrite not yet implemented (task #25)
+    let obj = &*value.cast::<FlashHashObject>();
+
+    let fields = match &obj.tier {
+        Tier::Hot(f) => f,
+        Tier::Cold { .. } => {
+            logging::log_warning(
+                "flash: aof_rewrite on Tier::Cold hash — cannot fetch from NVMe without key; \
+                 skipping key",
+            );
+            return;
+        }
+    };
+
+    let emit = match raw::RedisModule_EmitAOF {
+        Some(f) => f,
+        None => {
+            logging::log_warning("flash: aof_rewrite hash: RedisModule_EmitAOF is null");
+            return;
+        }
+    };
+
+    let hset_cmd = match CString::new("FLASH.HSET") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    // format: key(s) field(b) value(b)
+    let fmt_sbb = match CString::new("sbb") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Sort fields for a deterministic AOF order.
+    let mut pairs: Vec<(&Vec<u8>, &Vec<u8>)> = fields.iter().collect();
+    pairs.sort_unstable_by_key(|(k, _)| *k);
+
+    for (field, val) in &pairs {
+        emit(
+            aof,
+            hset_cmd.as_ptr(),
+            fmt_sbb.as_ptr(),
+            key,
+            field.as_ptr().cast::<c_char>(),
+            field.len(),
+            val.as_ptr().cast::<c_char>(),
+            val.len(),
+        );
+    }
+
+    // Emit TTL as a separate PEXPIREAT command so the absolute expiry is preserved
+    // correctly across restarts (mirrors the PXAT approach used for FlashString).
+    if let Some(ttl) = obj.ttl_ms {
+        let pexpireat_cmd = match CString::new("PEXPIREAT") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        // format: key(s) abs_ms(l)
+        let fmt_sl = match CString::new("sl") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        emit(
+            aof,
+            pexpireat_cmd.as_ptr(),
+            fmt_sl.as_ptr(),
+            key,
+            ttl as std::os::raw::c_longlong,
+        );
+    }
 }
 
 /// # Safety
