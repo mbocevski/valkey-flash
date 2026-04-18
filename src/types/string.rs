@@ -4,6 +4,7 @@ use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
 
 use super::Tier;
+use crate::persistence::aux;
 
 // ── FlashStringObject ─────────────────────────────────────────────────────────
 
@@ -35,10 +36,11 @@ pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
         // mem_usage (v1) intentionally None; real accounting is in mem_usage2 (v2).
         mem_usage: None,
         free: Some(free),
-        aux_load: None,
-        aux_save: None,
+        aux_load: Some(aux::aux_load),
+        aux_save: Some(aux::aux_save),
         aux_save2: None,
-        aux_save_triggers: 0,
+        // BEFORE_RDB (1) | AFTER_RDB (2)
+        aux_save_triggers: raw::Aux::Before as i32 | raw::Aux::After as i32,
         free_effort: None,
         unlink: None,
         copy: Some(copy),
