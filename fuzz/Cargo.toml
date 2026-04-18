@@ -1,0 +1,37 @@
+[package]
+name = "valkey-flash-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Opt out of the parent workspace so nightly-only fuzz deps stay isolated.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "=0.4.7"
+tempfile = "3"
+
+[dependencies.valkey-flash]
+path = ".."
+features = ["enable-system-alloc", "fuzzing"]
+
+[[bin]]
+name = "fuzz_wal_record_parser"
+path = "fuzz_targets/fuzz_wal_record_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_rdb_deserializer"
+path = "fuzz_targets/fuzz_rdb_deserializer.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cache_ops"
+path = "fuzz_targets/fuzz_cache_ops.rs"
+test = false
+doc = false

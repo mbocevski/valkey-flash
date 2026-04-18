@@ -346,6 +346,59 @@ pub unsafe extern "C" fn defrag(
     0
 }
 
+// ── Fuzz helpers ─────────────────────────────────────────────────────────────
+
+/// Pure-Rust parsing path for fuzz testing. Uses simple LE binary encoding:
+/// `[u64 LE version][u64 LE shape_tag][i64 LE ttl_ms][u64 LE val_len][val_len bytes]`
+///
+/// This encoding does NOT match Valkey's RDB wire format (which goes through
+/// `RedisModule_LoadUnsigned` FFI). It exercises the same parsing invariants
+/// (version check, tag check, TTL sentinel, value-size bounds) in pure Rust.
+#[cfg(feature = "fuzzing")]
+pub fn fuzz_decode_rdb(data: &[u8]) -> Option<FlashStringObject> {
+    use std::io::{Cursor, Read};
+    let mut cur = Cursor::new(data);
+    let mut b8 = [0u8; 8];
+
+    macro_rules! ru64 {
+        () => {{
+            cur.read_exact(&mut b8).ok()?;
+            u64::from_le_bytes(b8)
+        }};
+    }
+    macro_rules! ri64 {
+        () => {{
+            cur.read_exact(&mut b8).ok()?;
+            i64::from_le_bytes(b8)
+        }};
+    }
+
+    let version = ru64!();
+    if version > ENCODING_VERSION as u64 {
+        return None;
+    }
+    let tag = ru64!();
+    if tag != SHAPE_TAG_STRING {
+        return None;
+    }
+    let ttl_raw = ri64!();
+    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
+        None
+    } else {
+        Some(ttl_raw)
+    };
+    let val_len = ru64!() as usize;
+    if val_len > 4 * 1024 * 1024 {
+        return None;
+    }
+    let mut value = vec![0u8; val_len];
+    cur.read_exact(&mut value).ok()?;
+    Some(FlashStringObject {
+        tier: Tier::Hot(value),
+        ttl_ms,
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

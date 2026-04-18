@@ -286,6 +286,39 @@ jobs:
         path: latency-report.json
         if-no-files-found: ignore
 
+  fuzz-smoke:
+    name: Fuzz smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Install Rust nightly
+      run: rustup toolchain install nightly --no-self-update --profile minimal
+    - name: Install cargo-fuzz
+      run: cargo install --version =0.13.1 --locked cargo-fuzz
+    - name: Fuzz wal_record_parser (30s)
+      run: cargo +nightly fuzz run fuzz_wal_record_parser -- -max_total_time=30
+    - name: Fuzz rdb_deserializer (30s)
+      run: cargo +nightly fuzz run fuzz_rdb_deserializer -- -max_total_time=30
+    - name: Fuzz cache_ops (30s)
+      run: cargo +nightly fuzz run fuzz_cache_ops -- -max_total_time=30
+    - name: Upload crash artifacts
+      if: failure()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: fuzz-crashes
+        path: fuzz/artifacts/
+        if-no-files-found: ignore
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

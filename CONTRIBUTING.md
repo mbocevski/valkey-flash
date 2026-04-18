@@ -42,6 +42,21 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 - Line coverage target ≥ 85% (enforced in CI once sufficient code exists).
 - Every public command needs integration tests: happy path, error paths, RDB + AOF round-trip, replication, keyspace notifications.
 
+## Fuzzing
+
+Fuzz targets live in `fuzz/fuzz_targets/`. Running them requires nightly Rust and `cargo-fuzz`:
+
+```sh
+cargo install --version =0.13.1 --locked cargo-fuzz
+
+# 30-second smoke (all targets)
+cargo +nightly fuzz run fuzz_wal_record_parser -- -max_total_time=30
+cargo +nightly fuzz run fuzz_rdb_deserializer  -- -max_total_time=30
+cargo +nightly fuzz run fuzz_cache_ops         -- -max_total_time=30
+```
+
+Crashes land in `fuzz/artifacts/<target>/`. Corpus seeds are in `fuzz/corpus/<target>/`.
+
 ## Code of Conduct
 
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

@@ -22,7 +22,7 @@ bincode = "=1.3.3"
 tempfile = "3"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 name = "valkey_flash"
 
 [profile.dev]
@@ -35,3 +35,4 @@ default = ["min-valkey-compatibility-version-8-0"]
 enable-system-alloc = ["valkey-module/enable-system-alloc"]
 min-valkey-compatibility-version-8-0 = []
 valkey_8_0 = []
+fuzzing = ["enable-system-alloc"]

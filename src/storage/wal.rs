@@ -415,6 +415,17 @@ impl Iterator for RecordIter {
         let stored_crc =
             u32::from_le_bytes([frame_hdr[4], frame_hdr[5], frame_hdr[6], frame_hdr[7]]);
 
+        // Guard against OOM from a fuzz-crafted or corrupted length field.
+        // Largest valid WAL payload (Put) is 26 bytes; 4 KiB is a safe ceiling.
+        const MAX_PAYLOAD: usize = 4096;
+        if payload_len > MAX_PAYLOAD {
+            self.done = true;
+            return Some(Err(WalError::Corruption {
+                offset: self.offset,
+                reason: "payload_len exceeds maximum (possible corruption or truncated write)",
+            }));
+        }
+
         let mut payload = vec![0u8; payload_len];
         match self.file.read_exact(&mut payload) {
             Ok(()) => {}
