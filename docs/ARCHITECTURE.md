@@ -54,7 +54,7 @@ Background threads: a compaction worker reclaims freed blocks; the WAL flusher t
 
 **Per-shape types, not a unified type.** Each shape registers its own `ValkeyType` with its own module-type-id, encoding version, and callback set:
 
-- `FlashString` — `src/types/string.rs` — holds `Tier::Hot(Vec<u8>)` or `Tier::Cold { backend_offset, num_blocks, size_hint }`
+- `FlashString` — `src/types/string.rs` — holds `Tier::Hot(Vec<u8>)` or `Tier::Cold { key_hash, backend_offset, num_blocks, value_len }`
 - `FlashHash` — `src/types/hash.rs` — same Tier shape, payload is serialized `HashMap<Vec<u8>, Vec<u8>>`
 
 Rationale: clean command dispatch, separate RDB layouts (simpler forward-compat when a shape gains features), per-type defrag cursor. The Tier enum is the single source of truth for whether a value is in RAM or NVMe; every callback dispatches on it.
@@ -136,7 +136,7 @@ On module load:
 5. Truncate on CRC mismatch (torn tail). Fail loud on any other decode error.
 6. Mark module `ready`; log recovery stats.
 
-`FLASH.DEBUG STATE` returns `recovering|ready|error` for test observability.
+`FLASH.DEBUG.STATE` returns `recovering|ready|error` for test observability.
 
 ### 7.4 Durability matrix
 
@@ -152,7 +152,7 @@ On module load:
 
 - No wire protocol changes — `ctx.replicate("FLASH.SET", full_args)` sends byte-identical commands to replicas.
 - PSYNC / diskless resync compatible — replica materializes every value into RAM as writes arrive.
-- Failover (replica → primary): `on_role_changed` promotes the node. If `flash.replica-tier-enabled=false`, the primary lazy-initializes its NVMe backend on first write (task `#64`). If `flash.replica-tier-enabled=true`, the backend was already open — zero-latency failover.
+- Failover (replica → primary): `on_role_changed` promotes the node. If `flash.replica-tier-enabled=false`, the primary initializes its NVMe backend at promotion time (task `#64`). If `flash.replica-tier-enabled=true`, the backend was already open — no initialization step at all.
 
 **Opt-in symmetric tiering** (`flash.replica-tier-enabled`, task #82) — immutable config. Each node with it enabled opens its own flash backing file; tier decisions remain local to the node. Required constraint: **each node must have a unique `flash.path`**; there is no file locking.
 
@@ -169,7 +169,7 @@ On load: detect cluster mode via `CTX_FLAGS_CLUSTER`. Config knob `flash.cluster
 **Per-key atomic** for v1. Not chunked streaming.
 
 - Source probes target via `FLASH.MIGRATE.PROBE` before migration — verifies flash module loaded + capacity. Probe result cached for 60 s (`flash.migration-probe-cache-sec`).
-- Keys larger than `flash.migration-max-key-bytes` (default 64 MiB) are rejected with a clear error.
+- Keys larger than `flash.migration-max-key-bytes` (default 64 MiB) are skipped from the Phase 1 pre-warm and migrated via the NVMe-read path during the standard MIGRATE — no rejection, just a different code path that avoids doubling RAM pressure.
 - `DUMP/RESTORE` extension uses the same on-disk format as `rdb_save` (encoding_version + shape_tag + ttl_ms + value bytes).
 - **Atomicity:** source keeps ownership until target ACKs the RESTORE. On failure, source retains; nothing is migrated partially.
 - **Throttle** (task #79): `flash.migration-bandwidth-mbps` (default 100, `0` = unlimited, mutable at runtime). Cumulative expected-vs-actual bytes algorithm with microsecond precision — correct even when individual key migrations take sub-millisecond.
@@ -179,7 +179,6 @@ Error surface (all exact strings in code):
 - `ERR FLASH-MIGRATE target <addr> does not have flash-module loaded`
 - `ERR FLASH-MIGRATE target <addr> has flash-module but flash.path not configured`
 - `ERR FLASH-MIGRATE target <addr> insufficient flash capacity (need N bytes free, has M)` — triggering this requires the per-key capacity probe from `#96` (open as of v1 RC).
-- `ERR FLASH-MIGRATE key too large (N bytes > flash.migration-max-key-bytes)`
 - `ERR FLASH-MIGRATE timeout after Ns`
 
 ### 9.3 Redirect-safe dispatch (task #81)
@@ -196,13 +195,13 @@ Validated under stress: 4 concurrent clients, mixed SET/GET/HSET/HDEL, 1 or 16 s
 
 ## 10. Operational observability (tasks #30 + #80)
 
-`INFO flash` section exposes 22 fields. Partial list:
+`INFO flash` section exposes 23 fields. Partial list:
 
 - Cache: `cache_hit_ratio`, `cache_hits`, `cache_misses`, `cache_size_bytes`, `cache_capacity_bytes`
 - Storage: `storage_used_bytes`, `storage_free_bytes`, `storage_capacity_bytes`, `wal_size_bytes`
 - Compaction: `compaction_runs`, `compaction_bytes_reclaimed`
 - Tiering: `tiered_keys`, `eviction_count`
-- Cluster: `cluster_mode`, `migration_slots_in_progress`, `migration_bytes_sent`, `migration_keys_migrated`, `migration_keys_rejected`, `migration_last_duration_ms`, `migration_errors`, `migration_bandwidth_mbps`
+- Cluster: `cluster_mode`, `migration_slots_in_progress`, `migration_bytes_sent`, `migration_bytes_received`, `migration_keys_migrated`, `migration_keys_rejected`, `migration_last_duration_ms`, `migration_errors`, `migration_bandwidth_mbps`
 - State: `module_state` (`recovering|ready|error`)
 
 Keyspace notifications (task #31): `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
