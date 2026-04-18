@@ -670,14 +670,18 @@ mod tests {
 
     #[test]
     fn bytes_reclaimed_incremented_on_delete() {
-        // Reset global counter to a known baseline.
         let before = BYTES_RECLAIMED.load(Ordering::Relaxed);
         let (b, _tmp) = open_backend();
         b.put(b"k", b"v").unwrap();
         b.delete(b"k").unwrap();
         let after = BYTES_RECLAIMED.load(Ordering::Relaxed);
-        // 1 block freed → BLOCK_SIZE bytes reclaimed.
-        assert_eq!(after - before, BLOCK_SIZE as u64);
+        let delta = after - before;
+        // Our delete freed ≥1 block; concurrent parallel tests may free additional blocks,
+        // so check delta >= BLOCK_SIZE and block-aligned rather than exact equality.
+        assert!(
+            delta >= BLOCK_SIZE as u64 && delta % BLOCK_SIZE as u64 == 0,
+            "expected BYTES_RECLAIMED delta >= BLOCK_SIZE and block-aligned; got {delta}",
+        );
     }
 
     #[test]
