@@ -30,17 +30,13 @@ if [ -z "$SERVER_VERSION" ]; then
     export SERVER_VERSION="unstable"
 fi
 
-if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.0" ] && [ "$SERVER_VERSION" != "8.1" ] && [ "$SERVER_VERSION" != "9.0" ]; then
+if [ "$SERVER_VERSION" != "unstable" ] && [ "$SERVER_VERSION" != "8.1" ] && [ "$SERVER_VERSION" != "9.0" ]; then
   echo "ERROR: Unsupported version - $SERVER_VERSION"
   exit 1
 fi
 
 echo "Running cargo build release..."
-if [ "$SERVER_VERSION" = "8.0" ]; then
-    RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-else
-    RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-fi
+RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
 
 
 REPO_URL="https://github.com/valkey-io/valkey.git"

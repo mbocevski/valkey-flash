@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime module configuration: `flash.path`, `flash.capacity-bytes`, `flash.cache-size-bytes`, `flash.sync`, `flash.io-threads`, `flash.io-uring-entries`, `flash.compaction-interval-sec`
 - Async I/O thread pool with BlockClient for non-blocking NVMe reads and writes
 
+### Changed
+
+- Test matrix bumped to (unstable, 8.1, 9.0); Valkey 8.0 support removed
+
 ### Fixed
 
 - Promoted replica now initializes NVMe backend on `REPLICAOF NO ONE`, enabling FLASH.SET writes without a server restart

@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ['unstable', '8.0', '8.1']
+        server_version: ['unstable', '8.1', '9.0']
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
@@ -43,11 +43,7 @@ jobs:
       run: cargo test --features enable-system-alloc
     - name: Release build
       run: |
-        if [ "${{ matrix.server_version }}" = "8.0" ]; then
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-        else
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-        fi
+        RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
     - name: Get Valkey HEAD SHA
       id: valkey-sha
       run: |
@@ -111,7 +107,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ['unstable', '8.0', '8.1']
+        server_version: ['unstable', '8.1', '9.0']
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
@@ -133,11 +129,7 @@ jobs:
       run: cargo test --features enable-system-alloc
     - name: Release build
       run: |
-        if [ "${{ matrix.server_version }}" = "8.0" ]; then
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-        else
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-        fi
+        RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
     - name: Get Valkey HEAD SHA
       id: valkey-sha
       run: |
@@ -218,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ['unstable', '8.0', '8.1']
+        server_version: ['unstable', '8.1', '9.0']
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
@@ -234,11 +226,7 @@ jobs:
           ${{ runner.os }}-cargo-
     - name: Release build
       run: |
-        if [ "${{ matrix.server_version }}" = "8.0" ]; then
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-        else
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-        fi
+        RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
     - name: Get Valkey HEAD SHA
       id: valkey-sha
       run: |
@@ -294,7 +282,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        server_version: ['unstable', '8.0', '8.1']
+        server_version: ['unstable', '8.1', '9.0']
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
     - name: Set server version
@@ -310,11 +298,7 @@ jobs:
           ${{ runner.os }}-cargo-
     - name: Release build
       run: |
-        if [ "${{ matrix.server_version }}" = "8.0" ]; then
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
-        else
-          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
-        fi
+        RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
     - name: Get Valkey HEAD SHA
       id: valkey-sha
       run: |
