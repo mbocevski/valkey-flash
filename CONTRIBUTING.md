@@ -1,0 +1,47 @@
+# Contributing to valkey-flash
+
+Thank you for your interest in contributing.
+
+## Before you start
+
+- Read [CLAUDE.md](CLAUDE.md) for architecture decisions, conventions, and open design questions.
+- Check the task backlog (`backlog:tasks`) for planned work and active specs.
+- New commands or data types require a spec task (`backlog:spec`) to be approved before implementation begins.
+
+## Workflow
+
+1. Fork the repository and create a feature branch.
+2. Run `./build.sh` before opening a pull request — it runs fmt, clippy, unit tests, and integration tests:
+   ```sh
+   SERVER_VERSION=unstable ./build.sh
+   ```
+3. All CI gates must pass: fmt, clippy (`-D warnings`), unit tests, and integration tests.
+4. Open a pull request with a clear description of what changed and why.
+
+## Commit style
+
+This project uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+
+Format: `type(scope): description`
+
+Examples:
+```
+feat(storage): add LRU eviction to cache layer
+fix(wal): handle ops >4KB in truncate path
+test(replication): add WAIT timeout coverage
+ci: pin cargo-llvm-cov version
+docs: update README coverage section
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`
+
+## Code conventions
+
+- Rust edition 2021, `RUSTFLAGS="-D warnings"` in CI.
+- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are blocking gates.
+- Line coverage target ≥ 85% (enforced in CI once sufficient code exists).
+- Every public command needs integration tests: happy path, error paths, RDB + AOF round-trip, replication, keyspace notifications.
+
+## Code of Conduct
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
