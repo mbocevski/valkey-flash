@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- loom concurrency tests for async thread-pool, cache, WAL, and role-change paths: 7 `loom_tests::*` tests covering `RwLock<Arc<>>` resize races, candidates-queue Mutex, `approx_bytes` AtomicU64, WAL Mutex serialization, `sync_mode` AtomicU8 visibility, worker-claims-task-exactly-once, and `IS_REPLICA` Acquire/Release ordering; wired into CI via `.github/workflows/loom.yml` (`RUSTFLAGS='--cfg loom' cargo test -- loom_tests::`)
 - Runtime CONFIG SET for mutable flash.* knobs: `flash.cache-size-bytes` (live resize with entry migration), `flash.sync` (WAL flusher observes new mode on next tick), `flash.compaction-interval-sec` (compaction thread woken immediately)
 - `@flash` ACL category registered; FLASH.* commands scoped to `@read`, `@write`, or `@admin @dangerous` as appropriate
 - Keyspace notifications for FLASH mutations: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict` events via `notify-keyspace-events`
@@ -33,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker image based on `valkey/valkey:9.0.3-trixie` for running the module in containers (CI and local dev); configurable via `FLASH_PATH`, `FLASH_CAPACITY_BYTES`, `FLASH_CACHE_SIZE_BYTES`, `FLASH_SYNC`, `FLASH_IO_THREADS`, `FLASH_IO_URING_ENTRIES`, `FLASH_COMPACTION_INTERVAL_SEC` environment variables
 - Single-node Docker Compose (`docker/compose.single.yml`) with named volume persistence, healthcheck, and io_uring seccomp configuration; dev override (`compose.single.dev.yml`) for reduced capacity and fast sync
 - Three-primary, three-replica cluster Docker Compose (`docker/compose.cluster.yml`) with automatic slot assignment via `cluster-init` oneshot service
+- pytest fixtures for single-node and cluster Docker topologies (`docker_single`, `docker_cluster`); activated via `USE_DOCKER=1`
 
 ### Changed
 
