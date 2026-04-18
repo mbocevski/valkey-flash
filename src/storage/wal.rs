@@ -216,6 +216,9 @@ fn spawn_everysec_flusher(
                 !shutdown.load(Ordering::Relaxed)
             });
             if shutdown.load(Ordering::Relaxed) {
+                // No final sync on exit: Everysec guarantees at-most-1s lag,
+                // not a flush-before-close guarantee. Caller must use Always
+                // mode if close-time durability is required.
                 break;
             }
             let guard = match inner.lock() {
