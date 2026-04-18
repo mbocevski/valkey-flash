@@ -326,14 +326,69 @@ pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c
 }
 
 /// # Safety
+///
+/// Called by Valkey's COPY/OBJECT COPY to deep-copy a FlashStringObject.
+///
+/// ## Pointer contract
+/// - `value` — const pointer to the source `FlashStringObject`; must not be mutated.
+/// - Returns an owned `*mut FlashStringObject` allocated via `Box::into_raw` on success,
+///   or `null_mut()` on failure. A non-null return is consumed (and eventually freed) by
+///   Valkey via the type's `free` callback when the destination key is deleted.
+///
+/// ## Cold-tier strategy (v1)
+/// Cold objects are materialised via a synchronous NVMe read and returned as a Hot copy.
+/// This matches the RDB-load convention (rdb_load always returns Hot). A v2 optimisation
+/// could allocate new NVMe blocks and perform an NVMe→NVMe copy without promoting to Hot.
+///
+/// ## TTL handling
+/// `ttl_ms` is copied verbatim from source to destination so that AOF rewrite for the
+/// new key emits the correct PEXPIREAT command. Valkey core handles the runtime key-level
+/// expiry separately (objectGetExpire/setExpire in copyCommand).
 pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
-    _value: *const c_void,
+    value: *const c_void,
 ) -> *mut c_void {
-    // stub — COPY not yet implemented
-    logging::log_warning("flash: copy for FlashString is a stub; returning null");
-    null_mut()
+    let src: &FlashStringObject = &*value.cast::<FlashStringObject>();
+    match &src.tier {
+        Tier::Hot(v) => {
+            let new_obj = Box::new(FlashStringObject {
+                tier: Tier::Hot(v.clone()),
+                ttl_ms: src.ttl_ms,
+            });
+            Box::into_raw(new_obj).cast::<c_void>()
+        }
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            // Materialise cold value via synchronous NVMe read → return Hot copy.
+            // Null return signals COPY failure to Valkey core; source is untouched.
+            #[cfg(not(test))]
+            {
+                let storage = match crate::STORAGE.get() {
+                    Some(s) => s,
+                    None => return null_mut(),
+                };
+                match storage.read_at_offset(*backend_offset, *value_len) {
+                    Ok(bytes) => {
+                        let new_obj = Box::new(FlashStringObject {
+                            tier: Tier::Hot(bytes),
+                            ttl_ms: src.ttl_ms,
+                        });
+                        Box::into_raw(new_obj).cast::<c_void>()
+                    }
+                    Err(_) => null_mut(),
+                }
+            }
+            #[cfg(test)]
+            {
+                let _ = (backend_offset, value_len);
+                null_mut()
+            }
+        }
+    }
 }
 
 /// # Safety

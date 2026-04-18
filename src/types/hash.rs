@@ -408,14 +408,66 @@ pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c
 }
 
 /// # Safety
+///
+/// Called by Valkey's COPY/OBJECT COPY to deep-copy a FlashHashObject.
+///
+/// ## Pointer contract
+/// - `value` — const pointer to the source `FlashHashObject`; must not be mutated.
+/// - Returns an owned `*mut FlashHashObject` on success, or `null_mut()` on failure.
+///
+/// ## Cold-tier strategy (v1)
+/// Cold objects are materialised via a synchronous NVMe read + `hash_deserialize`, then
+/// returned as a Hot copy. Null is returned on read or deserialisation failure.
+///
+/// ## TTL handling
+/// `ttl_ms` is copied verbatim; see the analogous comment in `types::string::copy`.
 pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
-    _value: *const c_void,
+    value: *const c_void,
 ) -> *mut c_void {
-    // stub — COPY not yet implemented (task #25)
-    logging::log_warning("flash: copy for FlashHash is a stub; returning null");
-    null_mut()
+    let src: &FlashHashObject = &*value.cast::<FlashHashObject>();
+    match &src.tier {
+        Tier::Hot(map) => {
+            let new_obj = Box::new(FlashHashObject {
+                tier: Tier::Hot(map.clone()),
+                ttl_ms: src.ttl_ms,
+            });
+            Box::into_raw(new_obj).cast::<c_void>()
+        }
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            // Materialise cold value via synchronous NVMe read → deserialise → Hot copy.
+            #[cfg(not(test))]
+            {
+                let storage = match crate::STORAGE.get() {
+                    Some(s) => s,
+                    None => return null_mut(),
+                };
+                match storage.read_at_offset(*backend_offset, *value_len) {
+                    Ok(bytes) => match hash_deserialize(&bytes) {
+                        Some(map) => {
+                            let new_obj = Box::new(FlashHashObject {
+                                tier: Tier::Hot(map),
+                                ttl_ms: src.ttl_ms,
+                            });
+                            Box::into_raw(new_obj).cast::<c_void>()
+                        }
+                        None => null_mut(),
+                    },
+                    Err(_) => null_mut(),
+                }
+            }
+            #[cfg(test)]
+            {
+                let _ = (backend_offset, value_len);
+                null_mut()
+            }
+        }
+    }
 }
 
 /// # Safety
