@@ -8,6 +8,7 @@ description = "A Valkey module that tiers key/value data to NVMe storage"
 
 [dependencies]
 valkey-module = { version = "0.1.5", features = ["min-valkey-compatibility-version-8-0", "min-redis-compatibility-version-7-2"] }
+valkey-module-macros = "0"
 
 [lib]
 crate-type = ["cdylib"]
