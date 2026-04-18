@@ -98,6 +98,28 @@ impl AsyncThreadPool {
                 TrySendError::Disconnected(_) => PoolError::Closed,
             })
     }
+
+    /// Submit a task. If the pool is full or closed, `handle.complete(Err(...))` is called
+    /// immediately on the calling thread instead of returning an error.
+    ///
+    /// Use this when the client has already been blocked: returning an error from the command
+    /// handler after `block_client()` would leave the client permanently stuck, whereas this
+    /// method guarantees `complete()` is always called exactly once.
+    pub fn submit_or_complete(
+        &self,
+        handle: Box<dyn CompletionHandle>,
+        task: impl FnOnce() -> StorageResult<Vec<u8>> + Send + 'static,
+    ) {
+        match self.sender.try_send((handle, Box::new(task))) {
+            Ok(_) => {}
+            Err(TrySendError::Full((handle, _))) => {
+                handle.complete(Err(StorageError::Other(PoolError::Full.to_string())));
+            }
+            Err(TrySendError::Disconnected((handle, _))) => {
+                handle.complete(Err(StorageError::Other(PoolError::Closed.to_string())));
+            }
+        }
+    }
 }
 
 fn worker_loop(rx: Receiver<IoTask>) {
