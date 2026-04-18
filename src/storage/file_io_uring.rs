@@ -226,6 +226,11 @@ impl FileIoUringBackend {
         self.next_block.load(Ordering::Relaxed)
     }
 
+    /// Configured storage capacity in bytes.
+    pub fn capacity_bytes(&self) -> u64 {
+        self.capacity_blocks * BLOCK_SIZE as u64
+    }
+
     /// Number of free NVMe 4 KiB blocks tracked in the free-list.
     pub fn free_block_count(&self) -> u64 {
         self.free_list

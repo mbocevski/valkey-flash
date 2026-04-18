@@ -33,6 +33,7 @@ const MAX_CANDIDATES: usize = 65_536;
 
 pub struct FlashCache {
     inner: Cache<Vec<u8>, Vec<u8>, BytesWeighter>,
+    capacity_bytes: u64,
     approx_bytes: AtomicU64,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -48,6 +49,7 @@ impl FlashCache {
         let estimated_items = ((capacity_bytes / 256).max(16)) as usize;
         FlashCache {
             inner: Cache::with_weighter(estimated_items, capacity_bytes, BytesWeighter),
+            capacity_bytes,
             approx_bytes: AtomicU64::new(0),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
@@ -146,6 +148,11 @@ impl FlashCache {
     /// pressure (auto-evictions are not tracked; only explicit `delete` calls are).
     pub fn approx_bytes(&self) -> u64 {
         self.approx_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Configured capacity in bytes (set at construction).
+    pub fn capacity_bytes(&self) -> u64 {
+        self.capacity_bytes
     }
 
     pub fn metrics(&self) -> CacheMetrics {

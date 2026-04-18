@@ -3,12 +3,15 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
-    configuration::ConfigurationFlags, logging, valkey_module, Context, Status, ValkeyString,
+    configuration::ConfigurationFlags, logging, valkey_module, Context, InfoContext, Status,
+    ValkeyResult, ValkeyString,
 };
+use valkey_module_macros::info_command_handler;
 
 pub mod async_io;
 pub mod commands;
 pub mod config;
+pub mod metrics;
 pub mod persistence;
 pub mod recovery;
 pub mod storage;
@@ -278,6 +281,11 @@ fn deinitialize(_ctx: &Context) -> Status {
         let _ = h.join();
     }
     Status::Ok
+}
+
+#[info_command_handler]
+fn info_handler(ctx: &InfoContext, _for_crash_report: bool) -> ValkeyResult<()> {
+    metrics::flash_info_handler(ctx)
 }
 
 valkey_module! {

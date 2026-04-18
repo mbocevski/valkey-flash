@@ -9,6 +9,7 @@ description = "A Valkey module that tiers key/value data to NVMe storage"
 [dependencies]
 valkey-module = { version = "0.1.5", features = ["min-valkey-compatibility-version-8-0", "min-redis-compatibility-version-7-2"] }
 valkey-module-macros = "0"
+linkme = "0"
 io-uring = "0.7"
 libc = "0.2"
 quick_cache = "=0.6.18"
