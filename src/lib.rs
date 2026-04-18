@@ -1,5 +1,7 @@
 use valkey_module::{valkey_module, Context, Status, ValkeyString};
 
+pub mod storage;
+
 pub const MODULE_NAME: &str = "flash";
 pub const MODULE_VERSION: i32 = 1;
 
