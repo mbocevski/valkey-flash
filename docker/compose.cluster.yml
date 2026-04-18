@@ -1,0 +1,172 @@
+# 3-primary + 3-replica valkey-flash cluster.
+#
+# Usage:
+#   docker compose -f docker/compose.cluster.yml up -d
+#
+# After the cluster-init service exits (≈10s), connect with:
+#   valkey-cli -c -p 7001 FLASH.SET mykey myval
+#   valkey-cli -c -p 7001 cluster nodes
+#
+# Ports: 7001-7003 → primaries, 7004-7006 → replicas.
+
+x-flash-node: &flash-node
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  # io_uring requires syscalls blocked by Docker's default seccomp profile.
+  # See docker/Dockerfile note. Use a custom allowlist profile for production.
+  security_opt:
+    - seccomp:unconfined
+  environment: &flash-env
+    FLASH_PATH: /var/lib/valkey-flash/flash.bin
+    FLASH_CAPACITY_BYTES: "67108864"   # 64 MiB per node
+    FLASH_CACHE_SIZE_BYTES: ""
+    FLASH_SYNC: everysec
+    FLASH_IO_THREADS: ""
+    FLASH_IO_URING_ENTRIES: ""
+    FLASH_COMPACTION_INTERVAL_SEC: ""
+  networks:
+    - flash-cluster
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "valkey-cli", "ping"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 10s
+
+services:
+  flash-primary-1:
+    <<: *flash-node
+    ports: ["7001:6379"]
+    volumes:
+      - flash_p1:/var/lib/valkey-flash
+      - valkey_p1:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-primary-1
+
+  flash-primary-2:
+    <<: *flash-node
+    ports: ["7002:6379"]
+    volumes:
+      - flash_p2:/var/lib/valkey-flash
+      - valkey_p2:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-primary-2
+
+  flash-primary-3:
+    <<: *flash-node
+    ports: ["7003:6379"]
+    volumes:
+      - flash_p3:/var/lib/valkey-flash
+      - valkey_p3:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-primary-3
+
+  flash-replica-1:
+    <<: *flash-node
+    ports: ["7004:6379"]
+    volumes:
+      - flash_r1:/var/lib/valkey-flash
+      - valkey_r1:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-replica-1
+
+  flash-replica-2:
+    <<: *flash-node
+    ports: ["7005:6379"]
+    volumes:
+      - flash_r2:/var/lib/valkey-flash
+      - valkey_r2:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-replica-2
+
+  flash-replica-3:
+    <<: *flash-node
+    ports: ["7006:6379"]
+    volumes:
+      - flash_r3:/var/lib/valkey-flash
+      - valkey_r3:/data
+    command:
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-hostname
+      - flash-replica-3
+
+  cluster-init:
+    image: valkey/valkey:9.0.3-trixie
+    networks:
+      - flash-cluster
+    depends_on:
+      flash-primary-1: {condition: service_healthy}
+      flash-primary-2: {condition: service_healthy}
+      flash-primary-3: {condition: service_healthy}
+      flash-replica-1: {condition: service_healthy}
+      flash-replica-2: {condition: service_healthy}
+      flash-replica-3: {condition: service_healthy}
+    command:
+      - sh
+      - -c
+      - |
+        valkey-cli --cluster create \
+          flash-primary-1:6379 flash-primary-2:6379 flash-primary-3:6379 \
+          flash-replica-1:6379 flash-replica-2:6379 flash-replica-3:6379 \
+          --cluster-replicas 1 --cluster-yes
+    restart: "no"
+
+networks:
+  flash-cluster:
+    driver: bridge
+
+volumes:
+  flash_p1:
+  flash_p2:
+  flash_p3:
+  flash_r1:
+  flash_r2:
+  flash_r3:
+  valkey_p1:
+  valkey_p2:
+  valkey_p3:
+  valkey_r1:
+  valkey_r2:
+  valkey_r3:

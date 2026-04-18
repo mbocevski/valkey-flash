@@ -1,6 +1,10 @@
 #!/bin/sh
 set -e
 
+# Any args passed via docker compose `command:` (e.g. cluster flags) are in "$@".
+# Save them before set -- overwrites the positional parameters.
+PASS_THROUGH="$*"
+
 set -- --loadmodule /usr/local/lib/libvalkey_flash.so --flash.path "${FLASH_PATH}"
 
 [ -n "${FLASH_CAPACITY_BYTES}" ]           && set -- "$@" --flash.capacity-bytes "${FLASH_CAPACITY_BYTES}"
@@ -10,4 +14,5 @@ set -- --loadmodule /usr/local/lib/libvalkey_flash.so --flash.path "${FLASH_PATH
 [ -n "${FLASH_IO_URING_ENTRIES}" ]         && set -- "$@" --flash.io-uring-entries "${FLASH_IO_URING_ENTRIES}"
 [ -n "${FLASH_COMPACTION_INTERVAL_SEC}" ]  && set -- "$@" --flash.compaction-interval-sec "${FLASH_COMPACTION_INTERVAL_SEC}"
 
-exec valkey-server "$@"
+# shellcheck disable=SC2086  -- word-split is intentional for simple flag tokens
+exec valkey-server "$@" $PASS_THROUGH

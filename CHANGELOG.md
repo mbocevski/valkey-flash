@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime module configuration: `flash.path`, `flash.capacity-bytes`, `flash.cache-size-bytes`, `flash.sync`, `flash.io-threads`, `flash.io-uring-entries`, `flash.compaction-interval-sec`
 - Async I/O thread pool with BlockClient for non-blocking NVMe reads and writes
 - Docker image based on `valkey/valkey:9.0.3-trixie` for running the module in containers (CI and local dev); configurable via `FLASH_PATH`, `FLASH_CAPACITY_BYTES`, `FLASH_CACHE_SIZE_BYTES`, `FLASH_SYNC`, `FLASH_IO_THREADS`, `FLASH_IO_URING_ENTRIES`, `FLASH_COMPACTION_INTERVAL_SEC` environment variables
-- Single-node Docker Compose (`docker/compose.single.yml`) with named volume persistence, healthcheck, and io_uring seccomp configuration
+- Single-node Docker Compose (`docker/compose.single.yml`) with named volume persistence, healthcheck, and io_uring seccomp configuration; dev override (`compose.single.dev.yml`) for reduced capacity and fast sync
+- Three-primary, three-replica cluster Docker Compose (`docker/compose.cluster.yml`) with automatic slot assignment via `cluster-init` oneshot service
 
 ### Changed
 
