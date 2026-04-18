@@ -28,12 +28,17 @@ struct AlignedBuf {
 
 impl AlignedBuf {
     fn new(size: usize) -> StorageResult<Self> {
+        debug_assert!(size > 0, "AlignedBuf::new: size=0 is UB on some platforms");
         let mut ptr: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `ptr` is a valid out-param; BLOCK_SIZE is a power of two;
+        // `size` > 0 (asserted above).  On success, ptr points to `size`
+        // aligned bytes owned by this struct.
         let rc = unsafe { posix_memalign(&mut ptr, BLOCK_SIZE, size) };
         if rc != 0 {
             return Err(StorageError::Io(std::io::Error::from_raw_os_error(rc)));
         }
-        // Zero-initialise so padding bytes are deterministic.
+        // SAFETY: posix_memalign succeeded (rc == 0), so ptr is non-null,
+        // properly aligned, and points to `size` writable bytes.
         unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, size) };
         Ok(AlignedBuf {
             ptr: ptr as *mut u8,
@@ -42,10 +47,13 @@ impl AlignedBuf {
     }
 
     fn as_slice(&self) -> &[u8] {
+        // SAFETY: ptr is a live allocation of exactly `self.size` bytes;
+        // lifetime is tied to `&self` so the allocation cannot be freed.
         unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
     }
 
     fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: same as as_slice; `&mut self` ensures no aliasing.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size) }
     }
 }
@@ -53,6 +61,8 @@ impl AlignedBuf {
 impl Drop for AlignedBuf {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
+            // SAFETY: ptr was allocated by posix_memalign (libc-compatible
+            // allocator); non-null check passed; Drop runs at most once.
             unsafe { libc::free(self.ptr as *mut c_void) };
         }
     }
@@ -228,7 +238,10 @@ impl FileIoUringBackend {
         let byte_offset = entry.block_offset * BLOCK_SIZE as u64;
         self.do_read(byte_offset, &mut buf)?;
         let slice = buf.as_slice();
-        let stored_len = u64::from_le_bytes(slice[..8].try_into().unwrap()) as usize;
+        let len_bytes: [u8; 8] = slice[..8]
+            .try_into()
+            .map_err(|_| StorageError::Other("corrupt record: header too short".into()))?;
+        let stored_len = u64::from_le_bytes(len_bytes) as usize;
         if stored_len != entry.value_len as usize {
             return Err(StorageError::Other(format!(
                 "header len {stored_len} != index len {}",
@@ -283,12 +296,15 @@ impl StorageBackend for FileIoUringBackend {
 
     fn iter(&self) -> Box<dyn Iterator<Item = StorageResult<KvPair>> + '_> {
         // Snapshot the index under lock; reads happen outside the lock.
-        let snapshot: Vec<(Vec<u8>, IndexEntry)> = {
-            let index = self
-                .index
-                .lock()
-                .expect("FileIoUringBackend::iter: index lock poisoned");
-            index.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        let snapshot = match self.index.lock() {
+            Err(e) => {
+                let err = StorageError::Other(format!("index lock poisoned: {e}"));
+                return Box::new(std::iter::once(Err(err)));
+            }
+            Ok(guard) => guard
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect::<Vec<_>>(),
         };
         let results: Vec<StorageResult<KvPair>> = snapshot
             .into_iter()
