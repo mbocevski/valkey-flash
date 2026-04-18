@@ -68,6 +68,26 @@ jobs:
     - name: Run integration tests
       run: python -m pytest --cache-clear -v tests/
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Install cargo-llvm-cov
+      run: cargo install cargo-llvm-cov
+    - name: Generate lcov report
+      run: |
+        cargo llvm-cov \
+          --lcov \
+          --output-path lcov.info \
+          --features enable-system-alloc \
+          --ignore-filename-regex 'src/wrapper/'
+    - name: Upload to Codecov
+      uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
+      with:
+        files: lcov.info
+        fail_ci_if_error: false
+
   build-macos:
     name: macOS / Rust checks
     runs-on: macos-latest
