@@ -19,7 +19,7 @@ enum_configuration! {
 pub const FLASH_PATH_DEFAULT: &str = "/tmp/valkey-flash.bin";
 
 /// Backing store path. Immutable after module load (`ConfigurationFlags::IMMUTABLE`).
-/// Access via `.lock().unwrap()`.
+/// Access via `.lock().map_err(|e| StorageError::Other(e.to_string()))`.
 pub static FLASH_PATH: LazyLock<Mutex<String>> =
     LazyLock::new(|| Mutex::new(FLASH_PATH_DEFAULT.to_string()));
 
@@ -44,7 +44,7 @@ pub static FLASH_CACHE_SIZE_BYTES: AtomicI64 = AtomicI64::new(FLASH_CACHE_SIZE_B
 // ── flash.sync ────────────────────────────────────────────────────────────────
 
 /// Write-sync policy. Mutable via CONFIG SET.
-/// Access via `.lock().unwrap()`.
+/// Access via `.lock().map_err(|e| StorageError::Other(e.to_string()))`.
 pub static FLASH_SYNC: LazyLock<Mutex<SyncMode>> = LazyLock::new(|| Mutex::new(SyncMode::everysec));
 
 // ── flash.io-threads ─────────────────────────────────────────────────────────
