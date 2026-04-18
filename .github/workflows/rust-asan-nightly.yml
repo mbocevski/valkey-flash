@@ -119,6 +119,10 @@ jobs:
 
     - name: Run integration tests with Rust ASAN module
       run: |
+        # test_flash_acl.py: requires ACL category registration that is not
+        #   wired up in the non-release debug build used here.
+        # test_flash_aof.py: server-restart tests time out under ASAN overhead
+        #   because NVMe backend initialization is slower in debug builds.
         ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/asan-logs/asan:abort_on_error=0" \
           MODULE_PATH="$MODULE_PATH" \
           python -m pytest --capture=sys --cache-clear -v tests/ \
@@ -126,7 +130,11 @@ jobs:
             --ignore=tests/test_flash_acl.py \
             --ignore=tests/test_flash_aof.py \
             -m "not skip_for_asan" \
-            --tb=short 2>&1 | tee pytest-output.log || true
+            --tb=short 2>&1 | tee pytest-output.log
+        pytest_exit=${PIPESTATUS[0]}
+        if [ "$pytest_exit" -ne 0 ]; then
+          echo "::warning::pytest exited $pytest_exit — test failures may be unrelated to ASAN (see pytest-output.log)"
+        fi
 
     - name: Check for ASAN violations
       run: |
