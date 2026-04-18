@@ -13,6 +13,7 @@ set -- --loadmodule /usr/local/lib/libvalkey_flash.so --flash.path "${FLASH_PATH
 [ -n "${FLASH_IO_THREADS}" ]               && set -- "$@" --flash.io-threads "${FLASH_IO_THREADS}"
 [ -n "${FLASH_IO_URING_ENTRIES}" ]         && set -- "$@" --flash.io-uring-entries "${FLASH_IO_URING_ENTRIES}"
 [ -n "${FLASH_COMPACTION_INTERVAL_SEC}" ]  && set -- "$@" --flash.compaction-interval-sec "${FLASH_COMPACTION_INTERVAL_SEC}"
+[ -n "${FLASH_REPLICA_TIER_ENABLED}" ]     && set -- "$@" --flash.replica-tier-enabled "${FLASH_REPLICA_TIER_ENABLED}"
 
 # shellcheck disable=SC2086  -- word-split is intentional for simple flag tokens
 exec valkey-server "$@" $PASS_THROUGH

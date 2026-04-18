@@ -17,7 +17,7 @@ from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
 
 # Register Docker-based fixtures when USE_DOCKER=1.
 if os.environ.get("USE_DOCKER", "0") == "1":
-    from docker_fixtures import docker_single, docker_cluster  # noqa: F401
+    from docker_fixtures import docker_single, docker_cluster, docker_cluster_replica_tier  # noqa: F401
 
 
 def pytest_collection_modifyitems(config, items):

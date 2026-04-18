@@ -19,6 +19,7 @@ from python_on_whales import DockerClient
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SINGLE_COMPOSE = os.path.join(_REPO_ROOT, "docker", "compose.single.yml")
 _CLUSTER_COMPOSE = os.path.join(_REPO_ROOT, "docker", "compose.cluster.yml")
+_REPLICA_TIER_COMPOSE = os.path.join(_REPO_ROOT, "docker", "compose.cluster.replica-tier.yml")
 
 _USE_DOCKER = os.environ.get("USE_DOCKER", "0") == "1"
 
@@ -105,6 +106,33 @@ def docker_cluster():
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
         client = _connect_cluster_with_retry("localhost", 7001)
+        yield client
+    finally:
+        docker.compose.down(volumes=True, timeout=10)
+
+
+@pytest.fixture(scope="session")
+def docker_cluster_replica_tier():
+    """6-node cluster with flash.replica-tier-enabled=yes on all replica nodes.
+
+    Uses ports 7011-7016 (primaries 7011-7013, replicas 7014-7016) so it can
+    run alongside the default docker_cluster fixture without port conflicts.
+    """
+    if not _USE_DOCKER:
+        pytest.skip("set USE_DOCKER=1 to run Docker-based tests")
+
+    _PRIMARIES = ["flash-primary-1", "flash-primary-2", "flash-primary-3"]
+    _REPLICAS  = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
+
+    docker = DockerClient(
+        compose_files=[_CLUSTER_COMPOSE, _REPLICA_TIER_COMPOSE],
+        compose_project_name="vf-cluster-rt",
+    )
+    docker.compose.up(detach=True, build=True)
+    try:
+        _all_healthy(docker, _PRIMARIES + _REPLICAS)
+        _wait_cluster_init(docker)
+        client = _connect_cluster_with_retry("localhost", 7011)
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)

@@ -1,0 +1,38 @@
+# Compose override: replica-tier-enabled cluster on ports 7011-7016.
+#
+# Usage (always combine with the base cluster compose):
+#   docker compose \
+#     -f docker/compose.cluster.yml \
+#     -f docker/compose.cluster.replica-tier.yml \
+#     -p vf-cluster-rt \
+#     up -d
+#
+# This override:
+#   1. Remaps ports to 7011-7016 so it can run alongside the default cluster.
+#   2. Sets FLASH_REPLICA_TIER_ENABLED=yes on replica nodes so they open their
+#      own NVMe backend (task #82 / spec #68).
+
+services:
+  flash-primary-1:
+    ports: ["7011:6379"]
+
+  flash-primary-2:
+    ports: ["7012:6379"]
+
+  flash-primary-3:
+    ports: ["7013:6379"]
+
+  flash-replica-1:
+    ports: ["7014:6379"]
+    environment:
+      FLASH_REPLICA_TIER_ENABLED: "yes"
+
+  flash-replica-2:
+    ports: ["7015:6379"]
+    environment:
+      FLASH_REPLICA_TIER_ENABLED: "yes"
+
+  flash-replica-3:
+    ports: ["7016:6379"]
+    environment:
+      FLASH_REPLICA_TIER_ENABLED: "yes"
