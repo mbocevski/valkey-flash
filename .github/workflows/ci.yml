@@ -346,31 +346,55 @@ jobs:
         path: bench-report.json
         if-no-files-found: ignore
 
-  docker-smoke:
-    name: Docker smoke
+  docker-integration:
+    name: Docker integration / ${{ matrix.topology }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'slow-tests')
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: [single, cluster]
     steps:
     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Set up Docker Buildx
+      run: docker buildx create --name vf-builder --driver docker-container --use --bootstrap
+    - name: Restore Docker layer cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: /tmp/.buildx-cache
+        key: docker-flash-${{ hashFiles('docker/Dockerfile', 'Cargo.lock') }}
+        restore-keys: docker-flash-
+    - name: Build Docker image
+      run: |
+        CACHE_FROM=""
+        [ -d /tmp/.buildx-cache ] && CACHE_FROM="--cache-from type=local,src=/tmp/.buildx-cache"
+        docker buildx build $CACHE_FROM \
+          --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+          --tag valkey-flash:dev \
+          --file docker/Dockerfile \
+          --load .
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
     - name: Set up Python
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
     - name: Install test dependencies
       run: pip install -r requirements.txt
-    - name: Run Docker smoke tests
-      run: USE_DOCKER=1 python -m pytest --cache-clear -v tests/test_docker_smoke.py
+    - name: Run Docker integration tests
+      run: USE_DOCKER=1 python -m pytest --cache-clear -v tests/test_docker_smoke.py -m docker_${{ matrix.topology }}
     - name: Collect compose logs on failure
       if: failure()
       run: |
-        docker compose -f docker/compose.single.yml -p vf-single logs --no-color > /tmp/compose-single.log 2>&1 || true
-        docker compose -f docker/compose.cluster.yml -p vf-cluster logs --no-color > /tmp/compose-cluster.log 2>&1 || true
+        docker compose -f docker/compose.${{ matrix.topology }}.yml \
+          -p vf-${{ matrix.topology }} logs --no-color > /tmp/compose.log 2>&1 || true
     - name: Upload compose logs
       if: failure()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
       with:
-        name: docker-smoke-logs
-        path: /tmp/compose-*.log
+        name: docker-logs-${{ matrix.topology }}
+        path: /tmp/compose.log
         if-no-files-found: ignore
 
   fuzz-smoke:
