@@ -256,6 +256,10 @@ pub fn parse_rdb_payload(data: &[u8]) -> Result<FlashStringObject, RdbParseError
     if val_len > MAX_VALUE_BYTES {
         return Err(RdbParseError::ValueTooLarge(val_len));
     }
+    let remaining = (data.len() as u64).saturating_sub(cur.position()) as usize;
+    if val_len > remaining {
+        return Err(RdbParseError::Truncated);
+    }
     let mut value = vec![0u8; val_len];
     cur.read_exact(&mut value)
         .map_err(|_| RdbParseError::Truncated)?;

@@ -334,6 +334,10 @@ pub fn parse_rdb_hash_payload(data: &[u8]) -> Result<FlashHashObject, RdbHashPar
     if payload_len > MAX_HASH_PAYLOAD_BYTES {
         return Err(RdbHashParseError::PayloadTooLarge(payload_len));
     }
+    let remaining = (data.len() as u64).saturating_sub(cur.position()) as usize;
+    if payload_len > remaining {
+        return Err(RdbHashParseError::Truncated);
+    }
     let mut hash_bytes = vec![0u8; payload_len];
     cur.read_exact(&mut hash_bytes)
         .map_err(|_| RdbHashParseError::Truncated)?;
