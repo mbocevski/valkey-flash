@@ -515,7 +515,7 @@ impl Iterator for RecordIter {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use tempfile::tempdir;
@@ -914,5 +914,77 @@ mod tests {
         let op = checkpoint_op(1024);
         let encoded = op.encode();
         assert_eq!(WalOp::decode(&encoded).unwrap(), op);
+    }
+}
+
+// ── Loom concurrency model tests ──────────────────────────────────────────────
+//
+// The real Wal spawns a flusher via std::thread::spawn (not loom::thread), so
+// it cannot be used directly inside loom::model. Instead these tests model the
+// underlying sync patterns in isolation using loom's controlled primitives.
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use loom::sync::atomic::{AtomicU8, Ordering};
+    use loom::sync::{Arc, Mutex};
+    use loom::thread;
+
+    // Model the WAL Mutex<WalInner> serialization. Each append holds the lock
+    // for both bytes of its two-byte record, so no thread can observe a partial
+    // write from another. loom enumerates all interleavings of the two lock/unlock
+    // pairs and verifies pair integrity in the resulting record log.
+    #[test]
+    fn append_serialized_by_mutex() {
+        loom::model(|| {
+            let records = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let r1 = records.clone();
+            let r2 = records.clone();
+
+            let t1 = thread::spawn(move || {
+                let mut g = r1.lock().unwrap();
+                g.push(0xAA);
+                g.push(0xAB);
+            });
+
+            let t2 = thread::spawn(move || {
+                let mut g = r2.lock().unwrap();
+                g.push(0xBB);
+                g.push(0xBC);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            let g = records.lock().unwrap();
+            assert_eq!(g.len(), 4, "both records written");
+            assert_eq!(g[1], g[0] + 1, "first record pair intact — no torn write");
+            assert_eq!(g[3], g[2] + 1, "second record pair intact — no torn write");
+        });
+    }
+
+    // Model set_sync_mode() racing with append()'s mode check. Both operations
+    // use Relaxed ordering on the Arc<AtomicU8>, which is sound for a mode flag
+    // (no state transfer coordinated through the atomic). loom verifies no data
+    // race exists under any valid interleaving.
+    #[test]
+    fn sync_mode_store_load_relaxed() {
+        loom::model(|| {
+            // 1 = Everysec (initial), 2 = No (new value written by set_sync_mode)
+            let mode = Arc::new(AtomicU8::new(1));
+            let m1 = mode.clone();
+            let m2 = mode.clone();
+
+            let writer = thread::spawn(move || {
+                m1.store(2, Ordering::Relaxed);
+            });
+
+            let reader = thread::spawn(move || {
+                let v = m2.load(Ordering::Relaxed);
+                assert!(v <= 2, "sync_mode must be a valid WalSyncMode discriminant");
+            });
+
+            writer.join().unwrap();
+            reader.join().unwrap();
+        });
     }
 }

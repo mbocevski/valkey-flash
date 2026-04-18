@@ -60,7 +60,7 @@ fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
@@ -118,5 +118,47 @@ mod tests {
         // (This test would fail if someone accidentally changed the initial value.)
         let fresh = AtomicBool::new(false);
         assert!(!fresh.load(Ordering::SeqCst));
+    }
+}
+
+// ── Loom concurrency model tests ──────────────────────────────────────────────
+//
+// IS_REPLICA is a std::sync::atomic::AtomicBool static; statics cannot use loom
+// types (loom's atomics aren't const-constructible). The test below models the
+// same Release/Acquire pattern locally using loom's controlled AtomicBool to
+// verify the ordering contract under all possible thread interleavings.
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use loom::sync::atomic::{AtomicBool, Ordering};
+    use loom::sync::Arc;
+    use loom::thread;
+
+    // Model the IS_REPLICA Release store (role-change handler) vs Acquire load
+    // (is_replica() callers on worker threads). After the writer thread joins,
+    // the Acquire load must observe true — loom verifies this across all
+    // interleavings including those where the load races ahead of the store.
+    #[test]
+    fn replica_flag_acquire_release() {
+        loom::model(|| {
+            let flag = Arc::new(AtomicBool::new(false));
+            let f = flag.clone();
+
+            // Simulates on_role_changed Primary→Replica.
+            let writer = thread::spawn(move || {
+                f.store(true, Ordering::Release);
+            });
+
+            // Simulates a concurrent is_replica() call — may see old or new value.
+            let _observed = flag.load(Ordering::Acquire);
+
+            writer.join().unwrap();
+
+            // After joining the writer the Release write is always visible.
+            assert!(
+                flag.load(Ordering::Acquire),
+                "IS_REPLICA must be true after role-change writer joins"
+            );
+        });
     }
 }

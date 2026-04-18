@@ -1,0 +1,28 @@
+name: loom
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly Monday 03:00 UTC — loom is slow and doesn't need to run on every push.
+    - cron: '0 3 * * 1'
+
+jobs:
+  loom-tests:
+    name: Loom concurrency tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-loom-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Run loom tests
+      run: RUSTFLAGS='--cfg loom' cargo test --features enable-system-alloc -- loom_tests::

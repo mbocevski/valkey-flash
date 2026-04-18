@@ -201,7 +201,7 @@ impl FlashCache {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 
@@ -314,5 +314,98 @@ mod tests {
         // "gone" is at the front of the queue but was deleted; should be skipped.
         let candidate = c.evict_candidate();
         assert_eq!(candidate, Some(b"kept".to_vec()));
+    }
+}
+
+// ── Loom concurrency model tests ─────────────────────────────────────────────
+//
+// loom is a dev-dep, so it is only accessible inside #[cfg(test)] blocks.
+// Each test below models a FlashCache synchronization pattern using loom's own
+// primitives (RwLock, Mutex, AtomicU64) so loom can enumerate all interleavings
+// and verify freedom from data races. Run with:
+//   RUSTFLAGS='--cfg loom' cargo test --features enable-system-alloc -- loom_tests::
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use std::collections::VecDeque;
+
+    use loom::sync::atomic::{AtomicU64, Ordering};
+    use loom::sync::{Arc, Mutex, RwLock};
+    use loom::thread;
+
+    // Model the RwLock<Arc<T>> swap used by resize(). Readers briefly acquire
+    // a read lock to clone the Arc then drop the lock before operating on the
+    // data. The resizer acquires a write lock only to swap the Arc pointer.
+    // loom enumerates all interleavings of the read-lock-clone-drop vs
+    // write-lock-swap sequence.
+    #[test]
+    fn resize_rwlock_arc_swap_pattern() {
+        loom::model(|| {
+            type Inner = u64;
+            let state: Arc<RwLock<Arc<Inner>>> = Arc::new(RwLock::new(Arc::new(0u64)));
+            let s1 = state.clone();
+            let s2 = state.clone();
+
+            let reader = thread::spawn(move || {
+                let inner = s1.read().unwrap().clone();
+                let _ = *inner;
+            });
+
+            let resizer = thread::spawn(move || {
+                *s2.write().unwrap() = Arc::new(42u64);
+            });
+
+            reader.join().unwrap();
+            resizer.join().unwrap();
+        });
+    }
+
+    // Model the Mutex<VecDeque> candidates queue. put() pushes and
+    // evict_candidate() pops, both under the same Mutex. loom checks all
+    // orderings of the two lock/unlock pairs.
+    #[test]
+    fn candidates_mutex_concurrent_enqueue_dequeue() {
+        loom::model(|| {
+            let queue: Arc<Mutex<VecDeque<u8>>> = Arc::new(Mutex::new(VecDeque::from([0u8])));
+            let q1 = queue.clone();
+            let q2 = queue.clone();
+
+            let enqueuer = thread::spawn(move || {
+                q1.lock().unwrap().push_back(1u8);
+            });
+
+            let dequeuer = thread::spawn(move || {
+                let _ = q2.lock().unwrap().pop_front();
+            });
+
+            enqueuer.join().unwrap();
+            dequeuer.join().unwrap();
+        });
+    }
+
+    // Model the approx_bytes AtomicU64 counter. put() uses fetch_add and
+    // delete() uses fetch_update(saturating_sub). loom verifies no data race
+    // exists under any valid interleaving of the two atomic operations.
+    #[test]
+    fn approx_bytes_concurrent_add_sub() {
+        loom::model(|| {
+            let counter = Arc::new(AtomicU64::new(8));
+            let c1 = counter.clone();
+            let c2 = counter.clone();
+
+            let adder = thread::spawn(move || {
+                c1.fetch_add(10, Ordering::Relaxed);
+            });
+
+            let subber = thread::spawn(move || {
+                c2.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    Some(cur.saturating_sub(8))
+                })
+                .ok();
+            });
+
+            adder.join().unwrap();
+            subber.join().unwrap();
+        });
     }
 }

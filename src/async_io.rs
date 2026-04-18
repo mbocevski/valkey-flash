@@ -181,7 +181,7 @@ impl CompletionHandle for BlockedClientHandle {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
     use std::sync::mpsc::{self, SyncSender};
@@ -303,5 +303,50 @@ mod tests {
 
         // Release the worker so threads can clean up.
         let _ = release_tx.send(());
+    }
+}
+
+// ── Loom concurrency model tests ──────────────────────────────────────────────
+//
+// AsyncThreadPool uses crossbeam-channel (not loom-instrumented) and spawns
+// workers via std::thread, so it cannot be used inside loom::model. The test
+// below models the "task claimed exactly once" invariant using loom's own
+// Arc+Mutex queue to explore all possible drain interleavings.
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use loom::sync::{Arc, Mutex};
+    use loom::thread;
+
+    // Two tasks in a shared queue; two workers race to drain it. loom enumerates
+    // every interleaving of the Mutex lock/unlock pairs and verifies that each
+    // task is popped (and therefore completed) exactly once — never duplicated,
+    // never lost.
+    #[test]
+    fn worker_claims_task_exactly_once() {
+        loom::model(|| {
+            let queue = Arc::new(Mutex::new(vec![1u8, 2u8]));
+            let results = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+            let make_worker = |q: Arc<Mutex<Vec<u8>>>, r: Arc<Mutex<Vec<u8>>>| {
+                thread::spawn(move || loop {
+                    let task = q.lock().unwrap().pop();
+                    match task {
+                        Some(t) => r.lock().unwrap().push(t),
+                        None => break,
+                    }
+                })
+            };
+
+            let w1 = make_worker(queue.clone(), results.clone());
+            let w2 = make_worker(queue.clone(), results.clone());
+
+            w1.join().unwrap();
+            w2.join().unwrap();
+
+            let mut r = results.lock().unwrap().clone();
+            r.sort_unstable();
+            assert_eq!(r, vec![1, 2], "each task claimed exactly once");
+        });
     }
 }
