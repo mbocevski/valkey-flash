@@ -50,9 +50,14 @@ class TestFlashInfo(ValkeyFlashTestCase):
         after = self._info()["flash_cache_hits"]
         assert after > before
 
-    def test_cache_misses_increment_on_miss(self):
+    def test_cache_misses_increment_on_cold_get(self):
+        # A GET on a nonexistent key returns early (no cache.get() call).
+        # To exercise cache misses, set a key, demote it to NVMe (evicts from
+        # the hot cache), then GET it — the cold path calls cache.get() → None.
+        self.client.execute_command("FLASH.SET", "info_miss_key", "v")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "info_miss_key")
         before = self._info()["flash_cache_misses"]
-        self.client.execute_command("FLASH.GET", "info_nokey_xyzzy")
+        self.client.execute_command("FLASH.GET", "info_miss_key")
         after = self._info()["flash_cache_misses"]
         assert after > before
 
