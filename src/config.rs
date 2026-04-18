@@ -108,6 +108,52 @@ pub static FLASH_CLUSTER_MODE_ENABLED: LazyLock<Mutex<String>> =
 /// Reserved for task #82; downstream tasks read this flag without touching config.rs.
 pub static FLASH_REPLICA_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
+// ── flash.migration-max-key-bytes ─────────────────────────────────────────────
+
+pub const FLASH_MIGRATION_MAX_KEY_BYTES_DEFAULT: i64 = 64 * 1024 * 1024; // 64 MiB
+pub const FLASH_MIGRATION_MAX_KEY_BYTES_MIN: i64 = 1024; // 1 KiB
+pub const FLASH_MIGRATION_MAX_KEY_BYTES_MAX: i64 = i64::MAX;
+
+/// Per-key size limit during slot migration pre-warm. Keys larger than this are
+/// skipped (they are still migrated correctly via rdb_save's NVMe read path).
+/// Immutable after module load.
+pub static FLASH_MIGRATION_MAX_KEY_BYTES: AtomicI64 =
+    AtomicI64::new(FLASH_MIGRATION_MAX_KEY_BYTES_DEFAULT);
+
+// ── flash.migration-bandwidth-mbps ───────────────────────────────────────────
+
+pub const FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT: i64 = 100;
+pub const FLASH_MIGRATION_BANDWIDTH_MBPS_MIN: i64 = 1;
+pub const FLASH_MIGRATION_BANDWIDTH_MBPS_MAX: i64 = 100_000;
+
+/// Soft bandwidth cap (MiB/s) for NVMe reads during EXPORT_STARTED pre-warm.
+/// Mutable via CONFIG SET.
+pub static FLASH_MIGRATION_BANDWIDTH_MBPS: AtomicI64 =
+    AtomicI64::new(FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT);
+
+// ── flash.migration-chunk-timeout-sec ────────────────────────────────────────
+
+pub const FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_DEFAULT: i64 = 30;
+pub const FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MIN: i64 = 1;
+pub const FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MAX: i64 = 3600;
+
+/// Wall-clock budget (seconds) for pre-warming cold keys on EXPORT_STARTED.
+/// Keys not pre-warmed are still migrated correctly via rdb_save's NVMe read.
+/// Mutable via CONFIG SET.
+pub static FLASH_MIGRATION_CHUNK_TIMEOUT_SEC: AtomicI64 =
+    AtomicI64::new(FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_DEFAULT);
+
+// ── flash.migration-probe-cache-sec ──────────────────────────────────────────
+
+pub const FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT: i64 = 60;
+pub const FLASH_MIGRATION_PROBE_CACHE_SEC_MIN: i64 = 0; // 0 = no caching
+pub const FLASH_MIGRATION_PROBE_CACHE_SEC_MAX: i64 = 3600;
+
+/// TTL (seconds) for FLASH.MIGRATE.PROBE results cached by host:port.
+/// 0 disables caching. Immutable after module load.
+pub static FLASH_MIGRATION_PROBE_CACHE_SEC: AtomicI64 =
+    AtomicI64::new(FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT);
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -246,5 +292,32 @@ mod tests {
         FLASH_REPLICA_TIER_ENABLED.store(true, Ordering::Relaxed);
         assert!(FLASH_REPLICA_TIER_ENABLED.load(Ordering::Relaxed));
         FLASH_REPLICA_TIER_ENABLED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn migration_config_defaults() {
+        assert_eq!(FLASH_MIGRATION_MAX_KEY_BYTES_DEFAULT, 64 * 1024 * 1024);
+        assert_eq!(FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT, 100);
+        assert_eq!(FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_DEFAULT, 30);
+        assert_eq!(FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT, 60);
+    }
+
+    #[test]
+    fn migration_bandwidth_mbps_is_mutable() {
+        let original = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed);
+        FLASH_MIGRATION_BANDWIDTH_MBPS.store(200, Ordering::Relaxed);
+        assert_eq!(FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed), 200);
+        FLASH_MIGRATION_BANDWIDTH_MBPS.store(original, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn migration_chunk_timeout_is_mutable() {
+        let original = FLASH_MIGRATION_CHUNK_TIMEOUT_SEC.load(Ordering::Relaxed);
+        FLASH_MIGRATION_CHUNK_TIMEOUT_SEC.store(60, Ordering::Relaxed);
+        assert_eq!(
+            FLASH_MIGRATION_CHUNK_TIMEOUT_SEC.load(Ordering::Relaxed),
+            60
+        );
+        FLASH_MIGRATION_CHUNK_TIMEOUT_SEC.store(original, Ordering::Relaxed);
     }
 }

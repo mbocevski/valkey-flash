@@ -32,7 +32,15 @@ use crate::config::{
     FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_IO_THREADS, FLASH_IO_THREADS_DEFAULT,
     FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN, FLASH_IO_URING_ENTRIES,
     FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MAX, FLASH_IO_URING_ENTRIES_MIN,
-    FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_REPLICA_TIER_ENABLED, FLASH_SYNC,
+    FLASH_MIGRATION_BANDWIDTH_MBPS, FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT,
+    FLASH_MIGRATION_BANDWIDTH_MBPS_MAX, FLASH_MIGRATION_BANDWIDTH_MBPS_MIN,
+    FLASH_MIGRATION_CHUNK_TIMEOUT_SEC, FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_DEFAULT,
+    FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MAX, FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MIN,
+    FLASH_MIGRATION_MAX_KEY_BYTES, FLASH_MIGRATION_MAX_KEY_BYTES_DEFAULT,
+    FLASH_MIGRATION_MAX_KEY_BYTES_MAX, FLASH_MIGRATION_MAX_KEY_BYTES_MIN,
+    FLASH_MIGRATION_PROBE_CACHE_SEC, FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT,
+    FLASH_MIGRATION_PROBE_CACHE_SEC_MAX, FLASH_MIGRATION_PROBE_CACHE_SEC_MIN, FLASH_PATH,
+    FLASH_PATH_DEFAULT, FLASH_REPLICA_TIER_ENABLED, FLASH_SYNC,
 };
 use crate::recovery::{ModuleState, TierEntry};
 use crate::storage::cache::FlashCache;
@@ -55,6 +63,7 @@ use crate::commands::hget::flash_hget_command;
 use crate::commands::hgetall::flash_hgetall_command;
 use crate::commands::hlen::flash_hlen_command;
 use crate::commands::hset::flash_hset_command;
+use crate::commands::migrate_probe::flash_migrate_probe_command;
 use crate::commands::set::flash_set_command;
 
 pub const MODULE_NAME: &str = "flash";
@@ -142,6 +151,18 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
             }
         };
         logging::log_notice(format!("flash: cluster mode enabled, node {node_id}").as_str());
+
+        // Allow CLUSTER MIGRATESLOTS to proceed — without this Valkey returns
+        // "ERR This command is not allowed when module <name> is loaded" for
+        // modules that have not explicitly opted in. (VALKEYMODULE_OPTIONS_HANDLE_ATOMIC_SLOT_MIGRATION = 1<<5)
+        const HANDLE_ATOMIC_SLOT_MIGRATION: ::std::os::raw::c_int = 1 << 5;
+        unsafe {
+            #[allow(static_mut_refs)]
+            if let Some(f) = raw::RedisModule_SetModuleOptions {
+                f(ctx.ctx, HANDLE_ATOMIC_SLOT_MIGRATION);
+            }
+        }
+
         cluster::subscribe_cluster_events(ctx);
     }
 
@@ -324,6 +345,20 @@ fn deinitialize(_ctx: &Context) -> Status {
         .take();
     if let Some(h) = handle {
         let _ = h.join();
+    }
+    // Flush LLVM coverage profraw before dlclose() removes our atexit handler.
+    // dlclose() would otherwise make the registered atexit a dangling pointer,
+    // silently dropping all integration-test coverage data.
+    // Only compiled when --cfg=coverage is set (cargo llvm-cov --no-report).
+    #[cfg(coverage)]
+    {
+        extern "C" {
+            fn __llvm_profile_write_file() -> std::os::raw::c_int;
+        }
+        // SAFETY: __llvm_profile_write_file is internally synchronized per LLVM docs.
+        unsafe {
+            __llvm_profile_write_file();
+        }
     }
     Status::Ok
 }
@@ -513,6 +548,7 @@ valkey_module! {
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "admin flash"],
         ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "admin dangerous flash"],
+        ["FLASH.MIGRATE.PROBE", flash_migrate_probe_command, "readonly", 0, 0, 0, "admin dangerous flash"],
     ],
     configurations: [
         i64: [
@@ -532,6 +568,11 @@ valkey_module! {
              Some(Box::new(|_ctx: &ConfigurationContext, _name: &str, _variable: &'static std::sync::atomic::AtomicI64| {
                  wake_compaction();
              }))],
+            // migration knobs
+            ["migration-max-key-bytes", &FLASH_MIGRATION_MAX_KEY_BYTES, FLASH_MIGRATION_MAX_KEY_BYTES_DEFAULT, FLASH_MIGRATION_MAX_KEY_BYTES_MIN, FLASH_MIGRATION_MAX_KEY_BYTES_MAX, ConfigurationFlags::IMMUTABLE, None],
+            ["migration-bandwidth-mbps", &FLASH_MIGRATION_BANDWIDTH_MBPS, FLASH_MIGRATION_BANDWIDTH_MBPS_DEFAULT, FLASH_MIGRATION_BANDWIDTH_MBPS_MIN, FLASH_MIGRATION_BANDWIDTH_MBPS_MAX, ConfigurationFlags::DEFAULT, None],
+            ["migration-chunk-timeout-sec", &FLASH_MIGRATION_CHUNK_TIMEOUT_SEC, FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_DEFAULT, FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MIN, FLASH_MIGRATION_CHUNK_TIMEOUT_SEC_MAX, ConfigurationFlags::DEFAULT, None],
+            ["migration-probe-cache-sec", &FLASH_MIGRATION_PROBE_CACHE_SEC, FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT, FLASH_MIGRATION_PROBE_CACHE_SEC_MIN, FLASH_MIGRATION_PROBE_CACHE_SEC_MAX, ConfigurationFlags::IMMUTABLE, None],
         ],
         string: [
             ["path", &*FLASH_PATH, FLASH_PATH_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
