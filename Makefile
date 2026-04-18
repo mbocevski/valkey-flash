@@ -13,6 +13,6 @@ docker-test:
 	USE_DOCKER=1 python -m pytest tests/test_docker_smoke.py -v
 
 docker-clean:
-	docker compose -f docker/compose.single.yml down -v --remove-orphans 2>/dev/null || true
-	docker compose -f docker/compose.cluster.yml down -v --remove-orphans 2>/dev/null || true
+	docker compose -f docker/compose.single.yml -p vf-single down -v --remove-orphans 2>/dev/null || true
+	docker compose -f docker/compose.cluster.yml -p vf-cluster down -v --remove-orphans 2>/dev/null || true
 	docker rmi valkey-flash:dev 2>/dev/null || true

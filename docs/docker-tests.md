@@ -158,8 +158,8 @@ docker inspect vf-cluster-cluster-init-1
 If a previous run left containers behind (e.g., a test was killed mid-flight):
 
 ```sh
-docker compose -f docker/compose.single.yml down -v --remove-orphans
-docker compose -f docker/compose.cluster.yml down -v --remove-orphans
+docker compose -f docker/compose.single.yml -p vf-single down -v --remove-orphans
+docker compose -f docker/compose.cluster.yml -p vf-cluster down -v --remove-orphans
 ```
 
 The `vf-single` and `vf-cluster` compose project names keep the two stacks isolated; orphan cleanup only touches the matching project.
