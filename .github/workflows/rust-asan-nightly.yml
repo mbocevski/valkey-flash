@@ -1,0 +1,156 @@
+name: rust-asan-nightly
+
+on:
+  schedule:
+    - cron: '37 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  VALKEY_REPO_URL: https://github.com/valkey-io/valkey.git
+  TEST_FRAMEWORK_REPO: https://github.com/valkey-io/valkey-test-framework
+  TEST_FRAMEWORK_DIR: tests/build/valkeytestframework
+  NIGHTLY_TOOLCHAIN: nightly-2026-04-01
+  SERVER_VERSION: unstable
+
+jobs:
+  rust-asan:
+    name: Rust ASAN / nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+    - name: Cache nightly toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.rustup/toolchains/${{ env.NIGHTLY_TOOLCHAIN }}-x86_64-unknown-linux-gnu
+          ~/.rustup/update-hashes
+        key: rust-toolchain-${{ env.NIGHTLY_TOOLCHAIN }}
+
+    - name: Install Rust nightly (pinned)
+      run: |
+        rustup toolchain install ${{ env.NIGHTLY_TOOLCHAIN }} \
+          --no-self-update --profile minimal \
+          --component rust-src
+
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-asan-nightly-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build Rust module with ASAN
+      run: |
+        RUSTFLAGS="-Z sanitizer=address" \
+          cargo +${{ env.NIGHTLY_TOOLCHAIN }} build \
+          --target x86_64-unknown-linux-gnu \
+          --features enable-system-alloc
+        echo "MODULE_PATH=$PWD/target/x86_64-unknown-linux-gnu/debug/libvalkey_flash.so" \
+          >> $GITHUB_ENV
+
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ env.SERVER_VERSION }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+    - name: Cache Valkey server binary (clang ASAN)
+      id: cache-valkey
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: tests/build/binaries/${{ env.SERVER_VERSION }}
+        key: valkey-server-clang-asan-${{ env.SERVER_VERSION }}-${{ steps.valkey-sha.outputs.sha }}
+
+    - name: Build valkey-server with clang ASAN
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p "tests/build/binaries/${{ env.SERVER_VERSION }}"
+        cd tests/build
+        git clone "${{ env.VALKEY_REPO_URL }}"
+        cd valkey
+        git checkout ${{ env.SERVER_VERSION }}
+        make distclean
+        CC=clang CXX=clang++ make -j SANITIZER=address BUILD_TLS=module
+        cp src/valkey-server ../binaries/${{ env.SERVER_VERSION }}/
+        if [ -f src/modules/lua/libvalkeylua.so ]; then
+          cp src/modules/lua/libvalkeylua.so ../binaries/${{ env.SERVER_VERSION }}/
+        fi
+
+    - name: Get test framework HEAD SHA
+      id: tf-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.TEST_FRAMEWORK_REPO }}" refs/heads/main \
+          | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+    - name: Cache test framework
+      id: cache-tf
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: ${{ env.TEST_FRAMEWORK_DIR }}
+        key: valkey-test-framework-${{ steps.tf-sha.outputs.sha }}
+
+    - name: Set up test framework
+      if: steps.cache-tf.outputs.cache-hit != 'true'
+      run: |
+        git clone ${{ env.TEST_FRAMEWORK_REPO }}
+        mkdir -p ${{ env.TEST_FRAMEWORK_DIR }}
+        mv valkey-test-framework/src/* ${{ env.TEST_FRAMEWORK_DIR }}/
+        rm -rf valkey-test-framework
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      with:
+        python-version: '3.11'
+
+    - name: Install test dependencies
+      run: pip install -r requirements.txt
+
+    - name: Prepare ASAN log directory
+      run: mkdir -p /tmp/asan-logs
+
+    - name: Run integration tests with Rust ASAN module
+      run: |
+        ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/asan-logs/asan:abort_on_error=0" \
+          MODULE_PATH="$MODULE_PATH" \
+          python -m pytest --capture=sys --cache-clear -v tests/ \
+            --ignore=tests/test_docker_smoke.py \
+            --ignore=tests/test_flash_acl.py \
+            --ignore=tests/test_flash_aof.py \
+            -m "not skip_for_asan" \
+            --tb=short 2>&1 | tee pytest-output.log || true
+
+    - name: Check for ASAN violations
+      run: |
+        found=0
+        if ls /tmp/asan-logs/asan.* 2>/dev/null; then
+          echo "=== ASAN reports ==="
+          cat /tmp/asan-logs/asan.*
+          grep -l "SUMMARY: AddressSanitizer" /tmp/asan-logs/asan.* && found=1 || true
+        fi
+        if grep -q "SUMMARY: AddressSanitizer" pytest-output.log 2>/dev/null; then
+          found=1
+        fi
+        if [ "$found" -eq 1 ]; then
+          echo "::error::AddressSanitizer violations detected in Rust module"
+          exit 1
+        fi
+        echo "No AddressSanitizer violations found"
+
+    - name: Upload ASAN logs and test output
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: rust-asan-logs
+        path: |
+          /tmp/asan-logs/
+          pytest-output.log
+        if-no-files-found: ignore
