@@ -51,8 +51,8 @@ fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
         ServerRole::Primary => {
             IS_REPLICA.store(false, Ordering::Release);
             valkey_module::logging::log_notice(
-                "flash: role changed to Primary — NVMe demotions resumed; \
-                 backend initialized on first write",
+                "flash: role changed to Primary — NVMe backend absent; \
+                 restart server to enable NVMe writes",
             );
         }
     }

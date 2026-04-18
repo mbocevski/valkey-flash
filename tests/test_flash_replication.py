@@ -72,6 +72,18 @@ class TestFlashReplication(ReplicationTestCase):
             val = self.replicas[0].client.execute_command("FLASH.GET", f"multi_{i}")
             assert val == f"val_{i}".encode()
 
+    def test_promoted_replica_writes_fail_without_backend(self):
+        self.setup_replication(num_replicas=1)
+        self.waitForReplicaToSyncUp(self.replicas[0])
+
+        self.replicas[0].client.execute_command("REPLICAOF", "NO", "ONE")
+
+        try:
+            self.replicas[0].client.execute_command("FLASH.SET", "post_promo", "val")
+            assert False, "expected ERR: NVMe backend absent after promotion"
+        except Exception as e:
+            assert "not initialized" in str(e).lower() or "ERR" in str(e)
+
     def test_hdel_replication(self):
         self.setup_replication(num_replicas=1)
         self.client.execute_command("FLASH.HSET", "hdel_hash", "f1", "v1", "f2", "v2")
