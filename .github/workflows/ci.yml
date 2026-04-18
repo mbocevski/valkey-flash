@@ -448,6 +448,7 @@ jobs:
           --fail-under-functions 68 \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
     - name: Upload to Codecov
+      if: always()
       uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5
       with:
         files: lcov.info
