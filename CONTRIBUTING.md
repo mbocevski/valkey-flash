@@ -42,6 +42,17 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 - Line coverage target ≥ 85% (enforced in CI once sufficient code exists).
 - Every public command needs integration tests: happy path, error paths, RDB + AOF round-trip, replication, keyspace notifications.
 
+## Docker-based testing
+
+Full end-to-end tests run the module inside Docker against real single-node and cluster topologies. See [docs/docker-tests.md](docs/docker-tests.md) for setup, connection, pytest invocation, and debugging.
+
+Quick start:
+
+```sh
+make docker-test        # build image + run both smoke tests
+make docker-clean       # tear down all stacks and remove the image
+```
+
 ## Fuzzing
 
 Fuzz targets live in `fuzz/fuzz_targets/`. Running them requires nightly Rust and `cargo-fuzz`:

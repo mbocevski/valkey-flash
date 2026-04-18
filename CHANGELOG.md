@@ -37,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Three-primary, three-replica cluster Docker Compose (`docker/compose.cluster.yml`) with automatic slot assignment via `cluster-init` oneshot service
 - pytest fixtures for single-node and cluster Docker topologies (`docker_single`, `docker_cluster`); activated via `USE_DOCKER=1`
 - CI job tier for Docker-based integration tests (`docker-integration`): matrix over topology (single, cluster), triggered on push to `main` and on PRs with the `slow-tests` label; Docker layer cache keyed on `Dockerfile + Cargo.lock` hash; compose logs uploaded as artifact on failure
+- `docs/docker-tests.md` — developer guide for running Docker-based tests locally: prerequisites, image build, single-node and cluster startup/teardown, pytest invocation, debugging, and seccomp/io_uring caveat
+- `Makefile` with `docker-build`, `docker-test-single`, `docker-test-cluster`, `docker-test`, and `docker-clean` targets
 
 ### Changed
 
