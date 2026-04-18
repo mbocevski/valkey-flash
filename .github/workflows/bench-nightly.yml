@@ -1,0 +1,113 @@
+name: bench-nightly
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  VALKEY_REPO_URL: https://github.com/valkey-io/valkey.git
+  TEST_FRAMEWORK_REPO: https://github.com/valkey-io/valkey-test-framework
+  SERVER_VERSION: unstable
+
+jobs:
+  ycsb:
+    name: YCSB benchmark matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      actions: read   # needed for gh run download to fetch prior artifact
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release module
+      run: RUSTFLAGS="-D warnings" cargo build --release
+
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ env.SERVER_VERSION }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+    - name: Cache Valkey server binary
+      id: cache-valkey
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: tests/build/binaries/${{ env.SERVER_VERSION }}
+        key: valkey-server-${{ env.SERVER_VERSION }}-${{ steps.valkey-sha.outputs.sha }}
+
+    - name: Build valkey-server
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p "tests/build/binaries/${{ env.SERVER_VERSION }}"
+        cd tests/build
+        git clone "${{ env.VALKEY_REPO_URL }}"
+        cd valkey
+        git checkout ${{ env.SERVER_VERSION }}
+        make -j
+        cp src/valkey-server ../binaries/${{ env.SERVER_VERSION }}/
+        if [ -f src/modules/lua/libvalkeylua.so ]; then
+          cp src/modules/lua/libvalkeylua.so ../binaries/${{ env.SERVER_VERSION }}/
+        fi
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      with:
+        python-version: '3.11'
+
+    - name: Install test dependencies
+      run: pip install -r requirements.txt
+
+    - name: Set module and server paths
+      run: |
+        echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
+        echo "SERVER_BIN=$(realpath tests/build/binaries/${{ env.SERVER_VERSION }}/valkey-server)" >> $GITHUB_ENV
+
+    - name: Download previous nightly artifact (for regression comparison)
+      id: baseline
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        prev_run=$(gh run list \
+          --workflow=bench-nightly.yml \
+          --status=success \
+          --limit=5 \
+          --json databaseId \
+          --jq '.[0].databaseId' 2>/dev/null || echo "")
+        if [ -n "$prev_run" ] && [ "$prev_run" != "null" ]; then
+          mkdir -p baseline
+          gh run download "$prev_run" --name ycsb-report --dir baseline/ 2>/dev/null \
+            && echo "path=baseline/ycsb-report.json" >> $GITHUB_OUTPUT \
+            || echo "path=" >> $GITHUB_OUTPUT
+        else
+          echo "path=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Run YCSB benchmark matrix
+      run: |
+        baseline_arg=""
+        if [ -n "${{ steps.baseline.outputs.path }}" ]; then
+          baseline_arg="--baseline ${{ steps.baseline.outputs.path }}"
+        fi
+        python3 tests/bench/ycsb.py $baseline_arg
+
+    - name: Upload YCSB report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: ycsb-report
+        path: ycsb-report.json
+        if-no-files-found: warn
