@@ -286,6 +286,81 @@ jobs:
         path: latency-report.json
         if-no-files-found: ignore
 
+  benchmark:
+    name: Benchmark / Valkey ${{ matrix.server_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        server_version: ['unstable', '8.0', '8.1']
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Set server version
+      run: echo "SERVER_VERSION=${{ matrix.server_version }}" >> $GITHUB_ENV
+    - name: Cache Cargo registry
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Release build
+      run: |
+        if [ "${{ matrix.server_version }}" = "8.0" ]; then
+          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
+        else
+          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
+        fi
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ matrix.server_version }}" \
+          "refs/tags/${{ matrix.server_version }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache Valkey server binary
+      id: cache-valkey
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+      with:
+        path: tests/build/binaries/${{ matrix.server_version }}
+        key: valkey-server-${{ matrix.server_version }}-${{ steps.valkey-sha.outputs.sha }}
+    - name: Build valkey-server
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p "tests/build/binaries/${{ matrix.server_version }}"
+        cd tests/build
+        git clone "${{ env.VALKEY_REPO_URL }}"
+        cd valkey
+        git checkout ${{ matrix.server_version }}
+        make -j
+        cp src/valkey-server ../binaries/${{ matrix.server_version }}/
+        if [ -f src/modules/lua/libvalkeylua.so ]; then
+          cp src/modules/lua/libvalkeylua.so ../binaries/${{ matrix.server_version }}/
+        fi
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      with:
+        python-version: '3.11'
+    - name: Install test dependencies
+      run: pip install -r requirements.txt
+    - name: Set paths
+      run: |
+        echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
+        echo "SERVER_BIN=$(realpath tests/build/binaries/${{ matrix.server_version }}/valkey-server)" >> $GITHUB_ENV
+    - name: Run benchmark suite
+      run: python tests/bench.py
+    - name: Upload benchmark report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: bench-report-${{ matrix.server_version }}
+        path: bench-report.json
+        if-no-files-found: ignore
+
   fuzz-smoke:
     name: Fuzz smoke
     runs-on: ubuntu-latest
