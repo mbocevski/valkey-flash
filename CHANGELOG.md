@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime module configuration: `flash.path`, `flash.capacity-bytes`, `flash.cache-size-bytes`, `flash.sync`, `flash.io-threads`, `flash.io-uring-entries`, `flash.compaction-interval-sec`
 - Async I/O thread pool with BlockClient for non-blocking NVMe reads and writes
 
+### Fixed
+
+- Promoted replica now initializes NVMe backend on `REPLICAOF NO ONE`, enabling FLASH.SET writes without a server restart
+
 ### Security
 
 - WAL record CRC32C framing — corrupt or truncated records are detected and rejected on recovery

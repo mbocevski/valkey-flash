@@ -238,31 +238,7 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     // flash.compaction-interval-sec seconds. Uses Condvar::wait_timeout so that
     // a shutdown signal from deinitialize() wakes the thread immediately rather
     // than waiting up to one full tick interval.
-    let handle = std::thread::spawn(|| {
-        let (lock, cvar) = &*COMPACTION_SHUTDOWN;
-        let mut elapsed_decisecs: u64 = 0; // units of 100 ms
-        loop {
-            // Sleep at most 100 ms, or until notified (shutdown).
-            let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-            let (guard, _) = cvar
-                .wait_timeout(guard, std::time::Duration::from_millis(100))
-                .unwrap_or_else(|e| e.into_inner());
-            if *guard {
-                return; // shutdown flag set
-            }
-            drop(guard);
-
-            elapsed_decisecs += 1;
-            let interval_decisecs =
-                FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed) as u64 * 10;
-            if elapsed_decisecs >= interval_decisecs {
-                elapsed_decisecs = 0;
-                if let Some(storage) = STORAGE.get() {
-                    storage.run_compaction_tick();
-                }
-            }
-        }
-    });
+    let handle = std::thread::spawn(compaction_worker);
     if let Ok(mut guard) = COMPACTION_THREAD.lock() {
         *guard = Some(handle);
     }
@@ -293,6 +269,151 @@ fn deinitialize(_ctx: &Context) -> Status {
         let _ = h.join();
     }
     Status::Ok
+}
+
+fn compaction_worker() {
+    let (lock, cvar) = &*COMPACTION_SHUTDOWN;
+    let mut elapsed_decisecs: u64 = 0;
+    loop {
+        let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        let (guard, _) = cvar
+            .wait_timeout(guard, std::time::Duration::from_millis(100))
+            .unwrap_or_else(|e| e.into_inner());
+        if *guard {
+            return;
+        }
+        drop(guard);
+
+        elapsed_decisecs += 1;
+        let interval_decisecs = FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed) as u64 * 10;
+        if elapsed_decisecs >= interval_decisecs {
+            elapsed_decisecs = 0;
+            if let Some(storage) = STORAGE.get() {
+                storage.run_compaction_tick();
+            }
+        }
+    }
+}
+
+/// Initialise the NVMe backend (STORAGE, WAL, POOL, compaction thread) when
+/// this instance is promoted from replica to primary via `REPLICAOF NO ONE`.
+///
+/// Early-returns without error if STORAGE is already set — this handles the
+/// primary→replica→primary round-trip where the existing backend is still live.
+/// On failure, MODULE_STATE is set to Error and a warning is logged.
+pub(crate) fn init_nvme_backend() {
+    if STORAGE.get().is_some() {
+        logging::log_notice("flash: promotion: NVMe backend already present — resuming");
+        return;
+    }
+
+    let path = match FLASH_PATH.lock() {
+        Ok(g) => g.clone(),
+        Err(e) => {
+            logging::log_warning(
+                format!("flash: promotion: FLASH_PATH lock poisoned: {e}").as_str(),
+            );
+            return;
+        }
+    };
+    let capacity = FLASH_CAPACITY_BYTES.load(Ordering::Relaxed) as u64;
+    let io_uring_entries = FLASH_IO_URING_ENTRIES.load(Ordering::Relaxed) as u32;
+    let io_threads = flash_io_threads();
+    let wal_path = PathBuf::from(&path).with_extension("wal");
+
+    let wal_sync_mode = match FLASH_SYNC.lock() {
+        Ok(g) => {
+            if *g == SyncMode::always {
+                WalSyncMode::Always
+            } else if *g == SyncMode::no {
+                WalSyncMode::No
+            } else {
+                WalSyncMode::Everysec
+            }
+        }
+        Err(e) => {
+            logging::log_warning(
+                format!("flash: promotion: FLASH_SYNC lock poisoned: {e}").as_str(),
+            );
+            return;
+        }
+    };
+
+    // Freshly promoted replica has no prior WAL or NVMe state; None aux is correct.
+    match recovery::run_recovery(None, &wal_path, &path, capacity) {
+        Ok((stats, tiering_map)) => {
+            for warn in &stats.warnings {
+                logging::log_warning(warn.as_str());
+            }
+            logging::log_notice(
+                format!(
+                    "flash: promotion recovery: {} records in {}ms",
+                    stats.records_applied, stats.elapsed_ms,
+                )
+                .as_str(),
+            );
+            if let Ok(mut map) = TIERING_MAP.lock() {
+                *map = tiering_map;
+            }
+        }
+        Err(e) => {
+            logging::log_warning(format!("flash: promotion: recovery failed: {e}").as_str());
+            if let Ok(mut state) = MODULE_STATE.lock() {
+                *state = ModuleState::Error;
+            }
+            return;
+        }
+    }
+
+    match FileIoUringBackend::open(&path, capacity, io_uring_entries) {
+        Ok(backend) => {
+            let _ = STORAGE.set(backend);
+        }
+        Err(e) => {
+            logging::log_warning(
+                format!("flash: promotion: failed to open storage at '{path}': {e}").as_str(),
+            );
+            if let Ok(mut state) = MODULE_STATE.lock() {
+                *state = ModuleState::Error;
+            }
+            return;
+        }
+    }
+
+    match Wal::open(&wal_path, wal_sync_mode) {
+        Ok(wal) => {
+            let _ = WAL.set(wal);
+        }
+        Err(e) => {
+            logging::log_warning(
+                format!(
+                    "flash: promotion: failed to open WAL at '{}': {e}",
+                    wal_path.display()
+                )
+                .as_str(),
+            );
+            if let Ok(mut state) = MODULE_STATE.lock() {
+                *state = ModuleState::Error;
+            }
+            return;
+        }
+    }
+
+    let _ = POOL.set(AsyncThreadPool::new(io_threads));
+
+    if let Ok(mut flag) = COMPACTION_SHUTDOWN.0.lock() {
+        *flag = false;
+    }
+    let handle = std::thread::spawn(compaction_worker);
+    if let Ok(mut guard) = COMPACTION_THREAD.lock() {
+        *guard = Some(handle);
+    }
+
+    if let Ok(mut state) = MODULE_STATE.lock() {
+        *state = ModuleState::Ready;
+    }
+
+    logging::log_notice("flash: promotion to primary complete — NVMe backend initialized");
 }
 
 #[info_command_handler]

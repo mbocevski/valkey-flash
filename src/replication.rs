@@ -35,9 +35,9 @@ pub fn must_obey_client(ctx: &Context) -> bool {
 /// - `Primary → Replica`: set `IS_REPLICA = true` to suspend NVMe demotions.
 ///   The hot-set is kept intact; new writes from the primary are applied only
 ///   to the RAM cache (no NVMe write, no WAL append).
-/// - `Replica → Primary`: reset `IS_REPLICA = false` to resume normal
-///   operation.  The NVMe backend is initialized lazily on the first write
-///   command that arrives after promotion.
+/// - `Replica → Primary`: reset `IS_REPLICA = false` and eagerly initialize the
+///   NVMe backend (STORAGE, WAL, POOL, compaction thread) so that write commands
+///   succeed immediately without a server restart.
 #[role_changed_event_handler]
 fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
     match new_role {
@@ -51,9 +51,9 @@ fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
         ServerRole::Primary => {
             IS_REPLICA.store(false, Ordering::Release);
             valkey_module::logging::log_notice(
-                "flash: role changed to Primary — NVMe backend absent; \
-                 restart server to enable NVMe writes",
+                "flash: role changed to Primary — initiating NVMe backend",
             );
+            crate::init_nvme_backend();
         }
     }
 }
