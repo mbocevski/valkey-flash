@@ -25,8 +25,10 @@ impl BandwidthThrottle {
         }
     }
 
-    /// Update the bandwidth limit live (e.g. from CONFIG SET mid-migration).
+    /// Update the bandwidth limit (e.g. for future wiring to a CONFIG SET callback).
     /// Resets the accounting window to avoid carrying over stale debt.
+    /// Currently the running throttle instance is not connected to the live config;
+    /// changes via CONFIG SET take effect on the next migration pre-warm.
     pub fn set_bandwidth_mbps(&mut self, bandwidth_mbps: u64) {
         self.limit_bps = bandwidth_mbps * 125_000;
         self.window_start = Instant::now();
