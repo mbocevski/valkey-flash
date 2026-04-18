@@ -81,13 +81,17 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
                 value_len,
                 ..
             } => {
-                let storage = STORAGE
-                    .get()
-                    .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
-                let bytes = storage
-                    .read_at_offset(*backend_offset, *value_len)
-                    .map_err(|e| ValkeyError::String(e.to_string()))?;
-                hash_deserialize_or_warn(&bytes)
+                if crate::replication::is_replica() {
+                    HashMap::new()
+                } else {
+                    let storage = STORAGE
+                        .get()
+                        .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
+                    let bytes = storage
+                        .read_at_offset(*backend_offset, *value_len)
+                        .map_err(|e| ValkeyError::String(e.to_string()))?;
+                    hash_deserialize_or_warn(&bytes)
+                }
             }
         };
         (fields, ttl)
@@ -115,6 +119,11 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
         #[cfg(not(test))]
         {
+            if crate::replication::is_replica()
+                || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
+            {
+                return Ok(ValkeyValue::Integer(deleted));
+            }
             let pool = POOL
                 .get()
                 .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
@@ -149,6 +158,11 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
         #[cfg(not(test))]
         {
+            if crate::replication::is_replica()
+                || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
+            {
+                return Ok(ValkeyValue::Integer(deleted));
+            }
             use crate::storage::backend::StorageBackend;
             let storage = STORAGE
                 .get()

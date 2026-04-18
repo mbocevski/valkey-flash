@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
-    configuration::ConfigurationFlags, logging, valkey_module, Context, InfoContext, Status,
-    ValkeyResult, ValkeyString,
+    configuration::ConfigurationFlags, logging, valkey_module, Context, ContextFlags, InfoContext,
+    Status, ValkeyResult, ValkeyString,
 };
 use valkey_module_macros::info_command_handler;
 
@@ -14,6 +14,7 @@ pub mod config;
 pub mod metrics;
 pub mod persistence;
 pub mod recovery;
+pub mod replication;
 pub mod storage;
 pub mod types;
 pub mod util;
@@ -92,7 +93,7 @@ static COMPACTION_THREAD: LazyLock<Mutex<Option<std::thread::JoinHandle<()>>>> =
 
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
-fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
+fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     // 0 is the sentinel default for flash.io-threads (auto-detect).
     // Replace it with the actual logical CPU count once the server is running.
     if FLASH_IO_THREADS.load(Ordering::Relaxed) == 0 {
@@ -110,6 +111,17 @@ fn initialize(_ctx: &Context, _args: &[ValkeyString]) -> Status {
     let cache_size = FLASH_CACHE_SIZE_BYTES.load(Ordering::Relaxed) as u64;
     let io_uring_entries = FLASH_IO_URING_ENTRIES.load(Ordering::Relaxed) as u32;
     let io_threads = flash_io_threads();
+
+    // ── Replica early-exit ────────────────────────────────────────────────────
+    if ctx.get_flags().contains(ContextFlags::SLAVE) {
+        replication::IS_REPLICA.store(true, Ordering::Release);
+        let _ = CACHE.set(FlashCache::new(cache_size));
+        if let Ok(mut state) = MODULE_STATE.lock() {
+            *state = ModuleState::Ready;
+        }
+        logging::log_notice("flash: starting as replica — NVMe backend deferred until promotion");
+        return Status::Ok;
+    }
 
     // Derive WAL path from the backing-store path (same dir, .wal extension).
     let wal_path = PathBuf::from(&path).with_extension("wal");
