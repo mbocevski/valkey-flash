@@ -1,7 +1,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -200,18 +201,27 @@ pub enum WalSyncMode {
 
 // ── Background everysec flusher ───────────────────────────────────────────────
 
-fn spawn_everysec_flusher(inner: Arc<Mutex<WalInner>>) -> WalResult<thread::JoinHandle<()>> {
+fn spawn_everysec_flusher(
+    inner: Arc<Mutex<WalInner>>,
+    shutdown: Arc<AtomicBool>,
+    signal: Arc<(Mutex<()>, Condvar)>,
+) -> WalResult<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("wal-flusher".into())
         .spawn(move || loop {
-            thread::sleep(Duration::from_secs(1));
+            let (mu, cvar) = &*signal;
+            let guard = mu.lock().unwrap_or_else(|e| e.into_inner());
+            // Sleep up to 1 s; wakes immediately when shutdown is signalled.
+            let _ = cvar.wait_timeout_while(guard, Duration::from_secs(1), |_| {
+                !shutdown.load(Ordering::Relaxed)
+            });
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
             let guard = match inner.lock() {
                 Ok(g) => g,
                 Err(_) => break,
             };
-            if guard.stopped {
-                break;
-            }
             let _ = guard.file.sync_data();
         })
         .map_err(WalError::Io)
@@ -221,7 +231,6 @@ fn spawn_everysec_flusher(inner: Arc<Mutex<WalInner>>) -> WalResult<thread::Join
 
 struct WalInner {
     file: File,
-    stopped: bool,
 }
 
 // ── Wal ───────────────────────────────────────────────────────────────────────
@@ -240,8 +249,9 @@ pub struct Wal {
     inner: Arc<Mutex<WalInner>>,
     sync_mode: WalSyncMode,
     path: PathBuf,
-    // held to keep the flusher thread alive for everysec mode
-    _flusher: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+    flusher_signal: Arc<(Mutex<()>, Condvar)>,
+    flusher: Option<thread::JoinHandle<()>>,
 }
 
 impl Wal {
@@ -287,13 +297,16 @@ impl Wal {
             f.seek(SeekFrom::End(0))?;
         }
 
-        let inner = Arc::new(Mutex::new(WalInner {
-            file,
-            stopped: false,
-        }));
+        let inner = Arc::new(Mutex::new(WalInner { file }));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let flusher_signal = Arc::new((Mutex::new(()), Condvar::new()));
 
         let flusher = if sync_mode == WalSyncMode::Everysec {
-            Some(spawn_everysec_flusher(Arc::clone(&inner))?)
+            Some(spawn_everysec_flusher(
+                Arc::clone(&inner),
+                Arc::clone(&shutdown),
+                Arc::clone(&flusher_signal),
+            )?)
         } else {
             None
         };
@@ -302,7 +315,9 @@ impl Wal {
             inner,
             sync_mode,
             path,
-            _flusher: flusher,
+            shutdown,
+            flusher_signal,
+            flusher,
         })
     }
 
@@ -374,8 +389,16 @@ impl Wal {
 
 impl Drop for Wal {
     fn drop(&mut self) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.stopped = true;
+        self.shutdown.store(true, Ordering::Relaxed);
+        // Lock briefly then notify: ensures the flusher either (a) sees the flag
+        // on its next condition check, or (b) wakes from wait_timeout_while early.
+        {
+            let (_g, cvar) = &*self.flusher_signal;
+            drop(_g.lock().unwrap_or_else(|e| e.into_inner()));
+            cvar.notify_all();
+        }
+        if let Some(handle) = self.flusher.take() {
+            handle.join().unwrap_or_else(|_| ());
         }
     }
 }
@@ -595,6 +618,23 @@ mod tests {
     }
 
     // ── Sync modes ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn everysec_flusher_joins_promptly_on_drop() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("drop_join.wal");
+        let wal = Wal::open(&path, WalSyncMode::Everysec).unwrap();
+        wal.append(put_op(1)).unwrap();
+
+        let start = std::time::Instant::now();
+        drop(wal);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "Wal::drop took {elapsed:?}, expected < 100 ms (flusher thread not joined promptly)"
+        );
+    }
 
     #[test]
     fn sync_mode_always_completes_without_error() {
