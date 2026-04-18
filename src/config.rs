@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use valkey_module::enum_configuration;
 
@@ -90,6 +90,23 @@ pub const FLASH_COMPACTION_INTERVAL_SEC_MAX: i64 = 3600;
 /// How often the background compaction thread runs (seconds). Mutable via CONFIG SET.
 pub static FLASH_COMPACTION_INTERVAL_SEC: AtomicI64 =
     AtomicI64::new(FLASH_COMPACTION_INTERVAL_SEC_DEFAULT);
+
+// ── flash.cluster-mode-enabled ────────────────────────────────────────────────
+
+pub const FLASH_CLUSTER_MODE_ENABLED_DEFAULT: &str = "auto";
+
+/// Cluster mode detection.
+/// `"auto"` — detect from `ContextFlags::CLUSTER` at load time (default).
+/// `"yes"`  — always treat this instance as part of a cluster.
+/// `"no"`   — always treat this instance as standalone.
+pub static FLASH_CLUSTER_MODE_ENABLED: LazyLock<Mutex<String>> =
+    LazyLock::new(|| Mutex::new(FLASH_CLUSTER_MODE_ENABLED_DEFAULT.to_string()));
+
+// ── flash.replica-tier-enabled ────────────────────────────────────────────────
+
+/// Enables the flash NVMe tier on cluster replicas (default `false`).
+/// Reserved for task #82; downstream tasks read this flag without touching config.rs.
+pub static FLASH_REPLICA_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -199,5 +216,35 @@ mod tests {
         FLASH_COMPACTION_INTERVAL_SEC.store(120, Ordering::Relaxed);
         assert_eq!(FLASH_COMPACTION_INTERVAL_SEC.load(Ordering::Relaxed), 120);
         FLASH_COMPACTION_INTERVAL_SEC.store(original, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn cluster_mode_enabled_default_is_auto() {
+        assert_eq!(FLASH_CLUSTER_MODE_ENABLED_DEFAULT, "auto");
+        let v = FLASH_CLUSTER_MODE_ENABLED.lock().unwrap();
+        assert_eq!(v.as_str(), "auto");
+    }
+
+    #[test]
+    fn cluster_mode_enabled_is_mutable() {
+        {
+            let mut v = FLASH_CLUSTER_MODE_ENABLED.lock().unwrap();
+            *v = "yes".to_string();
+            assert_eq!(v.as_str(), "yes");
+            *v = "auto".to_string();
+        }
+        assert_eq!(FLASH_CLUSTER_MODE_ENABLED.lock().unwrap().as_str(), "auto");
+    }
+
+    #[test]
+    fn replica_tier_enabled_default_is_false() {
+        assert!(!FLASH_REPLICA_TIER_ENABLED.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn replica_tier_enabled_is_mutable() {
+        FLASH_REPLICA_TIER_ENABLED.store(true, Ordering::Relaxed);
+        assert!(FLASH_REPLICA_TIER_ENABLED.load(Ordering::Relaxed));
+        FLASH_REPLICA_TIER_ENABLED.store(false, Ordering::Relaxed);
     }
 }

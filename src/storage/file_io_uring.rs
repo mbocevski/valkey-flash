@@ -679,7 +679,7 @@ mod tests {
         // Our delete freed ≥1 block; concurrent parallel tests may free additional blocks,
         // so check delta >= BLOCK_SIZE and block-aligned rather than exact equality.
         assert!(
-            delta >= BLOCK_SIZE as u64 && delta % BLOCK_SIZE as u64 == 0,
+            delta >= BLOCK_SIZE as u64 && delta.is_multiple_of(BLOCK_SIZE as u64),
             "expected BYTES_RECLAIMED delta >= BLOCK_SIZE and block-aligned; got {delta}",
         );
     }

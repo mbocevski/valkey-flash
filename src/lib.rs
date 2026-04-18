@@ -4,11 +4,13 @@ use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
     configuration::{ConfigurationContext, ConfigurationFlags},
-    logging, valkey_module, Context, ContextFlags, InfoContext, Status, ValkeyResult, ValkeyString,
+    logging, raw, valkey_module, Context, ContextFlags, InfoContext, Status, ValkeyResult,
+    ValkeyString,
 };
 use valkey_module_macros::info_command_handler;
 
 pub mod async_io;
+pub mod cluster;
 pub mod commands;
 pub mod config;
 pub mod metrics;
@@ -25,11 +27,12 @@ use crate::config::{
     flash_io_threads, FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT,
     FLASH_CACHE_SIZE_BYTES_MAX, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CAPACITY_BYTES,
     FLASH_CAPACITY_BYTES_DEFAULT, FLASH_CAPACITY_BYTES_MAX, FLASH_CAPACITY_BYTES_MIN,
-    FLASH_COMPACTION_INTERVAL_SEC, FLASH_COMPACTION_INTERVAL_SEC_DEFAULT,
-    FLASH_COMPACTION_INTERVAL_SEC_MAX, FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_IO_THREADS,
-    FLASH_IO_THREADS_DEFAULT, FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN, FLASH_IO_URING_ENTRIES,
+    FLASH_CLUSTER_MODE_ENABLED, FLASH_CLUSTER_MODE_ENABLED_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC,
+    FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC_MAX,
+    FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_IO_THREADS, FLASH_IO_THREADS_DEFAULT,
+    FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN, FLASH_IO_URING_ENTRIES,
     FLASH_IO_URING_ENTRIES_DEFAULT, FLASH_IO_URING_ENTRIES_MAX, FLASH_IO_URING_ENTRIES_MIN,
-    FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_SYNC,
+    FLASH_PATH, FLASH_PATH_DEFAULT, FLASH_REPLICA_TIER_ENABLED, FLASH_SYNC,
 };
 use crate::recovery::{ModuleState, TierEntry};
 use crate::storage::cache::FlashCache;
@@ -98,6 +101,48 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     // Replace it with the actual logical CPU count once the server is running.
     if FLASH_IO_THREADS.load(Ordering::Relaxed) == 0 {
         FLASH_IO_THREADS.store(num_cpus::get() as i64, Ordering::Relaxed);
+    }
+
+    // ── Cluster mode detection ────────────────────────────────────────────────
+    //
+    // Read the knob first; fall back to flag-based auto-detection for "auto".
+    // IS_CLUSTER is set before the SLAVE early-exit so replicas also carry the
+    // correct value (downstream tasks like #82 read it from replica context).
+    let cluster_setting = match FLASH_CLUSTER_MODE_ENABLED.lock() {
+        Ok(g) => g.clone(),
+        Err(e) => {
+            logging::log_warning(
+                format!("flash: FLASH_CLUSTER_MODE_ENABLED lock poisoned: {e}").as_str(),
+            );
+            return Status::Err;
+        }
+    };
+    let cluster_active = match cluster_setting.to_lowercase().as_str() {
+        "yes" => true,
+        "no" => false,
+        _ => ctx.get_flags().contains(ContextFlags::CLUSTER), // "auto"
+    };
+    cluster::IS_CLUSTER.store(cluster_active, Ordering::Release);
+
+    if cluster_active {
+        // SAFETY: ValkeyModule_GetMyClusterID returns a static 40-char hex string
+        // (the 160-bit SHA1 node ID) or NULL if not in cluster mode. The pointer
+        // is valid for the lifetime of the server process.
+        let node_id = unsafe {
+            #[allow(static_mut_refs)]
+            if let Some(f) = raw::RedisModule_GetMyClusterID {
+                let ptr = f();
+                if ptr.is_null() {
+                    "<unknown>".to_string()
+                } else {
+                    std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+                }
+            } else {
+                "<unavailable>".to_string()
+            }
+        };
+        logging::log_notice(format!("flash: cluster mode enabled, node {node_id}").as_str());
+        cluster::subscribe_cluster_events(ctx);
     }
 
     let path = match FLASH_PATH.lock() {
@@ -478,8 +523,11 @@ valkey_module! {
         ],
         string: [
             ["path", &*FLASH_PATH, FLASH_PATH_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
+            ["cluster-mode-enabled", &*FLASH_CLUSTER_MODE_ENABLED, FLASH_CLUSTER_MODE_ENABLED_DEFAULT, ConfigurationFlags::IMMUTABLE, None],
         ],
-        bool: [],
+        bool: [
+            ["replica-tier-enabled", &FLASH_REPLICA_TIER_ENABLED, false, ConfigurationFlags::DEFAULT, None],
+        ],
         enum: [
             ["sync", &*FLASH_SYNC, SyncMode::everysec, ConfigurationFlags::DEFAULT,
              Some(Box::new(|_ctx: &ConfigurationContext, _name: &str, variable: &'static Mutex<SyncMode>| {

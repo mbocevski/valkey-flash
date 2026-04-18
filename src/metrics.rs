@@ -2,6 +2,7 @@ use std::sync::atomic::Ordering;
 
 use valkey_module::{InfoContext, ValkeyResult};
 
+use crate::cluster::IS_CLUSTER;
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
 
@@ -56,6 +57,13 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .map(|s| format!("{s:?}").to_lowercase())
         .unwrap_or_else(|_| "error".to_string());
 
+    // ── Cluster mode ──────────────────────────────────────────────────────────
+    let cluster_mode = if IS_CLUSTER.load(Ordering::Acquire) {
+        "yes"
+    } else {
+        "no"
+    };
+
     ctx.builder()
         .add_section("flash")
         .field("flash_cache_hits", hits.to_string())?
@@ -75,6 +83,7 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         )?
         .field("flash_tiered_keys", tiered_keys.to_string())?
         .field("flash_module_state", module_state)?
+        .field("flash_cluster_mode", cluster_mode.to_string())?
         .build_section()?
         .build_info()?;
 
