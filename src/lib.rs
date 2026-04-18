@@ -47,6 +47,7 @@ use crate::storage::cache::FlashCache;
 use crate::storage::file_io_uring::FileIoUringBackend;
 use crate::storage::wal::{Wal, WalSyncMode};
 use crate::types::hash::FLASH_HASH_TYPE;
+use crate::types::list::FLASH_LIST_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 
 use crate::commands::aux_info::flash_aux_info_command;
@@ -63,6 +64,20 @@ use crate::commands::hget::flash_hget_command;
 use crate::commands::hgetall::flash_hgetall_command;
 use crate::commands::hlen::flash_hlen_command;
 use crate::commands::hset::flash_hset_command;
+use crate::commands::lindex::flash_lindex_command;
+use crate::commands::linsert::flash_linsert_command;
+use crate::commands::llen::flash_llen_command;
+use crate::commands::lmove::flash_lmove_command;
+use crate::commands::lpop::flash_lpop_command;
+use crate::commands::lpop::flash_rpop_command;
+use crate::commands::lpush::flash_lpush_command;
+use crate::commands::lpush::flash_lpushx_command;
+use crate::commands::lpush::flash_rpush_command;
+use crate::commands::lpush::flash_rpushx_command;
+use crate::commands::lrange::flash_lrange_command;
+use crate::commands::lrem::flash_lrem_command;
+use crate::commands::lset::flash_lset_command;
+use crate::commands::ltrim::flash_ltrim_command;
 use crate::commands::migrate::flash_migrate_command;
 use crate::commands::migrate_probe::flash_migrate_probe_command;
 use crate::commands::set::flash_set_command;
@@ -528,6 +543,7 @@ valkey_module! {
     data_types: [
         FLASH_STRING_TYPE,
         FLASH_HASH_TYPE,
+        FLASH_LIST_TYPE,
     ],
     init: initialize,
     deinit: deinitialize,
@@ -549,6 +565,20 @@ valkey_module! {
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "admin flash"],
         ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.COMPACTION.TRIGGER", flash_compaction_trigger_command, "write", 0, 0, 0, "admin dangerous flash"],
+        ["FLASH.LPUSH", flash_lpush_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.RPUSH", flash_rpush_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.LPUSHX", flash_lpushx_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.RPUSHX", flash_rpushx_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.LPOP", flash_lpop_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.RPOP", flash_rpop_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.LRANGE", flash_lrange_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.LLEN", flash_llen_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.LINDEX", flash_lindex_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.LSET", flash_lset_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.LINSERT", flash_linsert_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.LREM", flash_lrem_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.LTRIM", flash_ltrim_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.LMOVE", flash_lmove_command, "write deny-oom", 1, 2, 1, "write flash"],
         ["FLASH.MIGRATE", flash_migrate_command, "write", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.MIGRATE.PROBE", flash_migrate_probe_command, "readonly", 0, 0, 0, "admin dangerous flash"],
     ],
