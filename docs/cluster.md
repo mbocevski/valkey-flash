@@ -171,6 +171,10 @@ environment:
 
 ## Slot migration
 
+For a step-by-step operator guide to running a live reshard — pre-flight checks,
+bandwidth tuning, monitoring, abort procedures, and post-migration verification —
+see [docs/cluster-migration-runbook.md](cluster-migration-runbook.md).
+
 ### How it works in v1
 
 valkey-flash participates in the standard Valkey `CLUSTER SETSLOT` /
