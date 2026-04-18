@@ -35,6 +35,12 @@ For an lcov file (CI upload):
 cargo llvm-cov --lcov --output-path lcov.info --features enable-system-alloc --ignore-filename-regex 'src/wrapper/'
 ```
 
+## Deployment
+
+- [Deploying in a cluster](docs/cluster.md) — sizing, unique `flash.path` constraint, replica topologies, slot migration, failover, and troubleshooting
+- [Running in containers](#running-in-containers) — Docker, Podman, Kubernetes with the io_uring seccomp profile
+- [Developer workflow with Docker](docs/docker-tests.md) — local cluster Compose stack and integration test runner
+
 ## Running in containers
 
 ### Why io_uring requires a seccomp override
@@ -68,6 +74,8 @@ docker run --rm \
 security_opt:
   - seccomp:./seccomp-flash.json
 ```
+
+**Cluster Compose**: [`docker/compose.cluster.yml`](docker/compose.cluster.yml) gives each of the six nodes (three primaries, three replicas) a separate named volume, satisfying the requirement that every flash-tier node has a **unique `flash.path`**. If you override `FLASH_PATH`, ensure each container maps to a different host path or volume — two nodes sharing the same file will silently corrupt each other's NVMe tier.
 
 To revert to `unconfined` for quick iteration, overlay with the dev override:
 
