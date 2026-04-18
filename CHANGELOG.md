@@ -78,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `bincode` dependency upgraded from 1.3.3 → 2.0.1; aux_save wire format remains byte-compatible with v0.x via `bincode::config::legacy()` (fixed-int little-endian encoding, matching bincode 1.x defaults); all `bincode::serialize` / `bincode::deserialize` calls replaced with `bincode::serde::encode_to_vec` / `bincode::serde::decode_from_slice`; byte-identical fixture test added to `src/persistence/aux.rs`
 - Coverage CI job now runs Python integration tests under `cargo llvm-cov --no-report` flow: instrumented cdylib built with `-Cinstrument-coverage --cfg=coverage`, each valkey-server shutdown flushes profraw via `__llvm_profile_write_file()` in `deinitialize()`; combined line/function coverage ratcheted from 60/68 to 79/82 (actual: 81.90% lines, 84.91% functions with unstable server); `cargo llvm-cov report` now passes `--object` explicitly to avoid reliance on undocumented profraw-glob discovery
 - Test matrix bumped to (unstable, 8.1, 9.0); Valkey 8.0 support removed
 
