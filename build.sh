@@ -18,7 +18,7 @@ fi
 
 echo "Running cargo fmt and clippy checks..."
 cargo fmt --check
-cargo clippy --profile release --all-targets -- -D clippy::all
+cargo clippy --profile release --all-targets -- -D warnings
 
 
 echo "Running unit tests..."
@@ -63,6 +63,10 @@ else
         make -j
     fi
     cp src/valkey-server ../binaries/$SERVER_VERSION/
+    # Copy Lua shared library if present (required by newer Valkey unstable builds)
+    if [ -f src/modules/lua/libvalkeylua.so ]; then
+        cp src/modules/lua/libvalkeylua.so ../binaries/$SERVER_VERSION/
+    fi
     cd $SCRIPT_DIR
     rm -rf $CACHED_VALKEY_PATH
 fi
@@ -89,8 +93,11 @@ if [ -f "$SCRIPT_DIR/$REQUIREMENTS_FILE" ]; then
     elif command -v pip3 > /dev/null 2>&1; then
         echo "Using pip3 to install packages..."
         pip3 install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
+    elif python3 -m pip --version > /dev/null 2>&1; then
+        echo "Using python3 -m pip to install packages..."
+        python3 -m pip install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
     else
-        echo "Error: Neither pip nor pip3 is available. Please install Python package installer."
+        echo "Error: No pip available. Please install Python package installer."
         exit 1
     fi
 fi
@@ -135,7 +142,7 @@ if [ -n "${ASAN_BUILD}" ]; then
             echo "::error::Test with leak: $line"
         done
 
-        echo "\n$LEAK_COUNT python integration tests have leaks detected in them"
+        printf "\n%s python integration tests have leaks detected in them\n" "$LEAK_COUNT"
         rm test_output.tmp
         exit 1
     fi
