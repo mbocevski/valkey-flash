@@ -68,6 +68,77 @@ jobs:
     - name: Run integration tests
       run: python -m pytest --cache-clear -v tests/
 
+  asan-build:
+    name: ASAN / Valkey ${{ matrix.server_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        server_version: ['unstable', '8.0', '8.1']
+    steps:
+    - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+    - name: Set server version
+      run: echo "SERVER_VERSION=${{ matrix.server_version }}" >> $GITHUB_ENV
+    - name: Cargo fmt and clippy
+      run: |
+        cargo fmt --check
+        cargo clippy --profile release --all-targets -- -D warnings
+    - name: Unit tests
+      run: cargo test --features enable-system-alloc
+    - name: Release build
+      run: |
+        if [ "${{ matrix.server_version }}" = "8.0" ]; then
+          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release --features valkey_8_0
+        else
+          RUSTFLAGS="-D warnings" cargo build --all --all-targets --release
+        fi
+    - name: Build valkey-server with ASAN
+      run: |
+        mkdir -p "tests/build/binaries/${{ matrix.server_version }}"
+        cd tests/build
+        git clone "${{ env.VALKEY_REPO_URL }}"
+        cd valkey
+        git checkout ${{ matrix.server_version }}
+        make distclean
+        make -j SANITIZER=address BUILD_TLS=module SERVER_CFLAGS='-Werror'
+        cp src/valkey-server ../binaries/${{ matrix.server_version }}/
+        if [ -f src/modules/lua/libvalkeylua.so ]; then
+          cp src/modules/lua/libvalkeylua.so ../binaries/${{ matrix.server_version }}/
+        fi
+    - name: Set up test framework
+      run: |
+        git clone ${{ env.TEST_FRAMEWORK_REPO }}
+        mkdir -p ${{ env.TEST_FRAMEWORK_DIR }}
+        mv valkey-test-framework/src/* ${{ env.TEST_FRAMEWORK_DIR }}/
+        rm -rf valkey-test-framework
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      with:
+        python-version: '3.11'
+    - name: Install test dependencies
+      run: pip install -r requirements.txt
+    - name: Set module path
+      run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
+    - name: Run integration tests with ASAN
+      run: |
+        python -m pytest --capture=sys --cache-clear -v tests/ -m "not skip_for_asan" 2>&1 | tee test_output.tmp
+
+        if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
+          echo "Memory leaks detected in the following tests:"
+          LEAKING_TESTS=$(grep -B 2 "LeakSanitizer: detected memory leaks" test_output.tmp | \
+                          grep -v "LeakSanitizer" | \
+                          grep ".*\.py::")
+          LEAK_COUNT=$(echo "$LEAKING_TESTS" | wc -l)
+          echo "$LEAKING_TESTS" | while read -r line; do
+            echo "::error::Test with leak: $line"
+          done
+          printf "\n%s python integration tests have leaks detected in them\n" "$LEAK_COUNT"
+          rm test_output.tmp
+          exit 1
+        fi
+        rm test_output.tmp
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
