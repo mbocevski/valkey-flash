@@ -148,6 +148,121 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
     }
 }
 
+// ── Pure-Rust RDB payload parser ──────────────────────────────────────────────
+//
+// Flat wire format for the pure parser (mirrors rdb_save field order):
+//   [u64-LE encoding_version][u64-LE shape_tag][i64-LE ttl_ms][u64-LE value_len][bytes]
+//
+// `rdb_load` reads these same fields from Valkey's ModuleIO (using FFI helpers)
+// and delegates the validation + construction work to `build_rdb_string`, so the
+// fuzz target exercises the exact same validation paths as production loads.
+
+// 512 MiB — matches Redis/Valkey's max string value size.
+const MAX_VALUE_BYTES: usize = 512 * 1024 * 1024;
+
+/// Errors returned by [`parse_rdb_payload`] and [`build_rdb_string`].
+#[derive(Debug, PartialEq)]
+pub enum RdbParseError {
+    Truncated,
+    UnsupportedVersion(u64),
+    UnexpectedTag(u64),
+    ValueTooLarge(usize),
+}
+
+impl std::fmt::Display for RdbParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RdbParseError::Truncated => write!(f, "truncated RDB payload"),
+            RdbParseError::UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "unsupported encoding version {v} (max {ENCODING_VERSION})"
+                )
+            }
+            RdbParseError::UnexpectedTag(t) => write!(
+                f,
+                "unexpected shape_tag {t:#04x} (expected {SHAPE_TAG_STRING:#04x})"
+            ),
+            RdbParseError::ValueTooLarge(n) => {
+                write!(f, "value too large: {n} bytes (max {MAX_VALUE_BYTES})")
+            }
+        }
+    }
+}
+
+/// Core validation and construction for FlashString RDB data.
+///
+/// Accepts already-decoded primitives (as returned by Valkey's IO helpers or by
+/// `parse_rdb_payload`'s flat-LE decoder) and applies all invariant checks.
+/// Both `rdb_load` and the fuzz harness call this function, ensuring fuzz
+/// coverage is over the canonical validation code rather than a parallel copy.
+pub fn build_rdb_string(
+    version: u64,
+    tag: u64,
+    ttl_raw: i64,
+    value: Vec<u8>,
+) -> Result<FlashStringObject, RdbParseError> {
+    if version > ENCODING_VERSION as u64 {
+        return Err(RdbParseError::UnsupportedVersion(version));
+    }
+    if tag != SHAPE_TAG_STRING {
+        return Err(RdbParseError::UnexpectedTag(tag));
+    }
+    if value.len() > MAX_VALUE_BYTES {
+        return Err(RdbParseError::ValueTooLarge(value.len()));
+    }
+    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
+        None
+    } else {
+        Some(ttl_raw)
+    };
+    Ok(FlashStringObject {
+        tier: Tier::Hot(value),
+        ttl_ms,
+    })
+}
+
+/// Parse a FlashString RDB payload from a flat LE byte buffer.
+///
+/// Wire format: `[u64-LE version][u64-LE shape_tag][i64-LE ttl_ms][u64-LE value_len][bytes]`
+///
+/// This is the entry point for the fuzz harness. It exercises the same
+/// [`build_rdb_string`] validation logic that [`rdb_load`] calls in production.
+pub fn parse_rdb_payload(data: &[u8]) -> Result<FlashStringObject, RdbParseError> {
+    use std::io::{Cursor, Read};
+    let mut cur = Cursor::new(data);
+
+    macro_rules! ru64 {
+        () => {{
+            let mut b = [0u8; 8];
+            cur.read_exact(&mut b)
+                .map_err(|_| RdbParseError::Truncated)?;
+            u64::from_le_bytes(b)
+        }};
+    }
+    macro_rules! ri64 {
+        () => {{
+            let mut b = [0u8; 8];
+            cur.read_exact(&mut b)
+                .map_err(|_| RdbParseError::Truncated)?;
+            i64::from_le_bytes(b)
+        }};
+    }
+
+    let version = ru64!();
+    let tag = ru64!();
+    let ttl_raw = ri64!();
+    let val_len = ru64!() as usize;
+    if val_len > MAX_VALUE_BYTES {
+        return Err(RdbParseError::ValueTooLarge(val_len));
+    }
+    let mut value = vec![0u8; val_len];
+    cur.read_exact(&mut value)
+        .map_err(|_| RdbParseError::Truncated)?;
+
+    build_rdb_string(version, tag, ttl_raw, value)
+}
+
 /// # Safety
 ///
 /// Deserialise a `FlashStringObject` from the RDB stream. Returns a raw pointer
@@ -168,7 +283,8 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         return null_mut();
     }
 
-    // ── Read encoding_version ──────────────────────────────────────────────
+    // Read all fields from Valkey's ModuleIO, then delegate to build_rdb_string
+    // so the same validation runs in both production loads and the fuzz harness.
     let version = match raw::load_unsigned(io) {
         Ok(v) => v,
         Err(_) => {
@@ -176,18 +292,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    if version > ENCODING_VERSION as u64 {
-        logging::log_warning(
-            format!(
-                "flash: rdb_load: unsupported in-stream encoding_version {version} \
-                 (max supported: {ENCODING_VERSION})"
-            )
-            .as_str(),
-        );
-        return null_mut();
-    }
-
-    // ── Read shape_tag ─────────────────────────────────────────────────────
     let tag = match raw::load_unsigned(io) {
         Ok(t) => t,
         Err(_) => {
@@ -195,18 +299,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    if tag != SHAPE_TAG_STRING {
-        logging::log_warning(
-            format!(
-                "flash: rdb_load: unexpected shape_tag {tag:#04x} \
-                 (expected {SHAPE_TAG_STRING:#04x})"
-            )
-            .as_str(),
-        );
-        return null_mut();
-    }
-
-    // ── Read ttl_ms ────────────────────────────────────────────────────────
     let ttl_raw = match raw::load_signed(io) {
         Ok(t) => t,
         Err(_) => {
@@ -214,13 +306,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
-        None
-    } else {
-        Some(ttl_raw)
-    };
-
-    // ── Read value bytes ───────────────────────────────────────────────────
     let value = match raw::load_string_buffer(io) {
         Ok(buf) => buf.as_ref().to_vec(),
         Err(_) => {
@@ -229,15 +314,17 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         }
     };
 
-    let obj = Box::new(FlashStringObject {
-        tier: Tier::Hot(value),
-        ttl_ms,
-    });
-
-    // SAFETY: Box::into_raw transfers ownership to Valkey's keyspace. Valkey will
-    // call the free() callback exactly once when the key is deleted or evicted,
-    // which drops the box via `drop(Box::from_raw(...))`.
-    Box::into_raw(obj).cast::<c_void>()
+    match build_rdb_string(version, tag, ttl_raw, value) {
+        Ok(obj) => {
+            // SAFETY: Box::into_raw transfers ownership to Valkey's keyspace.
+            // Valkey calls our free() callback exactly once on key deletion.
+            Box::into_raw(Box::new(obj)).cast::<c_void>()
+        }
+        Err(e) => {
+            logging::log_warning(format!("flash: rdb_load: {e}").as_str());
+            null_mut()
+        }
+    }
 }
 
 /// # Safety
@@ -458,59 +545,6 @@ pub unsafe extern "C" fn defrag(
     }
 
     0 // defrag complete — single-allocation types never need cursor resumption
-}
-
-// ── Fuzz helpers ─────────────────────────────────────────────────────────────
-
-/// Pure-Rust parsing path for fuzz testing. Uses simple LE binary encoding:
-/// `[u64 LE version][u64 LE shape_tag][i64 LE ttl_ms][u64 LE val_len][val_len bytes]`
-///
-/// This encoding does NOT match Valkey's RDB wire format (which goes through
-/// `RedisModule_LoadUnsigned` FFI). It exercises the same parsing invariants
-/// (version check, tag check, TTL sentinel, value-size bounds) in pure Rust.
-#[cfg(feature = "fuzzing")]
-pub fn fuzz_decode_rdb(data: &[u8]) -> Option<FlashStringObject> {
-    use std::io::{Cursor, Read};
-    let mut cur = Cursor::new(data);
-    let mut b8 = [0u8; 8];
-
-    macro_rules! ru64 {
-        () => {{
-            cur.read_exact(&mut b8).ok()?;
-            u64::from_le_bytes(b8)
-        }};
-    }
-    macro_rules! ri64 {
-        () => {{
-            cur.read_exact(&mut b8).ok()?;
-            i64::from_le_bytes(b8)
-        }};
-    }
-
-    let version = ru64!();
-    if version > ENCODING_VERSION as u64 {
-        return None;
-    }
-    let tag = ru64!();
-    if tag != SHAPE_TAG_STRING {
-        return None;
-    }
-    let ttl_raw = ri64!();
-    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
-        None
-    } else {
-        Some(ttl_raw)
-    };
-    let val_len = ru64!() as usize;
-    if val_len > 4 * 1024 * 1024 {
-        return None;
-    }
-    let mut value = vec![0u8; val_len];
-    cur.read_exact(&mut value).ok()?;
-    Some(FlashStringObject {
-        tier: Tier::Hot(value),
-        ttl_ms,
-    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

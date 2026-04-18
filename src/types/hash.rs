@@ -226,6 +226,121 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
     }
 }
 
+// ── Pure-Rust RDB payload parser ──────────────────────────────────────────────
+//
+// Flat wire format for the pure parser (mirrors rdb_save field order):
+//   [u64-LE encoding_version][u64-LE shape_tag][i64-LE ttl_ms][u64-LE payload_len][bytes]
+// where `bytes` is the `hash_serialize` output (same format used on NVMe).
+
+/// Errors returned by [`parse_rdb_hash_payload`] and [`build_rdb_hash`].
+#[derive(Debug, PartialEq)]
+pub enum RdbHashParseError {
+    Truncated,
+    UnsupportedVersion(u64),
+    UnexpectedTag(u64),
+    PayloadTooLarge(usize),
+    CorruptHashBytes,
+}
+
+impl std::fmt::Display for RdbHashParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RdbHashParseError::Truncated => write!(f, "truncated RDB payload"),
+            RdbHashParseError::UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "unsupported encoding version {v} (max {ENCODING_VERSION})"
+                )
+            }
+            RdbHashParseError::UnexpectedTag(t) => write!(
+                f,
+                "unexpected shape_tag {t:#04x} (expected {SHAPE_TAG_HASH:#04x})"
+            ),
+            RdbHashParseError::PayloadTooLarge(n) => {
+                write!(f, "hash payload too large: {n} bytes")
+            }
+            RdbHashParseError::CorruptHashBytes => write!(f, "corrupt hash bytes in RDB"),
+        }
+    }
+}
+
+// 256 MiB — prevents OOM on a maliciously large length prefix.
+const MAX_HASH_PAYLOAD_BYTES: usize = 256 * 1024 * 1024;
+
+/// Core validation and construction for FlashHash RDB data.
+///
+/// Accepts already-decoded primitives (as returned by Valkey's IO helpers or by
+/// `parse_rdb_hash_payload`'s flat-LE decoder) and applies all invariant checks.
+/// Both `rdb_load` and the fuzz harness call this function.
+pub fn build_rdb_hash(
+    version: u64,
+    tag: u64,
+    ttl_raw: i64,
+    hash_bytes: Vec<u8>,
+) -> Result<FlashHashObject, RdbHashParseError> {
+    if version > ENCODING_VERSION as u64 {
+        return Err(RdbHashParseError::UnsupportedVersion(version));
+    }
+    if tag != SHAPE_TAG_HASH {
+        return Err(RdbHashParseError::UnexpectedTag(tag));
+    }
+    if hash_bytes.len() > MAX_HASH_PAYLOAD_BYTES {
+        return Err(RdbHashParseError::PayloadTooLarge(hash_bytes.len()));
+    }
+    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
+        None
+    } else {
+        Some(ttl_raw)
+    };
+    let fields = hash_deserialize(&hash_bytes).ok_or(RdbHashParseError::CorruptHashBytes)?;
+    Ok(FlashHashObject {
+        tier: Tier::Hot(fields),
+        ttl_ms,
+    })
+}
+
+/// Parse a FlashHash RDB payload from a flat LE byte buffer.
+///
+/// Wire format: `[u64-LE version][u64-LE shape_tag][i64-LE ttl_ms][u64-LE payload_len][bytes]`
+/// where `bytes` is `hash_serialize` output.
+///
+/// Entry point for the fuzz harness; exercises the same [`build_rdb_hash`]
+/// validation logic that [`rdb_load`] calls in production.
+pub fn parse_rdb_hash_payload(data: &[u8]) -> Result<FlashHashObject, RdbHashParseError> {
+    use std::io::{Cursor, Read};
+    let mut cur = Cursor::new(data);
+
+    macro_rules! ru64 {
+        () => {{
+            let mut b = [0u8; 8];
+            cur.read_exact(&mut b)
+                .map_err(|_| RdbHashParseError::Truncated)?;
+            u64::from_le_bytes(b)
+        }};
+    }
+    macro_rules! ri64 {
+        () => {{
+            let mut b = [0u8; 8];
+            cur.read_exact(&mut b)
+                .map_err(|_| RdbHashParseError::Truncated)?;
+            i64::from_le_bytes(b)
+        }};
+    }
+
+    let version = ru64!();
+    let tag = ru64!();
+    let ttl_raw = ri64!();
+    let payload_len = ru64!() as usize;
+    if payload_len > MAX_HASH_PAYLOAD_BYTES {
+        return Err(RdbHashParseError::PayloadTooLarge(payload_len));
+    }
+    let mut hash_bytes = vec![0u8; payload_len];
+    cur.read_exact(&mut hash_bytes)
+        .map_err(|_| RdbHashParseError::Truncated)?;
+
+    build_rdb_hash(version, tag, ttl_raw, hash_bytes)
+}
+
 /// # Safety
 ///
 /// Deserialise a `FlashHashObject` from the RDB stream. Returns a raw pointer
@@ -245,6 +360,8 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         return null_mut();
     }
 
+    // Read all fields from Valkey's ModuleIO, then delegate to build_rdb_hash
+    // so the same validation runs in both production loads and the fuzz harness.
     let version = match raw::load_unsigned(io) {
         Ok(v) => v,
         Err(_) => {
@@ -252,17 +369,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    if version > ENCODING_VERSION as u64 {
-        logging::log_warning(
-            format!(
-                "flash: rdb_load hash: unsupported in-stream encoding_version {version} \
-                 (max supported: {ENCODING_VERSION})"
-            )
-            .as_str(),
-        );
-        return null_mut();
-    }
-
     let tag = match raw::load_unsigned(io) {
         Ok(t) => t,
         Err(_) => {
@@ -270,17 +376,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    if tag != SHAPE_TAG_HASH {
-        logging::log_warning(
-            format!(
-                "flash: rdb_load hash: unexpected shape_tag {tag:#04x} \
-                 (expected {SHAPE_TAG_HASH:#04x})"
-            )
-            .as_str(),
-        );
-        return null_mut();
-    }
-
     let ttl_raw = match raw::load_signed(io) {
         Ok(t) => t,
         Err(_) => {
@@ -288,12 +383,6 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
             return null_mut();
         }
     };
-    let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
-        None
-    } else {
-        Some(ttl_raw)
-    };
-
     let hash_bytes = match raw::load_string_buffer(io) {
         Ok(buf) => buf.as_ref().to_vec(),
         Err(_) => {
@@ -302,20 +391,16 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         }
     };
 
-    let fields = match hash_deserialize(&hash_bytes) {
-        Some(m) => m,
-        None => {
-            logging::log_warning("flash: rdb_load hash: corrupt hash bytes in RDB");
-            return null_mut();
+    match build_rdb_hash(version, tag, ttl_raw, hash_bytes) {
+        Ok(obj) => {
+            // SAFETY: Box::into_raw transfers ownership to Valkey's keyspace.
+            Box::into_raw(Box::new(obj)).cast::<c_void>()
         }
-    };
-
-    let obj = Box::new(FlashHashObject {
-        tier: Tier::Hot(fields),
-        ttl_ms,
-    });
-
-    Box::into_raw(obj).cast::<c_void>()
+        Err(e) => {
+            logging::log_warning(format!("flash: rdb_load hash: {e}").as_str());
+            null_mut()
+        }
+    }
 }
 
 /// # Safety
