@@ -45,6 +45,20 @@ def _all_healthy(docker: DockerClient, services: list, timeout: float = 90) -> N
     )
 
 
+def _connect_cluster_with_retry(host: str, port: int, timeout: float = 30) -> ValkeyCluster:
+    deadline = time.monotonic() + timeout
+    last_exc: Exception = RuntimeError("timeout before first attempt")
+    while time.monotonic() < deadline:
+        try:
+            client = ValkeyCluster(host=host, port=port, socket_timeout=10)
+            client.ping()
+            return client
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(1)
+    raise RuntimeError(f"Cluster at {host}:{port} not ready after {timeout}s: {last_exc}")
+
+
 def _wait_cluster_init(docker: DockerClient, timeout: float = 120) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -90,9 +104,7 @@ def docker_cluster():
     try:
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
-        # Give the cluster a moment to converge after init.
-        time.sleep(2)
-        client = ValkeyCluster(host="localhost", port=7001, socket_timeout=10)
+        client = _connect_cluster_with_retry("localhost", 7001)
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)
