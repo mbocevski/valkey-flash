@@ -326,7 +326,7 @@ def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
 
 
 @pytest.mark.docker_cluster
-def test_flash_migrate_rejects_migration_when_target_full():
+def test_flash_migrate_rejects_migration_when_target_full(docker_cluster):
     """FLASH.MIGRATE returns ERR FLASH-MIGRATE ... insufficient flash capacity when
     the target NVMe free_bytes is less than the key's estimated size (task #96).
 

@@ -14,6 +14,12 @@ fn flash_key_bytes(ctx: &Context, key: &ValkeyString) -> Option<usize> {
     let handle = ctx.open_key(key);
 
     // FlashString?
+    //
+    // Note: the on-disk record also carries an 8-byte value_len prefix that is
+    // not counted here.  Keys of exactly N×4096−8 bytes therefore need one extra
+    // NVMe block.  The undercount is at most 8 bytes per key and benign in
+    // practice: RESTORE on the target side lands as Hot (no NVMe write), so the
+    // gate is advisory rather than exact.
     if let Ok(Some(obj)) = handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
         return Some(match &obj.tier {
             Tier::Hot(v) => v.len(),
