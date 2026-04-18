@@ -1,4 +1,7 @@
 target/
 tests/
+fuzz/
 .git/
+.github/
+backlog/
 .agent-reports/
