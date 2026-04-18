@@ -1,6 +1,7 @@
 pub mod throttle;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 use valkey_module::{logging, raw, Context};
 
@@ -15,6 +16,29 @@ pub static IS_CLUSTER: AtomicBool = AtomicBool::new(false);
 pub fn is_cluster() -> bool {
     IS_CLUSTER.load(Ordering::Acquire)
 }
+
+// ── Migration progress counters ───────────────────────────────────────────────
+
+/// Slots currently being migrated on this node (export or import in flight).
+pub static MIGRATION_SLOTS_IN_PROGRESS: AtomicI64 = AtomicI64::new(0);
+/// Cumulative bytes pre-warmed (NVMe→RAM) on the source side.
+pub static MIGRATION_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
+/// Cumulative bytes received on the target side (import-side tracking not yet
+/// implemented — always 0 in v1).
+pub static MIGRATION_BYTES_RECEIVED: AtomicU64 = AtomicU64::new(0);
+/// Wall-clock duration (ms) of the most recently completed export.
+pub static MIGRATION_LAST_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+/// Cumulative migration failures (EXPORT_ABORTED + IMPORT_ABORTED events).
+pub static MIGRATION_ERRORS: AtomicU64 = AtomicU64::new(0);
+/// Cumulative keys successfully pre-warmed and migrated.
+pub static MIGRATION_KEYS_MIGRATED: AtomicU64 = AtomicU64::new(0);
+/// Cumulative keys rejected during migration (oversized or promotion failure).
+pub static MIGRATION_KEYS_REJECTED: AtomicU64 = AtomicU64::new(0);
+
+/// Instant of the most recent EXPORT_STARTED — used to compute duration on
+/// EXPORT_COMPLETED.  Protected by a Mutex because Instant is not Copy+atomic.
+static MIGRATION_EXPORT_START: LazyLock<Mutex<Option<Instant>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 // ── AtomicSlotMigration subevent constants (valkeymodule.h:670-675, Valkey 9.0) ──
 pub const SLOT_MIGRATION_IMPORT_STARTED: u64 = 0;
@@ -144,21 +168,38 @@ extern "C" fn on_slot_migration(
 ) {
     match subevent {
         SLOT_MIGRATION_EXPORT_STARTED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut guard) = MIGRATION_EXPORT_START.lock() {
+                *guard = Some(Instant::now());
+            }
             handle_export_started(ctx, data);
         }
         SLOT_MIGRATION_EXPORT_ABORTED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
+            MIGRATION_ERRORS.fetch_add(1, Ordering::Relaxed);
             logging::log_notice("flash: cluster: slot migration export aborted");
         }
         SLOT_MIGRATION_EXPORT_COMPLETED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
+            if let Ok(guard) = MIGRATION_EXPORT_START.lock() {
+                if let Some(start) = *guard {
+                    MIGRATION_LAST_DURATION_MS
+                        .store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                }
+            }
             logging::log_notice("flash: cluster: slot migration export completed");
         }
         SLOT_MIGRATION_IMPORT_STARTED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(1, Ordering::Relaxed);
             logging::log_notice("flash: cluster: slot migration import started");
         }
         SLOT_MIGRATION_IMPORT_ABORTED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
+            MIGRATION_ERRORS.fetch_add(1, Ordering::Relaxed);
             logging::log_notice("flash: cluster: slot migration import aborted");
         }
         SLOT_MIGRATION_IMPORT_COMPLETED => {
+            MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
             logging::log_notice("flash: cluster: slot migration import completed");
         }
         _ => {}
@@ -289,6 +330,13 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
             continue;
         }
 
+        // Re-read bandwidth config so a CONFIG SET mid-migration takes effect
+        // on the next key promotion cycle.
+        let live_bw = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed) as u64;
+        if live_bw * 125_000 != throttle.limit_bps {
+            throttle.set_bandwidth_mbps(live_bw);
+        }
+
         let key_str = ctx_wrapper.create_string(key_bytes.as_slice());
         let key_handle = ctx_wrapper.open_key_writable(&key_str);
 
@@ -306,6 +354,11 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
             keys_skipped += 1;
         }
     }
+
+    // Update global migration progress counters.
+    MIGRATION_BYTES_SENT.fetch_add(bytes_warmed, Ordering::Relaxed);
+    MIGRATION_KEYS_MIGRATED.fetch_add(keys_warmed, Ordering::Relaxed);
+    MIGRATION_KEYS_REJECTED.fetch_add(keys_skipped, Ordering::Relaxed);
 
     logging::log_notice(
         format!(

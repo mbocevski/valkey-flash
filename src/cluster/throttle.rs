@@ -146,6 +146,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_bandwidth_mid_migration_takes_effect_immediately() {
+        // Start with a very slow throttle, account enough to fill one window,
+        // then switch to unlimited and verify subsequent calls return instantly.
+        let mut t = BandwidthThrottle::new(10); // 10 Mbps = 1.25 MB/s
+        // Pre-fill the window with exactly 1 second's worth of data so the
+        // throttle's cumulative expected time is ~1s.
+        t.account(1_250_000);
+        // Now upgrade to effectively unlimited bandwidth mid-migration.
+        t.set_bandwidth_mbps(0);
+        let start = Instant::now();
+        t.account(10 * 1024 * 1024); // 10 MiB — should be instant now
+        assert!(
+            start.elapsed().as_millis() < 50,
+            "rate change to unlimited not effective after set_bandwidth_mbps"
+        );
+    }
+
     /// Full-scale timing test: 32 MiB at 10 Mbps ≈ 26.8 s (±20%).
     /// Run with: `cargo test -- --ignored throttle_32mib_at_10mbps`
     #[test]

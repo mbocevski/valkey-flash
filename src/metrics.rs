@@ -2,7 +2,12 @@ use std::sync::atomic::Ordering;
 
 use valkey_module::{InfoContext, ValkeyResult};
 
-use crate::cluster::IS_CLUSTER;
+use crate::cluster::{
+    IS_CLUSTER, MIGRATION_BYTES_RECEIVED, MIGRATION_BYTES_SENT, MIGRATION_ERRORS,
+    MIGRATION_KEYS_MIGRATED, MIGRATION_KEYS_REJECTED, MIGRATION_LAST_DURATION_MS,
+    MIGRATION_SLOTS_IN_PROGRESS,
+};
+use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
 
@@ -64,6 +69,16 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         "no"
     };
 
+    // ── Migration progress ────────────────────────────────────────────────────
+    let migration_slots = MIGRATION_SLOTS_IN_PROGRESS.load(Ordering::Relaxed).max(0);
+    let migration_bytes_sent = MIGRATION_BYTES_SENT.load(Ordering::Relaxed);
+    let migration_bytes_received = MIGRATION_BYTES_RECEIVED.load(Ordering::Relaxed);
+    let migration_last_duration_ms = MIGRATION_LAST_DURATION_MS.load(Ordering::Relaxed);
+    let migration_errors = MIGRATION_ERRORS.load(Ordering::Relaxed);
+    let migration_bandwidth_mbps = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed);
+    let migration_keys_migrated = MIGRATION_KEYS_MIGRATED.load(Ordering::Relaxed);
+    let migration_keys_rejected = MIGRATION_KEYS_REJECTED.load(Ordering::Relaxed);
+
     ctx.builder()
         .add_section("flash")
         .field("flash_cache_hits", hits.to_string())?
@@ -84,6 +99,32 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .field("flash_tiered_keys", tiered_keys.to_string())?
         .field("flash_module_state", module_state)?
         .field("flash_cluster_mode", cluster_mode.to_string())?
+        .field(
+            "flash_migration_slots_in_progress",
+            migration_slots.to_string(),
+        )?
+        .field("flash_migration_bytes_sent", migration_bytes_sent.to_string())?
+        .field(
+            "flash_migration_bytes_received",
+            migration_bytes_received.to_string(),
+        )?
+        .field(
+            "flash_migration_last_duration_ms",
+            migration_last_duration_ms.to_string(),
+        )?
+        .field("flash_migration_errors", migration_errors.to_string())?
+        .field(
+            "flash_migration_bandwidth_mbps",
+            migration_bandwidth_mbps.to_string(),
+        )?
+        .field(
+            "flash_migration_keys_migrated",
+            migration_keys_migrated.to_string(),
+        )?
+        .field(
+            "flash_migration_keys_rejected",
+            migration_keys_rejected.to_string(),
+        )?
         .build_section()?
         .build_info()?;
 
