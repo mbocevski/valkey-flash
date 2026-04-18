@@ -4,10 +4,12 @@ use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
 
+use super::Tier;
+
 // ── FlashHashObject ───────────────────────────────────────────────────────────
 
 pub struct FlashHashObject {
-    pub fields: HashMap<Vec<u8>, Vec<u8>>,
+    pub tier: Tier<HashMap<Vec<u8>, Vec<u8>>>,
     pub ttl_ms: Option<i64>,
 }
 
@@ -21,15 +23,14 @@ pub static FLASH_HASH_TYPE: ValkeyType = ValkeyType::new(
     ENCODING_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
-        // rdb_save/rdb_load are None until task #25: a non-null rdb_load stub
-        // returning null_mut() triggers rdbReportCorruptRDB → server exit on
-        // the first restart after a FLASH.HSET (rdb.c:2942). Keys are ephemeral
-        // for now; real persistence lands in task #25.
+        // rdb_save/rdb_load are None until task #25: a registered rdb_load returning
+        // null_mut() triggers rdbReportCorruptRDB → server exit (rdb.c:2942).
         rdb_load: None,
         rdb_save: None,
         aof_rewrite: Some(aof_rewrite),
         digest: Some(digest),
-        mem_usage: Some(mem_usage),
+        // mem_usage (v1) intentionally None; real accounting is in mem_usage2 (v2).
+        mem_usage: None,
         free: Some(free),
         aux_load: None,
         aux_save: None,
@@ -39,7 +40,7 @@ pub static FLASH_HASH_TYPE: ValkeyType = ValkeyType::new(
         unlink: None,
         copy: Some(copy),
         defrag: Some(defrag),
-        mem_usage2: None,
+        mem_usage2: Some(mem_usage2),
         free_effort2: None,
         unlink2: None,
         copy2: None,
@@ -57,6 +58,25 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
 }
 
 /// # Safety
+pub unsafe extern "C" fn mem_usage2(
+    _ctx: *mut raw::RedisModuleKeyOptCtx,
+    value: *const c_void,
+    _sample_size: usize,
+) -> usize {
+    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
+    // and remains valid for the duration of this call (Valkey holds a read lock on
+    // the key). Cast to shared reference is safe; no mutation occurs.
+    let obj = &*value.cast::<FlashHashObject>();
+    match &obj.tier {
+        Tier::Hot(fields) => {
+            let fields_bytes: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
+            std::mem::size_of::<FlashHashObject>() + fields_bytes
+        }
+        Tier::Cold { .. } => std::mem::size_of::<FlashHashObject>(),
+    }
+}
+
+/// # Safety
 pub unsafe extern "C" fn aof_rewrite(
     _aof: *mut raw::RedisModuleIO,
     _key: *mut raw::RedisModuleString,
@@ -68,16 +88,6 @@ pub unsafe extern "C" fn aof_rewrite(
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
     // stub — digest not yet implemented
-}
-
-/// # Safety
-pub unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
-    // and remains valid for the duration of this call (Valkey holds a read lock
-    // on the key). Cast to shared reference is safe; no mutation occurs.
-    let obj = &*value.cast::<FlashHashObject>();
-    let fields_bytes: usize = obj.fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-    std::mem::size_of::<FlashHashObject>() + fields_bytes
 }
 
 /// # Safety
@@ -113,24 +123,102 @@ mod tests {
     }
 
     #[test]
-    fn flash_hash_object_construction_empty() {
+    fn flash_hash_object_hot_empty() {
         let obj = FlashHashObject {
-            fields: HashMap::new(),
+            tier: Tier::Hot(HashMap::new()),
             ttl_ms: None,
         };
-        assert!(obj.fields.is_empty());
+        assert_eq!(obj.tier, Tier::Hot(HashMap::new()));
         assert!(obj.ttl_ms.is_none());
     }
 
     #[test]
-    fn flash_hash_object_construction_with_fields() {
+    fn flash_hash_object_hot_with_fields() {
         let mut fields = HashMap::new();
         fields.insert(b"name".to_vec(), b"alice".to_vec());
         let obj = FlashHashObject {
-            fields,
+            tier: Tier::Hot(fields),
             ttl_ms: Some(10_000),
         };
-        assert_eq!(obj.fields.get(b"name".as_ref()), Some(&b"alice".to_vec()));
+        if let Tier::Hot(ref f) = obj.tier {
+            assert_eq!(f.get(b"name".as_ref()), Some(&b"alice".to_vec()));
+        } else {
+            panic!("expected Hot tier");
+        }
         assert_eq!(obj.ttl_ms, Some(10_000));
+    }
+
+    #[test]
+    fn flash_hash_object_cold() {
+        let obj = FlashHashObject {
+            tier: Tier::Cold { size_hint: 2048 },
+            ttl_ms: Some(5000),
+        };
+        assert!(matches!(obj.tier, Tier::Cold { size_hint: 2048 }));
+        assert_eq!(obj.ttl_ms, Some(5000));
+    }
+
+    #[test]
+    fn mem_usage2_hot_reports_struct_plus_field_bytes() {
+        let mut fields = HashMap::new();
+        fields.insert(b"key".to_vec(), b"value".to_vec()); // 3 + 5 = 8 bytes
+        let obj = Box::new(FlashHashObject {
+            tier: Tier::Hot(fields),
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        // SAFETY: ptr is freshly allocated, valid for the duration of this test.
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashHashObject>() + 8);
+    }
+
+    #[test]
+    fn mem_usage2_hot_empty_reports_struct_only() {
+        let obj = Box::new(FlashHashObject {
+            tier: Tier::Hot(HashMap::new()),
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashHashObject>());
+    }
+
+    #[test]
+    fn mem_usage2_cold_reports_struct_only() {
+        let obj = Box::new(FlashHashObject {
+            tier: Tier::Cold { size_hint: 4096 },
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashHashObject>());
+    }
+
+    #[test]
+    fn mem_usage2_hot_multi_field_sums_all_bytes() {
+        let mut fields = HashMap::new();
+        fields.insert(b"a".to_vec(), b"bb".to_vec()); // 1 + 2 = 3
+        fields.insert(b"ccc".to_vec(), b"dddd".to_vec()); // 3 + 4 = 7
+        let expected_field_bytes = 10usize;
+        let obj = Box::new(FlashHashObject {
+            tier: Tier::Hot(fields),
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashHashObject)) };
+        assert_eq!(
+            size,
+            std::mem::size_of::<FlashHashObject>() + expected_field_bytes
+        );
+    }
+
+    #[test]
+    fn struct_size_regression() {
+        // Catches accidental layout growth. Update the bound if a deliberate field is added.
+        const { assert!(std::mem::size_of::<FlashHashObject>() <= 80) };
     }
 }

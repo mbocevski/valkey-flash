@@ -3,10 +3,12 @@ use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
 use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
 
+use super::Tier;
+
 // ── FlashStringObject ─────────────────────────────────────────────────────────
 
 pub struct FlashStringObject {
-    pub value: Vec<u8>,
+    pub tier: Tier<Vec<u8>>,
     pub ttl_ms: Option<i64>,
 }
 
@@ -20,15 +22,14 @@ pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
     ENCODING_VERSION,
     raw::RedisModuleTypeMethods {
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
-        // rdb_save/rdb_load are None until task #25: a non-null rdb_load stub
-        // returning null_mut() triggers rdbReportCorruptRDB → server exit on
-        // the first restart after a FLASH.SET (rdb.c:2942). Keys are ephemeral
-        // for now; real persistence lands in task #25.
+        // rdb_save/rdb_load are None until task #25: a registered rdb_load returning
+        // null_mut() triggers rdbReportCorruptRDB → server exit (rdb.c:2942).
         rdb_load: None,
         rdb_save: None,
         aof_rewrite: Some(aof_rewrite),
         digest: Some(digest),
-        mem_usage: Some(mem_usage),
+        // mem_usage (v1) intentionally None; real accounting is in mem_usage2 (v2).
+        mem_usage: None,
         free: Some(free),
         aux_load: None,
         aux_save: None,
@@ -38,7 +39,7 @@ pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
         unlink: None,
         copy: Some(copy),
         defrag: Some(defrag),
-        mem_usage2: None,
+        mem_usage2: Some(mem_usage2),
         free_effort2: None,
         unlink2: None,
         copy2: None,
@@ -56,6 +57,22 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
 }
 
 /// # Safety
+pub unsafe extern "C" fn mem_usage2(
+    _ctx: *mut raw::RedisModuleKeyOptCtx,
+    value: *const c_void,
+    _sample_size: usize,
+) -> usize {
+    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
+    // and remains valid for the duration of this call (Valkey holds a read lock on
+    // the key). Cast to shared reference is safe; no mutation occurs.
+    let obj = &*value.cast::<FlashStringObject>();
+    match &obj.tier {
+        Tier::Hot(v) => std::mem::size_of::<FlashStringObject>() + v.len(),
+        Tier::Cold { .. } => std::mem::size_of::<FlashStringObject>(),
+    }
+}
+
+/// # Safety
 pub unsafe extern "C" fn aof_rewrite(
     _aof: *mut raw::RedisModuleIO,
     _key: *mut raw::RedisModuleString,
@@ -67,15 +84,6 @@ pub unsafe extern "C" fn aof_rewrite(
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
     // stub — digest not yet implemented
-}
-
-/// # Safety
-pub unsafe extern "C" fn mem_usage(value: *const c_void) -> usize {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
-    // and remains valid for the duration of this call (Valkey holds a read lock
-    // on the key). Cast to shared reference is safe; no mutation occurs.
-    let obj = &*value.cast::<FlashStringObject>();
-    std::mem::size_of::<FlashStringObject>() + obj.value.len()
 }
 
 /// # Safety
@@ -111,21 +119,68 @@ mod tests {
     }
 
     #[test]
-    fn flash_string_object_construction() {
+    fn flash_string_object_hot() {
         let obj = FlashStringObject {
-            value: b"hello".to_vec(),
+            tier: Tier::Hot(b"hello".to_vec()),
             ttl_ms: None,
         };
-        assert_eq!(obj.value, b"hello");
+        assert_eq!(obj.tier, Tier::Hot(b"hello".to_vec()));
         assert!(obj.ttl_ms.is_none());
     }
 
     #[test]
-    fn flash_string_object_with_ttl() {
+    fn flash_string_object_cold() {
         let obj = FlashStringObject {
-            value: b"world".to_vec(),
+            tier: Tier::Cold { size_hint: 1024 },
             ttl_ms: Some(5000),
         };
+        assert!(matches!(obj.tier, Tier::Cold { size_hint: 1024 }));
         assert_eq!(obj.ttl_ms, Some(5000));
+    }
+
+    #[test]
+    fn mem_usage2_hot_reports_struct_plus_value_bytes() {
+        let value = b"hello world".to_vec();
+        let value_len = value.len();
+        let obj = Box::new(FlashStringObject {
+            tier: Tier::Hot(value),
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        // SAFETY: ptr is freshly allocated, valid for the duration of this test.
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashStringObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashStringObject>() + value_len);
+    }
+
+    #[test]
+    fn mem_usage2_cold_reports_struct_only() {
+        let obj = Box::new(FlashStringObject {
+            tier: Tier::Cold { size_hint: 4096 },
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        // SAFETY: ptr is freshly allocated, valid for the duration of this test.
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashStringObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashStringObject>());
+    }
+
+    #[test]
+    fn mem_usage2_empty_hot_value() {
+        let obj = Box::new(FlashStringObject {
+            tier: Tier::Hot(vec![]),
+            ttl_ms: None,
+        });
+        let ptr = Box::into_raw(obj) as *const c_void;
+        let size = unsafe { mem_usage2(std::ptr::null_mut(), ptr, 0) };
+        unsafe { drop(Box::from_raw(ptr as *mut FlashStringObject)) };
+        assert_eq!(size, std::mem::size_of::<FlashStringObject>());
+    }
+
+    #[test]
+    fn struct_size_regression() {
+        // Catches accidental layout growth. Update the bound if a deliberate field is added.
+        const { assert!(std::mem::size_of::<FlashStringObject>() <= 64) };
     }
 }
