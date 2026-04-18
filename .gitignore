@@ -6,3 +6,26 @@ __pycache__
 test-data
 .attach_pid*
 fuzz/artifacts/
+
+# Agent session reports
+.agent-reports/
+
+# Coverage artifacts
+lcov.info
+*.profraw
+target/llvm-cov-target/
+target/llvm-cov/
+
+# Fuzz corpus
+fuzz/corpus/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

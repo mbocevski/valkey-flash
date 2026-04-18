@@ -33,9 +33,10 @@ coverage-integration:
 	    --ignore=tests/test_docker_smoke.py \
 	    --ignore=tests/test_flash_acl.py \
 	    --ignore=tests/test_flash_aof.py \
-	    -q --tb=no
+	    -q --tb=short
 	cargo llvm-cov report \
 	  --lcov \
 	  --output-path lcov.info \
+	  --object target/llvm-cov-target/debug/libvalkey_flash.so \
 	  --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
 	@echo "Coverage report: lcov.info"

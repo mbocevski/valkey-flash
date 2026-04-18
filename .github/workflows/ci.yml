@@ -523,12 +523,13 @@ jobs:
             --ignore=tests/test_docker_smoke.py \
             --ignore=tests/test_flash_acl.py \
             --ignore=tests/test_flash_aof.py \
-            -q --tb=no
+            -q --tb=short
     - name: Generate lcov report and enforce coverage gate
       run: |
         cargo llvm-cov report \
           --lcov \
           --output-path lcov.info \
+          --object target/llvm-cov-target/debug/libvalkey_flash.so \
           --fail-under-lines 79 \
           --fail-under-functions 82 \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
