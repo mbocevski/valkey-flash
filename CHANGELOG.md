@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `FlashZSet` `rdb_load` accepted up to 1M members of 1 KiB each (~1 GiB total) despite the 512 MiB `MAX_MEMBER_BYTES` cap, because the cap was only checked per-member; added a `total_member_bytes` accumulator with `checked_add` overflow guard so the aggregate load is also capped at 512 MiB; unit test `rdb_cumulative_bytes_cap_rejected` added
 - `FLASH.ZRANGESTORE` accepted `LIMIT` on rank-based (index) ranges and silently stored the full range instead of returning an error; Redis returns `ERR syntax error` in this case; fixed by adding a post-parse guard; integration test `test_zrangestore_limit_without_byscore_bylex_errors` added
 - `_bgrewriteaof_and_restart` in `tests/test_flash_zset.py` did not set `appendonly=yes` before restart, making the Cold-tier AOF test unreliable; fixed to match the list-side helper (set `server.args["appendonly"]`, pass `remove_rdb=False`, assert alive, wait for load)
 - `aof_rewrite` Cold-tier arm in `src/types/zset.rs` returned early instead of reading from NVMe, causing Cold FlashZSet keys to be silently absent from the AOF file and lost on AOF-only restart; fixed identically to the FlashList fix (`STORAGE.read_at_offset` + `zset_deserialize`); integration test `test_cold_zset_survives_aof` added

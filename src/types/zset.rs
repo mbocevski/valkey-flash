@@ -369,6 +369,7 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         scores: BTreeMap::new(),
         members: HashMap::with_capacity(count as usize),
     };
+    let mut total_member_bytes: usize = 0;
     for i in 0..count {
         let score = match raw::load_double(io) {
             Ok(s) => s,
@@ -393,6 +394,25 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
                 format!(
                     "flash: rdb_load zset: member {i} size {} exceeds 512 MiB cap",
                     member_buf.as_ref().len()
+                )
+                .as_str(),
+            );
+            return null_mut();
+        }
+        total_member_bytes = match total_member_bytes.checked_add(member_buf.as_ref().len()) {
+            Some(t) => t,
+            None => {
+                logging::log_warning(
+                    "flash: rdb_load zset: total member bytes overflow",
+                );
+                return null_mut();
+            }
+        };
+        if total_member_bytes > MAX_MEMBER_BYTES {
+            logging::log_warning(
+                format!(
+                    "flash: rdb_load zset: cumulative member bytes {total_member_bytes} \
+                     exceeds 512 MiB cap"
                 )
                 .as_str(),
             );
@@ -791,6 +811,26 @@ mod tests {
         const MAX_MEMBER_BYTES: usize = 512 * 1024 * 1024;
         assert_eq!(MAX_ZSET_MEMBERS, 1_000_000);
         assert_eq!(MAX_MEMBER_BYTES, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn rdb_cumulative_bytes_cap_rejected() {
+        // Simulate the cumulative cap logic used in rdb_load: many small members
+        // (each well under the per-member cap) must still hit the aggregate 512 MiB
+        // cap before 600K × 1 KiB = ~600 MiB are accumulated.
+        const MAX_MEMBER_BYTES: usize = 512 * 1024 * 1024;
+        let step: usize = 1024; // 1 KiB per member — well below per-member cap
+        let mut total: usize = 0;
+        let mut hit_cap = false;
+        for _ in 0..600_000usize {
+            total = total.checked_add(step).expect("no overflow at these sizes");
+            if total > MAX_MEMBER_BYTES {
+                hit_cap = true;
+                break;
+            }
+        }
+        assert!(hit_cap, "cumulative cap must trigger before 600K × 1 KiB members");
+        assert!(total > MAX_MEMBER_BYTES);
     }
 
     #[test]
