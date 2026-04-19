@@ -32,3 +32,17 @@ updates:
       day: monday
     labels:
       - dependencies
+
+  # Python test-suite dependencies (pyproject.toml + uv.lock)
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies

@@ -60,6 +60,7 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 ### Changed
 
 - `flash.migration-bandwidth-mbps = 0` now means "unlimited" (previously rejected; minimum was 1).
+- Dependabot now tracks Python test-suite deps via `package-ecosystem: uv` on `pyproject.toml` + `uv.lock` (alongside the existing Cargo, GitHub Actions, and Docker entries).
 
 ### Fixed
 
