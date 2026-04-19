@@ -137,6 +137,26 @@ jobs:
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests
       run: uv run pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
+    - name: Capture valkey-server logs on failure
+      if: failure()
+      run: |
+        mkdir -p /tmp/test-logs
+        # Framework writes per-server logfiles into test-data/<testcase>/...
+        find test-data -name 'logfile_*' -print -exec sh -c 'cp "$1" "/tmp/test-logs/$(echo "$1" | tr / _)"' _ {} \; 2>/dev/null || true
+        # Dump ldd to catch library-resolution regressions on cached binaries.
+        echo "=== ldd target/release/libvalkey_flash.so ===" > /tmp/test-logs/ldd.txt
+        ldd target/release/libvalkey_flash.so >> /tmp/test-logs/ldd.txt 2>&1 || true
+        echo "=== ldd tests/build/binaries/$SERVER_VERSION/valkey-server ===" >> /tmp/test-logs/ldd.txt
+        ldd "tests/build/binaries/$SERVER_VERSION/valkey-server" >> /tmp/test-logs/ldd.txt 2>&1 || true
+        echo "=== env ===" > /tmp/test-logs/env.txt
+        env | sort >> /tmp/test-logs/env.txt
+    - name: Upload test logs
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: build-ubuntu-logs-${{ matrix.server_version }}
+        path: /tmp/test-logs
+        if-no-files-found: ignore
 
   asan-build:
     name: ASAN / Valkey ${{ matrix.server_version }}
