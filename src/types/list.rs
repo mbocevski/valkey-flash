@@ -329,14 +329,31 @@ pub unsafe extern "C" fn aof_rewrite(
 ) {
     let obj = &*value.cast::<FlashListObject>();
 
-    let items = match &obj.tier {
+    let cold_buf: std::collections::VecDeque<Vec<u8>>;
+    let items: &std::collections::VecDeque<Vec<u8>> = match &obj.tier {
         Tier::Hot(l) => l,
-        Tier::Cold { .. } => {
-            logging::log_warning(
-                "flash: aof_rewrite on Tier::Cold list — cannot fetch from NVMe without key; \
-                 skipping key",
-            );
-            return;
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            match crate::STORAGE
+                .get()
+                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                .and_then(|b| list_deserialize(&b))
+            {
+                Some(items) => {
+                    cold_buf = items;
+                    &cold_buf
+                }
+                None => {
+                    logging::log_warning(
+                        "flash: aof_rewrite on Tier::Cold list: NVMe read/deserialize failed; \
+                         skipping key",
+                    );
+                    return;
+                }
+            }
         }
     };
 

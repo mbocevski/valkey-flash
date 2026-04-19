@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `aof_rewrite` Cold-tier arm in `src/types/list.rs` returned early with a log warning instead of reading from NVMe, causing Cold FlashList keys to be silently absent from the AOF file and lost on AOF-only restart; fixed by materializing the Cold tier via `STORAGE.read_at_offset` + `list_deserialize` (same pattern as `rdb_save`) before entering the chunked RPUSH emit loop; integration test `test_cold_list_survives_aof` added
 - `FLASH.LMOVE` did not call `SignalKeyAsReady` on the destination key after pushing; clients blocked with `FLASH.BLPOP dst` stayed blocked until timeout instead of waking immediately; fixed for both the same-key rotation path and the two-key path; also fixed in `push_one_blmove` (used by `FLASH.BLMOVE`'s reply callback and fast path) so chained BLMOVE→BLPOP unblocking works correctly
 - `ValkeyModuleAtomicSlotMigrationInfoV1.version` was declared `c_int` (4 bytes) but the C definition uses `uint64_t` (8 bytes); `num_slot_ranges` similarly mistyped as `c_int` vs `uint32_t` — struct layout now matches `valkeymodule.h:843-847`, preventing a crash when reading `slot_ranges` during slot migration
 - Migration bandwidth throttle used `elapsed.as_secs()` (truncates to whole seconds), leaving the first sub-second window entirely unthrottled; switched to millisecond precision

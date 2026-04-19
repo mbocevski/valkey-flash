@@ -185,3 +185,11 @@ class TestFlashListAof(ValkeyFlashTestCase):
         self.server.wait_for_action_done(ValkeyAction.AOF_REWRITE)
         self.client.execute_command("DEBUG", "RELOAD")
         assert self.client.execute_command("FLASH.LRANGE", "al9", "0", "-1") == [b"p", b"q", b"r"]
+
+    def test_cold_list_survives_aof(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.RPUSH", "al_cold", "x", "y", "z")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "al_cold")
+        _bgrewriteaof_and_restart(self.server)
+        result = self.client.execute_command("FLASH.LRANGE", "al_cold", "0", "-1")
+        assert result == [b"x", b"y", b"z"]
