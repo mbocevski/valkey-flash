@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `probe_cache_disabled_when_ttl_zero` now saves and restores the original `FLASH_MIGRATION_PROBE_CACHE_SEC` instead of hardcoding `60` on cleanup; `probe_cache_respects_ttl` removes the `"test-host:1234"` entry it inserted so it does not leak into any future tests (cosmetic test hygiene)
 - `cache_put` in `FLASH.MIGRATE.PROBE` now skips insertion when `flash.migration-probe-cache-sec` is 0 (caching disabled), matching the existing guard in `cache_get`; previously the cache was polluted even when TTL=0 and stale entries could be served if TTL was later re-enabled
 - Fix parallel-execution race in `migrate_probe` unit tests: `probe_cache_respects_ttl` and `probe_cache_disabled_when_ttl_zero` both mutate the shared `FLASH_MIGRATION_PROBE_CACHE_SEC` atomic and `PROBE_CACHE` global; added a `CACHE_TEST_LOCK` mutex to serialize them
 - Flatten list keyspace event names to match other FLASH command conventions: `flash.list.push` → `flash.lpush`/`flash.rpush` (per-direction), `flash.list.pop` → `flash.lpop`/`flash.rpop` (per-direction), `flash.list.set` → `flash.lset`, `flash.list.insert` → `flash.linsert`, `flash.list.rem` → `flash.lrem`, `flash.list.trim` → `flash.ltrim`, `flash.list.move` → `flash.lmove`; BLPOP/BRPOP/BLMOVE event names updated accordingly (#107 R1)

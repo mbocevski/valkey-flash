@@ -292,12 +292,14 @@ mod tests {
         assert_eq!(cached.unwrap().capacity_bytes, 1024);
 
         FLASH_MIGRATION_PROBE_CACHE_SEC.store(original_ttl, Ordering::Relaxed);
+        PROBE_CACHE.lock().unwrap().remove("test-host:1234");
     }
 
     #[test]
     fn probe_cache_disabled_when_ttl_zero() {
         let _guard = CACHE_TEST_LOCK.lock().unwrap();
         use std::sync::atomic::Ordering;
+        let original_ttl = FLASH_MIGRATION_PROBE_CACHE_SEC.load(Ordering::Relaxed);
         FLASH_MIGRATION_PROBE_CACHE_SEC.store(0, Ordering::Relaxed);
         let result = ProbeResult {
             state: "ready".to_string(),
@@ -307,6 +309,6 @@ mod tests {
         };
         cache_put("nohost:9999", result);
         assert!(cache_get("nohost:9999").is_none());
-        FLASH_MIGRATION_PROBE_CACHE_SEC.store(60, Ordering::Relaxed);
+        FLASH_MIGRATION_PROBE_CACHE_SEC.store(original_ttl, Ordering::Relaxed);
     }
 }
