@@ -25,7 +25,13 @@ def _wal_path(flash_path: str) -> pathlib.Path:
     return pathlib.Path(flash_path).with_suffix(".wal")
 
 
-def _default_flash_path() -> str:
+def _default_flash_path(test_case=None) -> str:
+    """Return the per-test backing-store path. The `ValkeyFlashTestCase` fixture
+    creates a distinct `self.flash_dir` under `testdir` for every test; tests
+    pass `self` so the helper can locate that dir."""
+    if test_case is not None and hasattr(test_case, "flash_dir"):
+        import os as _os
+        return _os.path.join(test_case.flash_dir, "flash.bin")
     return "/tmp/valkey-flash.bin"
 
 
@@ -121,7 +127,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
 
     def test_corrupted_wal_module_loads_ready(self):
         # Write a WAL file with a corrupt frame; module should still load ready.
-        wal_path = _wal_path(_default_flash_path())
+        wal_path = _wal_path(_default_flash_path(self))
         header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
         corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
         with open(wal_path, "wb") as f:
@@ -134,7 +140,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
 
     def test_corrupted_wal_warn_logged(self):
-        wal_path = _wal_path(_default_flash_path())
+        wal_path = _wal_path(_default_flash_path(self))
         header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
         corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
         with open(wal_path, "wb") as f:
@@ -147,7 +153,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
         self.server.verify_string_in_logfile("flash: recovery: WAL corruption at offset")
 
     def test_corrupted_wal_truncated_to_header(self):
-        wal_path = _wal_path(_default_flash_path())
+        wal_path = _wal_path(_default_flash_path(self))
         header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
         corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
         with open(wal_path, "wb") as f:
@@ -162,7 +168,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
 
     def test_valid_wal_records_applied_on_recovery(self):
         # Write WAL records manually; recovery should count them.
-        wal_path = _wal_path(_default_flash_path())
+        wal_path = _wal_path(_default_flash_path(self))
         _write_wal(
             wal_path,
             [

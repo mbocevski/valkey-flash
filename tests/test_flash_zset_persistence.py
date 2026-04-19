@@ -71,7 +71,7 @@ class TestFlashZSetRdb(ValkeyFlashTestCase):
         )
         _bgsave_and_restart(self.server)
         assert self.client.execute_command("FLASH.ZSCORE", "rz5", "neginf") == b"-inf"
-        assert self.client.execute_command("FLASH.ZSCORE", "rz5", "posinf") == b"inf"
+        assert self.client.execute_command("FLASH.ZSCORE", "rz5", "posinf") == b"+inf"
         score_pi = float(self.client.execute_command("FLASH.ZSCORE", "rz5", "pi"))
         assert abs(score_pi - 3.14) < 1e-10
 
@@ -179,4 +179,4 @@ class TestFlashZSetAofPersistence(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.ZADD", "az_inf", "-inf", "lo", "inf", "hi")
         _bgrewriteaof_and_restart(self.server)
         assert self.client.execute_command("FLASH.ZSCORE", "az_inf", "lo") == b"-inf"
-        assert self.client.execute_command("FLASH.ZSCORE", "az_inf", "hi") == b"inf"
+        assert self.client.execute_command("FLASH.ZSCORE", "az_inf", "hi") == b"+inf"

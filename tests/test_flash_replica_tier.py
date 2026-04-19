@@ -109,10 +109,13 @@ class TestFlashReplicaTierEnabled(ReplicationTestCase):
             "loadmodule": f"{module_path} path {primary_path} capacity-bytes 16777216",
         }
         # Replica gets its own unique path + the tier-enabled flag.
+        # Module-init args use raw config names (no `flash.` prefix); the
+        # prefixed name is only used in CONFIG GET/SET.
         self._replica_args = {
             "enable-debug-command": "yes",
             "loadmodule": (
-                f"{module_path} flash.path {self._replica_path} flash.replica-tier-enabled yes"
+                f"{module_path} path {self._replica_path} "
+                f"capacity-bytes 16777216 replica-tier-enabled yes"
             ),
         }
         self.server, self.client = self.create_server(
