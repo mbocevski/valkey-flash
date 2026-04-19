@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cache_put` in `FLASH.MIGRATE.PROBE` now skips insertion when `flash.migration-probe-cache-sec` is 0 (caching disabled), matching the existing guard in `cache_get`; previously the cache was polluted even when TTL=0 and stale entries could be served if TTL was later re-enabled
 - Fix parallel-execution race in `migrate_probe` unit tests: `probe_cache_respects_ttl` and `probe_cache_disabled_when_ttl_zero` both mutate the shared `FLASH_MIGRATION_PROBE_CACHE_SEC` atomic and `PROBE_CACHE` global; added a `CACHE_TEST_LOCK` mutex to serialize them
+- Fix connection leak in `_migrate_slot` SETSLOT broadcast loop: `nc.close()` is now in a `finally` block so connections are always released even when the `CLUSTER SETSLOT` call raises (#95 A1)
+- Fix `migrating_traffic_keys` key derivation in `test_sixteen_slot_migrations_under_load`: replaced guessed hash tags `{stress16:{slot}}` (which don't deterministically map to the target slot) with `CLUSTER COUNTKEYSINSLOT`+`CLUSTER GETKEYSINSLOT` queries against the source node to collect keys that verifiably reside in each migrating slot (#95 A2)
 
 ### Added
 

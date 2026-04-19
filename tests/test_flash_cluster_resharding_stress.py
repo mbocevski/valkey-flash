@@ -21,17 +21,16 @@ Run (requires USE_DOCKER=1):
 Budget: ~3–5 min per test.
 """
 
+import concurrent.futures
 import threading
 import time
-import concurrent.futures
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 import pytest
 import valkey
 import valkey.exceptions
 from valkey.cluster import ValkeyCluster
-
 
 # ── Topology helpers ──────────────────────────────────────────────────────────
 
@@ -43,7 +42,7 @@ class NodeInfo:
     external_port: int   # host-mapped port (7001-7003)
 
 
-def _discover_primaries(seed_port: int = 7001) -> List[NodeInfo]:
+def _discover_primaries(seed_port: int = 7001) -> list[NodeInfo]:
     """Return NodeInfo for each primary, mapping internal → external port."""
     primary_ext_ports = (7001, 7002, 7003)
     result = []
@@ -76,12 +75,12 @@ def _discover_primaries(seed_port: int = 7001) -> List[NodeInfo]:
     return result
 
 
-def _slot_ranges_by_node(seed_port: int = 7001) -> Dict[str, List[Tuple[int, int]]]:
+def _slot_ranges_by_node(seed_port: int = 7001) -> dict[str, list[tuple[int, int]]]:
     """Return {node_id: [(start, end), ...]} for primaries."""
     c = valkey.Valkey(host="localhost", port=seed_port, socket_timeout=5)
     try:
         slots_data = c.cluster("slots")
-        result: Dict[str, List[Tuple[int, int]]] = {}
+        result: dict[str, list[tuple[int, int]]] = {}
         for entry in slots_data:
             start, end = int(entry[0]), int(entry[1])
             primary = entry[2]
@@ -94,7 +93,7 @@ def _slot_ranges_by_node(seed_port: int = 7001) -> Dict[str, List[Tuple[int, int
         c.close()
 
 
-def _node_for_slot(slot: int, primaries: List[NodeInfo], seed_port: int = 7001) -> Optional[NodeInfo]:
+def _node_for_slot(slot: int, primaries: list[NodeInfo], seed_port: int = 7001) -> NodeInfo | None:
     """Return the NodeInfo of the primary that currently owns `slot`."""
     c = valkey.Valkey(host="localhost", port=seed_port, socket_timeout=5)
     try:
@@ -170,12 +169,13 @@ def _migrate_slot(
 
         # Commit on all nodes (replicas ignore CLUSTER SETSLOT).
         for port in ALL_NODE_PORTS:
+            nc = valkey.Valkey(host="localhost", port=port, socket_timeout=5)
             try:
-                nc = valkey.Valkey(host="localhost", port=port, socket_timeout=5)
                 nc.cluster("setslot", slot, "node", target.node_id)
-                nc.close()
             except Exception:
                 pass
+            finally:
+                nc.close()
 
         return migrated
     finally:
@@ -190,7 +190,7 @@ class AckTracker:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._acks: Dict[str, str] = {}
+        self._acks: dict[str, str] = {}
         self.error_count = 0
 
     def record(self, key: str, value: str) -> None:
@@ -201,7 +201,7 @@ class AckTracker:
         with self._lock:
             self.error_count += 1
 
-    def snapshot(self) -> Dict[str, str]:
+    def snapshot(self) -> dict[str, str]:
         with self._lock:
             return dict(self._acks)
 
@@ -211,7 +211,7 @@ class AckTracker:
 def _run_mixed_traffic(
     stop_event: threading.Event,
     tracker: AckTracker,
-    keys: List[str],
+    keys: list[str],
     thread_id: int,
 ) -> None:
     """
@@ -249,26 +249,20 @@ def _run_mixed_traffic(
             except Exception:
                 tracker.record_error()
 
-            try:
+            with suppress(Exception):
                 # FLASH.GET (read — not tracked for loss, just exercises the path)
                 client.execute_command("FLASH.GET", key)
-            except Exception:
-                pass
 
-            try:
+            with suppress(Exception):
                 # Occasional FLASH.HDEL to vary the pattern
                 if i % 7 == 0:
                     client.execute_command("FLASH.HDEL", hkey, "v")
-            except Exception:
-                pass
 
             i += 1
             time.sleep(0.002)   # ~500 ops/thread/s — enough load without flooding
     finally:
-        try:
+        with suppress(Exception):
             client.close()
-        except Exception:
-            pass
 
 
 # ── Zero-loss assertion ───────────────────────────────────────────────────────
@@ -362,10 +356,9 @@ def test_single_slot_migration_under_load(docker_cluster):
             seed.execute_command("FLASH.HSET", k, "v", f"init:{k}")
         # Demote half to Cold tier to exercise the rdb_save Cold path.
         for k in string_keys[:n_keys // 2]:
-            try:
+            with suppress(Exception):
                 seed.execute_command("FLASH.DEBUG.DEMOTE", k)
-            except Exception:
-                pass  # non-fatal: test proceeds with Hot keys if demote unavailable
+                # non-fatal: test proceeds with Hot keys if demote unavailable
     finally:
         seed.close()
 
@@ -465,13 +458,24 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
 
     # -- write traffic keys: spread across ALL slots, not just migrating ones --
     TAG16 = "stress16_traffic"
-    traffic_slot = _keyslot(TAG16)
     # Intentionally DON'T pre-migrate traffic keys — they stay on their home slot;
     # threads hit all keys and we verify across the board.
     n_traffic = 40
     traffic_keys = [f"{{{TAG16}}}{i}" for i in range(n_traffic)]
-    # Also include some keys in the migrating slots.
-    migrating_traffic_keys = [f"{{stress16:{s}}}live{i}" for s in slots_to_migrate[:4] for i in range(5)]
+    # Collect traffic keys that actually land in migrating slots by querying the
+    # source node directly — hash-tag guesses like {stress16:{slot}} don't
+    # deterministically map to the expected slot number.
+    migrating_traffic_keys = []
+    src_probe = valkey.Valkey(host="localhost", port=source.external_port, socket_timeout=5)
+    try:
+        for s in slots_to_migrate[:4]:
+            if int(src_probe.cluster("countkeysinslot", s)) > 0:
+                slot_keys = src_probe.cluster("getkeysinslot", s, 5)
+                migrating_traffic_keys.extend(
+                    k.decode() if isinstance(k, bytes) else k for k in slot_keys
+                )
+    finally:
+        src_probe.close()
 
     all_traffic_keys = traffic_keys + migrating_traffic_keys
 
@@ -499,7 +503,7 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
     time.sleep(1.0)
 
     # -- concurrent migrations with throttle --
-    migration_errors: List[str] = []
+    migration_errors: list[str] = []
     migration_lock = threading.Lock()
 
     def do_migrate(slot: int) -> int:
