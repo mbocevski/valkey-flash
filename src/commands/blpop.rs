@@ -103,7 +103,7 @@ unsafe extern "C" fn blpop_reply(
 
                 // Async NVMe write (fire-and-forget).
                 #[cfg(not(test))]
-                if !crate::replication::is_replica()
+                if !crate::replication::must_run_sync(&context)
                     && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
                 {
                     use crate::storage::backend::StorageBackend;
@@ -264,7 +264,7 @@ fn do_blpop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool) -> ValkeyRes
                 );
 
                 #[cfg(not(test))]
-                if !crate::replication::is_replica()
+                if !crate::replication::must_run_sync(ctx)
                     && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
                 {
                     use crate::storage::backend::StorageBackend;

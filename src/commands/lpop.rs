@@ -121,8 +121,8 @@ fn do_pop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool, _cmd_name: &st
 
         #[cfg(not(test))]
         {
-            if crate::replication::is_replica()
-                || (STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
+            if crate::replication::must_run_sync(ctx)
+                || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
             {
                 return Ok(reply);
             }
@@ -184,8 +184,8 @@ fn do_pop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool, _cmd_name: &st
 
     #[cfg(not(test))]
     {
-        if crate::replication::is_replica()
-            || (STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
+        if crate::replication::must_run_sync(ctx)
+            || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(reply);
         }

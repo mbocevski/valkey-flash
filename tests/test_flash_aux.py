@@ -35,7 +35,9 @@ class TestFlashAux(ValkeyFlashTestCase):
         _bgsave_and_restart(self.server)
         info = _aux_info(self.client)
         assert info.get(b"before.entries") == 0
-        assert info.get(b"before.wal_cursor") == 0
+        # The 16-byte WAL header is always present; wal_cursor reflects the
+        # absolute file offset used during recovery, not record bytes.
+        assert info.get(b"before.wal_cursor") == 16
         assert info.get(b"before.version") == 1
 
     def test_aux_roundtrip_with_flash_keys(self):

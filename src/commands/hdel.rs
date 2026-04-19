@@ -120,7 +120,7 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
         #[cfg(not(test))]
         {
-            if crate::replication::is_replica()
+            if crate::replication::must_run_sync(ctx)
                 || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
             {
                 return Ok(ValkeyValue::Integer(deleted));
@@ -166,7 +166,7 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
         #[cfg(not(test))]
         {
-            if crate::replication::is_replica()
+            if crate::replication::must_run_sync(ctx)
                 || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
             {
                 return Ok(ValkeyValue::Integer(deleted));

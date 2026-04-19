@@ -132,7 +132,7 @@ unsafe extern "C" fn bzpop_reply(
                     &key,
                 );
 
-                if !crate::replication::is_replica()
+                if !crate::replication::must_run_sync(&context)
                     && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
                 {
                     use crate::storage::backend::StorageBackend;
@@ -300,7 +300,7 @@ fn do_bzpop(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRes
                 );
 
                 #[cfg(not(test))]
-                if !crate::replication::is_replica()
+                if !crate::replication::must_run_sync(ctx)
                     && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
                 {
                     use crate::storage::backend::StorageBackend;

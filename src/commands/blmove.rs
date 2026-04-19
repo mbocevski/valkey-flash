@@ -115,7 +115,7 @@ unsafe extern "C" fn blmove_reply(
 
         // Async NVMe writes (fire-and-forget).
         #[cfg(not(test))]
-        if !crate::replication::is_replica()
+        if !crate::replication::must_run_sync(&context)
             && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
         {
             use crate::storage::backend::StorageBackend;
@@ -358,7 +358,7 @@ pub fn flash_blmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
             }
 
             #[cfg(not(test))]
-            if !crate::replication::is_replica()
+            if !crate::replication::must_run_sync(ctx)
                 && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
             {
                 use crate::storage::backend::StorageBackend;

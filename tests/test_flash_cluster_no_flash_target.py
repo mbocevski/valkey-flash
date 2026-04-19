@@ -137,7 +137,7 @@ def _start_flash_server(capacity_bytes: int) -> _StandaloneServer:
             f"port {port}\n"
             f"loglevel warning\n"
             f"enable-debug-command yes\n"
-            f"loadmodule {module_path} flash.path {flash_path} "
+            f"loadmodule {module_path} path {flash_path} capacity-bytes 16777216 "
             f"flash.capacity-bytes {capacity_bytes}\n"
         )
     proc = subprocess.Popen(

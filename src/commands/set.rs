@@ -209,7 +209,7 @@ pub fn flash_set_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     // submit_or_complete guarantees complete() is called even when the pool is full.
     #[cfg(not(test))]
     {
-        if crate::replication::is_replica()
+        if crate::replication::must_run_sync(ctx)
             || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(ValkeyValue::SimpleStringStatic("OK"));

@@ -139,8 +139,8 @@ fn do_push(
 
     #[cfg(not(test))]
     {
-        if crate::replication::is_replica()
-            || (STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
+        if crate::replication::must_run_sync(ctx)
+            || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(ValkeyValue::Integer(new_len));
         }

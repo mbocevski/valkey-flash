@@ -248,8 +248,9 @@ class TestFlashBasicWithReplicaTier(ValkeyTestCase):
         self.args = {
             "enable-debug-command": "yes",
             "loadmodule": (
-                f"{module_path} flash.path {flash_path} "
-                f"flash.replica-tier-enabled {replica_tier_enabled}"
+                f"{module_path} path {flash_path} "
+                f"capacity-bytes 16777216 "
+                f"replica-tier-enabled {replica_tier_enabled}"
             ),
         }
         self.server, self.client = self.create_server(

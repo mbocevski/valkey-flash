@@ -108,7 +108,7 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     // Phase 3: async NVMe tombstone writes.
     #[cfg(not(test))]
     {
-        if crate::replication::is_replica()
+        if crate::replication::must_run_sync(ctx)
             || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(ValkeyValue::Integer(count));

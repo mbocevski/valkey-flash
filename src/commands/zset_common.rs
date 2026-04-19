@@ -295,7 +295,7 @@ pub fn finish_zset_write(
         let ctx = _ctx;
         let key_bytes = _key_bytes;
         let serialized = _serialized;
-        if crate::replication::is_replica()
+        if crate::replication::must_run_sync(ctx)
             || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(reply.into_valkey_value());

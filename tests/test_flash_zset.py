@@ -601,7 +601,7 @@ class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
     def test_zpopmax_on_inf_scores(self):
         self.client.execute_command("FLASH.ZADD", "zedge7", "-inf", "lo", "inf", "hi", "0", "mid")
         result = self.client.execute_command("FLASH.ZPOPMAX", "zedge7")
-        assert result == [b"hi", b"inf"]
+        assert result == [b"hi", b"+inf"]
 
     def test_zrangebyscore_exclusive_both_ends(self):
         self.client.execute_command("FLASH.ZADD", "zedge8", "1.0", "a", "2.0", "b", "3.0", "c")

@@ -285,7 +285,7 @@ fn finish_lmove(
 ) -> ValkeyResult {
     #[cfg(not(test))]
     {
-        if crate::replication::is_replica()
+        if crate::replication::must_run_sync(ctx)
             || (crate::STORAGE.get().is_none() && crate::replication::must_obey_client(ctx))
         {
             return Ok(ValkeyValue::StringBuffer(_elem));

@@ -30,6 +30,22 @@ pub fn must_obey_client(ctx: &Context) -> bool {
     ctx.get_flags().contains(ContextFlags::REPLICATED)
 }
 
+/// Returns `true` if the command must complete synchronously on the event
+/// loop, i.e. cannot call `ctx.block_client()`. This is the case when:
+///
+/// - we are a replica (writes arrive from the primary and must not block),
+/// - the server is in `LOADING` state (AOF/RDB replay — `block_client()` in
+///   this state hits `serverAssert(!deny_blocking ...)` in Valkey core),
+/// - the context carries `DENY_BLOCKING` (e.g. inside MULTI/EXEC on a
+///   client that has disallowed blocking).
+pub fn must_run_sync(ctx: &Context) -> bool {
+    let flags = ctx.get_flags();
+    is_replica()
+        || flags.intersects(
+            ContextFlags::LOADING | ContextFlags::DENY_BLOCKING | ContextFlags::ASYNC_LOADING,
+        )
+}
+
 /// Server-event callback fired whenever the replication role changes.
 ///
 /// - `Primary → Replica`: set `IS_REPLICA = true` to suspend NVMe demotions.

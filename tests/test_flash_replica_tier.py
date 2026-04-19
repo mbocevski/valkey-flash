@@ -68,7 +68,7 @@ class TestFlashReplicaTierDefault(ReplicationTestCase):
         primary_path = os.path.join(self._tmpdir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",
-            "loadmodule": f"{os.getenv('MODULE_PATH')} flash.path {primary_path}",
+            "loadmodule": f"{os.getenv('MODULE_PATH')} path {primary_path} capacity-bytes 16777216",
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=_server_path(), args=self.args
@@ -106,7 +106,7 @@ class TestFlashReplicaTierEnabled(ReplicationTestCase):
         module_path = os.getenv("MODULE_PATH")
         self.args = {
             "enable-debug-command": "yes",
-            "loadmodule": f"{module_path} flash.path {primary_path}",
+            "loadmodule": f"{module_path} path {primary_path} capacity-bytes 16777216",
         }
         # Replica gets its own unique path + the tier-enabled flag.
         self._replica_args = {

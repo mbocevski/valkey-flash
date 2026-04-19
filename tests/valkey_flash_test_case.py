@@ -1,10 +1,18 @@
 import os
+import shutil
+import tempfile
 import threading
 import time
 
 import pytest
 from valkey import ResponseError
 from valkeytestframework.valkey_test_case import ValkeyTestCase
+
+
+# Tests only write tiny payloads, but the module's default capacity is 1 GiB
+# per flash.bin. Without an override every test would leave behind a 1 GiB
+# file — hundreds of tests fill the host disk. Cap at 16 MiB by default.
+FLASH_TEST_CAPACITY_BYTES = 16 * 1024 * 1024
 
 
 class ValkeyFlashTestCase(ValkeyTestCase):
@@ -26,16 +34,23 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # config name/value pairs. Note: module-init args use the raw config
         # name (`path`), without the `flash.` prefix — the `flash.` prefix
         # only applies when addressing the knob via `CONFIG GET`/`SET`.
-        import tempfile
-        flash_dir = tempfile.mkdtemp(prefix="flash_", dir=self.testdir)
-        flash_path = os.path.join(flash_dir, "flash.bin")
+        self.flash_dir = tempfile.mkdtemp(prefix="flash_", dir=self.testdir)
+        flash_path = os.path.join(self.flash_dir, "flash.bin")
         args = {
             "enable-debug-command": "yes",
-            "loadmodule": f"{os.getenv('MODULE_PATH')} path {flash_path}",
+            "loadmodule": (
+                f"{os.getenv('MODULE_PATH')} "
+                f"path {flash_path} "
+                f"capacity-bytes {FLASH_TEST_CAPACITY_BYTES}"
+            ),
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=server_path, args=args
         )
+        yield
+        # Drop the per-test flash directory so test-data/ doesn't balloon by
+        # `capacity-bytes` for every test the session runs.
+        shutil.rmtree(self.flash_dir, ignore_errors=True)
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:

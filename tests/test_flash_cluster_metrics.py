@@ -72,7 +72,7 @@ class TestFlashMigrationInfoFields(ValkeyTestCase):
         flash_path = os.path.join(self._tmpdir, "flash.bin")
         self.args = {
             "enable-debug-command": "yes",
-            "loadmodule": f"{os.getenv('MODULE_PATH')} flash.path {flash_path}",
+            "loadmodule": f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216",
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=_server_path(), args=self.args

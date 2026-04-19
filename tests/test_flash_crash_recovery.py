@@ -28,8 +28,10 @@ OP_PUT = 0x01
 OP_DELETE = 0x02
 
 
-def _wal_path() -> pathlib.Path:
-    return pathlib.Path("/tmp/valkey-flash.wal")
+def _wal_path(flash_dir: str | pathlib.Path | None = None) -> pathlib.Path:
+    if flash_dir is None:
+        return pathlib.Path("/tmp/valkey-flash.wal")
+    return pathlib.Path(flash_dir) / "flash.wal"
 
 
 def _fresh_wal_header() -> bytes:
@@ -103,13 +105,24 @@ class _CrashTestBase(ValkeyFlashTestCase):
         server_path = os.path.join(binaries_dir, "valkey-server")
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
+        import tempfile
+        self._flash_dir = tempfile.mkdtemp(prefix="flash_crash_", dir=self.testdir)
+        flash_path = os.path.join(self._flash_dir, "flash.bin")
         args = {
             "enable-debug-command": "yes",
-            "loadmodule": f"{os.getenv('MODULE_PATH')} flash.sync {self._sync_mode}",
+            "loadmodule": (
+                f"{os.getenv('MODULE_PATH')} "
+                f"path {flash_path} "
+                f"capacity-bytes 16777216 "
+                f"sync {self._sync_mode}"
+            ),
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=server_path, args=args
         )
+        yield
+        import shutil
+        shutil.rmtree(self._flash_dir, ignore_errors=True)
 
 
 # ── Scenarios 1 & 2: always mode ─────────────────────────────────────────────
@@ -240,7 +253,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         self.client.execute_command("FLASH.SET", "k2", "v2")
         _sigkill(self.server)
 
-        wal = _wal_path()
+        wal = _wal_path(self._flash_dir)
         # Two complete PUT records: WAL should be HEADER_SIZE + 2*PUT_FRAME_SIZE
         expected_good_size = HEADER_SIZE + 2 * PUT_FRAME_SIZE
 
@@ -270,7 +283,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         self.client.execute_command("FLASH.SET", "k3", "v3")
         _sigkill(self.server)
 
-        wal = _wal_path()
+        wal = _wal_path(self._flash_dir)
         # Record 2 CRC field starts at: HEADER_SIZE + PUT_FRAME_SIZE + 4
         # (frame overhead = 8: [u32 len][u32 crc]; CRC is bytes 4-7 of overhead)
         rec2_crc_offset = HEADER_SIZE + PUT_FRAME_SIZE + 4
@@ -322,7 +335,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         _sigkill(self.server)
 
         # Delete the WAL — Wal::open recreates it with a fresh 16-byte header.
-        wal = _wal_path()
+        wal = _wal_path(self._flash_dir)
         wal.unlink()
 
         _crash_restart(self.server)
@@ -340,7 +353,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         """
         _sigkill(self.server)
 
-        wal = _wal_path()
+        wal = _wal_path(self._flash_dir)
         with open(wal, "wb") as f:
             f.write(struct.pack("<IB", 0xDEAD_BEEF, WAL_VERSION) + b"\x00" * 11)
 
