@@ -102,7 +102,7 @@ pub struct FlashHashObject {
 
 const ENCODING_VERSION: i32 = 1;
 
-// RDB format constants (spec #51, v1 inline format):
+// RDB format constants (v1 inline format):
 //   [u64 encoding_version][u64 shape_tag][i64 ttl_ms][serialized_hash_bytes]
 const SHAPE_TAG_HASH: u64 = 0x02;
 // Sentinel stored in the RDB ttl_ms field when the key has no expiry.
@@ -190,7 +190,7 @@ pub unsafe extern "C" fn mem_usage2(
 ///
 /// Serialise a `FlashHashObject` into the RDB stream.
 ///
-/// Wire format (spec #51 v1):
+/// Wire format (v1):
 ///   [u64 encoding_version = 1][u64 shape_tag = 0x02][i64 ttl_ms|-1][hash_bytes]
 ///
 /// `hash_bytes` is the `hash_serialize` encoding (same format used for NVMe/cache).

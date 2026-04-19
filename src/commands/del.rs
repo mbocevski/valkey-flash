@@ -11,8 +11,8 @@ use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject};
 /// Unblocks the waiting client after all NVMe tombstone writes complete.
 ///
 /// NVMe delete failures are logged and do not propagate to the client — space
-/// reclaim is best-effort (spec #9). The client always receives the count of
-/// keys removed from Valkey's keyspace.
+/// reclaim is best-effort. The client always receives the count of keys removed
+/// from Valkey's keyspace.
 ///
 /// Only compiled outside test mode.
 #[cfg(not(test))]

@@ -1,5 +1,5 @@
 """
-Integration tests for Task #80 — migration progress metrics in INFO flash.
+Integration tests for migration progress metrics in INFO flash.
 
 Run (requires Docker cluster): USE_DOCKER=1 pytest tests/test_flash_cluster_metrics.py -v
 

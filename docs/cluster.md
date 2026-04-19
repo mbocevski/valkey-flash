@@ -36,7 +36,7 @@ out of the box.
 - Per-node INFO flash with cluster-mode field (`flash_cluster_mode:yes/no`)
 - Migration metrics in INFO flash (8 `flash_migration_*` fields)
 - Optional flash tier on replicas (`flash.replica-tier-enabled=true`)
-- `FLASH.MIGRATE.PROBE` for pre-migration capacity checks — rejects migration if target free space < key serialized size (spec #70 via task #96)
+- `FLASH.MIGRATE.PROBE` for pre-migration capacity checks — rejects migration if target free space < key serialized size
 
 **v1.1 planned**
 

@@ -1,7 +1,7 @@
 """
-Target-no-flash fallback tests (Task #85).
+Target-no-flash fallback tests.
 
-Spec #70 prescribes three incompatible-target scenarios.  Each test uses the
+Three incompatible-target scenarios are exercised. Each test uses the
 docker_cluster primary (port 7001) as the probe source; incompatible targets
 are spawned as standalone servers by each test.
 
@@ -338,7 +338,7 @@ def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
 @pytest.mark.docker_cluster
 def test_flash_migrate_rejects_migration_when_target_full(docker_cluster):
     """FLASH.MIGRATE returns ERR FLASH-MIGRATE ... insufficient flash capacity when
-    the target NVMe free_bytes is less than the key's estimated size (task #96).
+    the target NVMe free_bytes is less than the key's estimated size.
 
     Uses two standalone flash servers (no cluster required): source has ample
     space; target is filled to capacity.  FLASH.MIGRATE on the source is expected

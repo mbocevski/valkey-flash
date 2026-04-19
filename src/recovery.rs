@@ -109,7 +109,7 @@ pub fn run_recovery(
 
         // ── 2. Seed tiering map from aux entries ──────────────────────────────
         // Tier tag 1 = Cold; those entries live on NVMe and need map entries.
-        // Aux doesn't store offset/value_hash yet (task #39 v1), so use 0.
+        // Aux doesn't store offset/value_hash yet, so use 0.
         for entry in &state.before.entries {
             if entry.tier_tag == 1 {
                 tiering_map.insert(

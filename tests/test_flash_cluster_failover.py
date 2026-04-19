@@ -1,11 +1,11 @@
 """
-Cluster failover integration tests (Task #86).
+Cluster failover integration tests.
 
 Two @slow @docker_cluster tests that verify replica promotion + post-promotion
 write correctness:
 
   Variant A — standard cluster (replica-tier-enabled=false, default):
-    Replica uses lazy NVMe init on promotion (task #64).
+    Replica uses lazy NVMe init on promotion.
     Uses docker_cluster fixture (ports 7001-7006).
 
   Variant B — replica-tier-enabled cluster:
@@ -18,7 +18,7 @@ Scenario (both variants):
   2. Hard-kill primary-1 (docker kill — simulates an unclean crash).
   3. Poll CLUSTER NODES from a surviving primary until the replica of the
      killed primary reports "master" (≤ 30 s given 5 000 ms cluster-node-timeout).
-  4. Assert: FLASH.SET on the new primary succeeds immediately (validates #64).
+  4. Assert: FLASH.SET on the new primary succeeds immediately (exercises lazy NVMe init).
   5. Assert: all 30 pre-failover keys are readable (no data loss for acked writes).
   6. Assert: 5 new post-promotion writes are readable.
   7. Assert: CLUSTER INFO shows cluster_state=ok.
@@ -249,7 +249,7 @@ def _run_failover_scenario(
     # Fresh cluster client picks up the new topology.
     post_client = _new_cluster_client(survivor_port)
     try:
-        # This validates task #64: lazy NVMe init on the promoted node.
+        # This exercises lazy NVMe init on the promoted node.
         post_key = "{fail86:new}k"
         post_client.execute_command("FLASH.SET", post_key, "post-promotion")
         val = post_client.execute_command("FLASH.GET", post_key)
@@ -361,7 +361,7 @@ def _restore_original_primary_role(killed_port: int, timeout: float = 30.0) -> N
 @pytest.mark.slow
 def test_failover_promotes_replica_and_retains_data(docker_cluster):
     """Hard-kill primary-1, wait for replica promotion, assert zero data loss and
-    immediate FLASH.SET on the new primary (validates task #64 lazy NVMe init)."""
+    immediate FLASH.SET on the new primary (exercises lazy NVMe init)."""
     _run_failover_scenario(
         seed_port=7001,
         killed_port=7001,

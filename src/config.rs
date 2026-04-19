@@ -101,7 +101,7 @@ pub static FLASH_CLUSTER_MODE_ENABLED: LazyLock<Mutex<String>> =
 // ── flash.replica-tier-enabled ────────────────────────────────────────────────
 
 /// Enables the flash NVMe tier on cluster replicas (default `false`).
-/// Reserved for task #82; downstream tasks read this flag without touching config.rs.
+/// Downstream code reads this flag without touching config.rs.
 pub static FLASH_REPLICA_TIER_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // ── flash.migration-max-key-bytes ─────────────────────────────────────────────

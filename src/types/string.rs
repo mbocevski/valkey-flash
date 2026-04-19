@@ -18,7 +18,7 @@ pub struct FlashStringObject {
 
 const ENCODING_VERSION: i32 = 1;
 
-// RDB format constants (spec #13, v1 inline format):
+// RDB format constants (v1 inline format):
 //   [u64 encoding_version][u64 shape_tag][i64 ttl_ms][string_buffer value]
 const SHAPE_TAG_STRING: u64 = 0x01;
 // Sentinel stored in the RDB ttl_ms field when the key has no expiry.
@@ -108,7 +108,7 @@ pub unsafe extern "C" fn mem_usage2(
 ///
 /// Serialise a `FlashStringObject` into the RDB stream.
 ///
-/// Wire format (spec #13 v1):
+/// Wire format (v1):
 ///   [u64 encoding_version = 1][u64 shape_tag = 0x01][i64 ttl_ms|-1][string_buffer value]
 ///
 /// Cold-tier objects: NVMe fetch is not possible here because `rdb_save` does not
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn aof_rewrite(
             Tier::Cold { .. } => {
                 logging::log_warning(
                     "flash: aof_rewrite on Tier::Cold object — cannot fetch from NVMe without key; \
-                 skipping key (task #57)",
+                 skipping key",
                 );
                 return;
             }

@@ -137,7 +137,7 @@ All FLASH.* commands are opt-in per key — existing native Valkey data types ar
 | `FLASH.COMPACTION.TRIGGER` | Manually run NVMe compaction (test-only) |
 | `FLASH.COMPACTION.STATS` | Current free-list state |
 | `FLASH.MIGRATE.PROBE [host port]` | Query local or remote node state, capacity, path |
-| `FLASH.MIGRATE` | Extended MIGRATE hook for FLASH.* keys — bundles DUMP/RESTORE with tier state, capacity-probe gated (spec #67 + #96) |
+| `FLASH.MIGRATE` | Extended MIGRATE hook for FLASH.* keys — bundles DUMP/RESTORE with tier state, capacity-probe gated |
 
 ## Configuration
 

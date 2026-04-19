@@ -4,9 +4,8 @@ Thank you for your interest in contributing.
 
 ## Before you start
 
-- Read [CLAUDE.md](CLAUDE.md) for architecture decisions, conventions, and open design questions.
-- Check the task backlog (`backlog:tasks`) for planned work and active specs.
-- New commands or data types require a spec task (`backlog:spec`) to be approved before implementation begins.
+- Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural decisions behind the module.
+- For non-trivial changes (new commands, new data types, protocol changes), open a GitHub issue first to discuss the design before sending a PR.
 
 ## Workflow
 
