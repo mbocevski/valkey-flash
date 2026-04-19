@@ -33,6 +33,35 @@ uv run ruff format --check .     # format check
 uv run ruff format .             # format (auto-fix)
 ```
 
+### Run tests locally
+
+The easiest path is `./build.sh` — it compiles the module, fetches a matching `valkey-server` into `tests/build/binaries/$SERVER_VERSION/`, and runs fmt + clippy + unit + integration tests:
+
+```sh
+SERVER_VERSION=9.0 ./build.sh    # full gate (fmt, clippy, unit, integration)
+SERVER_VERSION=unstable ./build.sh
+```
+
+If you want to run pytest directly (e.g. to iterate on a single test), you need three things:
+
+```sh
+# 1. compile the module
+cargo build --release
+
+# 2. have a valkey-server binary available under tests/build/binaries/<ver>/
+#    (build.sh populates this the first time it runs)
+
+# 3. export SERVER_VERSION; MODULE_PATH and LD_LIBRARY_PATH are auto-detected
+#    from the repo layout by tests/conftest.py if unset.
+SERVER_VERSION=9.0 uv run pytest tests/ -v
+SERVER_VERSION=9.0 uv run pytest tests/test_flash_set.py -v       # single file
+SERVER_VERSION=9.0 uv run pytest tests/test_flash_set.py::TestFlashSetBasic -v
+```
+
+If tests fail with `RuntimeError: Valkey server is not Ready to accept connections`, one of the three prerequisites is missing. Check `target/release/libvalkey_flash.so` and `tests/build/binaries/<SERVER_VERSION>/valkey-server` both exist.
+
+Docker-based tests need `USE_DOCKER=1`; see [docs/docker-tests.md](docs/docker-tests.md).
+
 ## Commit style
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).

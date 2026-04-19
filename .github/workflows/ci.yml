@@ -374,7 +374,6 @@ jobs:
     name: Docker integration / ${{ matrix.topology }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(github.event.pull_request.labels.*.name, 'slow-tests')
     strategy:
       fail-fast: false
       matrix:
