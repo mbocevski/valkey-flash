@@ -1,5 +1,0 @@
-# Compatibility shim — use pyproject.toml / uv.lock for authoritative deps.
-# Install with: uv sync
-valkey==6.1.1
-pytest==7.4.3
-python-on-whales==0.81.0
