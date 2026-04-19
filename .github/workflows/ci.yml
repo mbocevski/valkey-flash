@@ -15,6 +15,42 @@ env:
   TEST_FRAMEWORK_DIR: tests/build/valkeytestframework
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+    - name: Cache Cargo registry
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-lint-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-lint-
+          ${{ runner.os }}-cargo-
+    - name: cargo fmt --check
+      run: cargo fmt --check
+    - name: cargo clippy
+      run: cargo clippy --all-targets -- -D warnings
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      with:
+        python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
+    - name: Install test dependencies
+      run: uv sync --frozen
+    - name: ruff check
+      run: uv run ruff check .
+    - name: ruff format --check
+      run: uv run ruff format --check .
+
   build-ubuntu:
     name: Ubuntu / Valkey ${{ matrix.server_version }}
     runs-on: ubuntu-latest
@@ -35,10 +71,6 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
-    - name: Cargo fmt and clippy
-      run: |
-        cargo fmt --check
-        cargo clippy --profile release --all-targets -- -D warnings
     - name: Unit tests
       run: cargo test --features enable-system-alloc
     - name: Release build
@@ -102,10 +134,6 @@ jobs:
       run: uv sync --frozen
     - name: Set module path
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
-    - name: Ruff check
-      run: |
-        uv run ruff check .
-        uv run ruff format --check .
     - name: Run integration tests
       run: uv run pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
 
@@ -130,10 +158,6 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
         restore-keys: |
           ${{ runner.os }}-cargo-
-    - name: Cargo fmt and clippy
-      run: |
-        cargo fmt --check
-        cargo clippy --profile release --all-targets -- -D warnings
     - name: Unit tests
       run: cargo test --features enable-system-alloc
     - name: Release build
