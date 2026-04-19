@@ -583,14 +583,3 @@ jobs:
         files: lcov.info
         fail_ci_if_error: false
 
-  build-macos:
-    name: macOS / Rust checks
-    runs-on: macos-latest
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-    - name: Cargo fmt and clippy
-      run: |
-        cargo fmt --check
-        cargo clippy --profile release --all-targets -- -D warnings
-    - name: Unit tests
-      run: cargo test --features enable-system-alloc

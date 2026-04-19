@@ -166,7 +166,13 @@ def scenario_flash_set_vs_set(module_path: str, server_bin: str, server_version:
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
         flash_path = tf.name
     try:
-        with running_server(module_path, server_bin, server_version, flash_path) as client:
+        # 10k writes × 4 sizes (up to 128 KiB each) + 200 warmups per size can
+        # accumulate > 1 GiB of NVMe state before compaction reclaims free blocks,
+        # so raise capacity above the module's 1 GiB default.
+        extra = ["--flash.capacity-bytes", str(4 * 1024 * 1024 * 1024)]
+        with running_server(
+            module_path, server_bin, server_version, flash_path, extra_args=extra
+        ) as client:
             for size in VALUE_SIZES_BYTES:
                 value = b"x" * size
                 label = _size_label(size)

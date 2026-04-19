@@ -391,7 +391,7 @@ fn deinitialize(_ctx: &Context) -> Status {
     // Only compiled when --cfg=coverage is set (cargo llvm-cov --no-report).
     #[cfg(coverage)]
     {
-        extern "C" {
+        unsafe extern "C" {
             fn __llvm_profile_write_file() -> std::os::raw::c_int;
         }
         // SAFETY: __llvm_profile_write_file is internally synchronized per LLVM docs.
