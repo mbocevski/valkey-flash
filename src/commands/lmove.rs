@@ -84,7 +84,7 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         };
 
         let (mut items, old_ttl) = {
-            let ttl = existing.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, src_key, existing.ttl_ms);
             let list = match &existing.tier {
                 Tier::Hot(l) => l.clone(),
                 Tier::Cold {
@@ -153,7 +153,7 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     };
 
     let (mut src_items, src_ttl) = {
-        let ttl = src_existing.ttl_ms;
+        let ttl = crate::util_expire::preserve_ttl(ctx, src_key, src_existing.ttl_ms);
         let list = match &src_existing.tier {
             Tier::Hot(l) => l.clone(),
             Tier::Cold {
@@ -212,7 +212,7 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     let (mut dst_items, dst_ttl): (VecDeque<Vec<u8>>, Option<i64>) = match dst_existing {
         None => (VecDeque::new(), None),
         Some(obj) => {
-            let ttl = obj.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, dst_key, obj.ttl_ms);
             let list = match &obj.tier {
                 Tier::Hot(l) => l.clone(),
                 Tier::Cold {

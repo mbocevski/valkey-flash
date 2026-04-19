@@ -57,23 +57,26 @@ pub fn flash_lindex_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        let val = list_deserialize(&cached_bytes)
-            .and_then(|l| resolve_index(index, l.len()).and_then(|i| l.get(i).cloned()));
-        return Ok(match val {
-            Some(v) => ValkeyValue::StringBuffer(v),
-            None => ValkeyValue::Null,
-        });
-    }
-
     let cold_info: Option<(u64, u32)>;
     {
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Null),
+            Ok(None) => {
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Null);
+            }
             Ok(Some(obj)) => obj,
         };
+
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            let val = list_deserialize(&cached_bytes)
+                .and_then(|l| resolve_index(index, l.len()).and_then(|i| l.get(i).cloned()));
+            return Ok(match val {
+                Some(v) => ValkeyValue::StringBuffer(v),
+                None => ValkeyValue::Null,
+            });
+        }
 
         match &obj.tier {
             Tier::Hot(items) => {

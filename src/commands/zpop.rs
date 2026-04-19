@@ -31,7 +31,7 @@ fn open_zset_writable(
     let data = match existing {
         None => None,
         Some(obj) => {
-            let ttl = obj.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, key, obj.ttl_ms);
             let inner = match &obj.tier {
                 Tier::Hot(z) => z.clone(),
                 Tier::Cold {
@@ -247,7 +247,7 @@ pub fn flash_zincrby_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
     let (mut inner, old_ttl): (ZSetInner, Option<i64>) = match existing {
         None => (ZSetInner::new(), None),
         Some(obj) => {
-            let ttl = obj.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, key, obj.ttl_ms);
             let inner = match &obj.tier {
                 Tier::Hot(z) => z.clone(),
                 Tier::Cold {

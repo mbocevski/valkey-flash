@@ -76,7 +76,7 @@ fn do_pop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool, _cmd_name: &st
     let (mut items, old_ttl): (VecDeque<Vec<u8>>, Option<i64>) = match existing {
         None => return Ok(ValkeyValue::Null),
         Some(obj) => {
-            let ttl = obj.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, key, obj.ttl_ms);
             let list = match &obj.tier {
                 Tier::Hot(l) => l.clone(),
                 Tier::Cold {

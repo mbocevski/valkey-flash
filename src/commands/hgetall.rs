@@ -76,11 +76,6 @@ pub fn flash_hgetall_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    // Cache hit: deserialise and return all pairs.
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        return Ok(fields_to_array(hash_deserialize_or_warn(&cached_bytes)));
-    }
-
     let cold_info: Option<(u64, u32)>;
     let hot_reply: Option<ValkeyValue>;
 
@@ -88,9 +83,16 @@ pub fn flash_hgetall_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Array(vec![])),
+            Ok(None) => {
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Array(vec![]));
+            }
             Ok(Some(obj)) => obj,
         };
+
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            return Ok(fields_to_array(hash_deserialize_or_warn(&cached_bytes)));
+        }
 
         match &obj.tier {
             Tier::Hot(fields) => {

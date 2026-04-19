@@ -66,14 +66,9 @@ pub fn flash_hexists_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    // Cache hit: check field without touching keyspace.
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        let exists = hash_deserialize(&cached_bytes)
-            .map(|m| m.contains_key(&field))
-            .unwrap_or(false);
-        return Ok(ValkeyValue::Integer(if exists { 1 } else { 0 }));
-    }
-
+    // Type-check and existence-check via open_key FIRST so TTL-expired keys
+    // fall through to nil (open_key triggers Valkey's expiry hook). Only after
+    // the key is confirmed live do we consult the cache.
     let cold_info: Option<(u64, u32)>;
     let hot_result: Option<i64>;
 
@@ -81,9 +76,19 @@ pub fn flash_hexists_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Integer(0)),
+            Ok(None) => {
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Integer(0));
+            }
             Ok(Some(obj)) => obj,
         };
+
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            let exists = hash_deserialize(&cached_bytes)
+                .map(|m| m.contains_key(&field))
+                .unwrap_or(false);
+            return Ok(ValkeyValue::Integer(if exists { 1 } else { 0 }));
+        }
 
         match &obj.tier {
             Tier::Hot(fields) => {

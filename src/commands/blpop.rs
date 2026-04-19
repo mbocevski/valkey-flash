@@ -165,7 +165,7 @@ fn pop_one(
     };
 
     let (mut items, ttl): (VecDeque<Vec<u8>>, Option<i64>) = {
-        let ttl = existing.ttl_ms;
+        let ttl = crate::util_expire::preserve_ttl(ctx, key, existing.ttl_ms);
         let list = match &existing.tier {
             Tier::Hot(l) => l.clone(),
             Tier::Cold {

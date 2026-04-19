@@ -54,7 +54,10 @@ pub fn flash_llen_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Integer(0)),
+            Ok(None) => {
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Integer(0));
+            }
             Ok(Some(obj)) => obj,
         };
 

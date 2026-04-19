@@ -247,8 +247,8 @@ pub fn flash_hset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
     // Resolve TTL to store:
     // - Explicit EX/PX/EXAT/PXAT → use that absolute timestamp.
-    // - KEEPTTL or no TTL flag → preserve existing TTL (both cases: keep old_ttl).
-    let stored_ttl = new_ttl_abs_ms.or(old_ttl);
+    // - KEEPTTL or no TTL flag → preserve existing TTL (tracked or native).
+    let stored_ttl = new_ttl_abs_ms.or_else(|| crate::util_expire::preserve_ttl(ctx, key, old_ttl));
 
     // Store updated hash in Valkey keyspace (free() called on old object).
     key_handle

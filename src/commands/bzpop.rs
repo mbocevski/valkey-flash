@@ -193,7 +193,7 @@ fn pop_one_zset(
         Ok(Some(obj)) => obj,
     };
 
-    let ttl = existing.ttl_ms;
+    let ttl = crate::util_expire::preserve_ttl(ctx, key, existing.ttl_ms);
     let mut inner = match &existing.tier {
         crate::types::Tier::Hot(z) => z.clone(),
         crate::types::Tier::Cold {
@@ -231,6 +231,9 @@ fn pop_one_zset(
                 ttl_ms: ttl,
             },
         );
+        if let Some(duration) = ttl.and_then(crate::util_expire::remaining_ttl_duration) {
+            let _ = key_handle.set_expire(duration);
+        }
         if let Some(cache) = CACHE.get() {
             cache.put(key.as_slice(), serialized.clone());
         }

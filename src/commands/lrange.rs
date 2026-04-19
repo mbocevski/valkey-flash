@@ -65,24 +65,27 @@ pub fn flash_lrange_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        let items = list_deserialize(&cached_bytes).unwrap_or_default();
-        let (s, e) = resolve_range(start, stop, items.len());
-        let elems = items
-            .range(s..e)
-            .map(|v| ValkeyValue::StringBuffer(v.clone()))
-            .collect();
-        return Ok(ValkeyValue::Array(elems));
-    }
-
     let cold_info: Option<(u64, u32)>;
     {
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Array(vec![])),
+            Ok(None) => {
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Array(vec![]));
+            }
             Ok(Some(obj)) => obj,
         };
+
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            let items = list_deserialize(&cached_bytes).unwrap_or_default();
+            let (s, e) = resolve_range(start, stop, items.len());
+            let elems = items
+                .range(s..e)
+                .map(|v| ValkeyValue::StringBuffer(v.clone()))
+                .collect();
+            return Ok(ValkeyValue::Array(elems));
+        }
 
         match &obj.tier {
             Tier::Hot(items) => {

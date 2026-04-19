@@ -73,7 +73,7 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     };
 
     let (mut current_fields, old_ttl): (HashMap<Vec<u8>, Vec<u8>>, Option<i64>) = {
-        let ttl = obj.ttl_ms;
+        let ttl = crate::util_expire::preserve_ttl(ctx, key, obj.ttl_ms);
         let fields = match &obj.tier {
             Tier::Hot(fields) => fields.clone(),
             Tier::Cold {
@@ -152,6 +152,12 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
                 },
             )
             .map_err(|e| ValkeyError::String(format!("flash: hdel set_value: {e}")))?;
+
+        if let Some(duration) = old_ttl.and_then(crate::util_expire::remaining_ttl_duration) {
+            key_handle
+                .set_expire(duration)
+                .map_err(|e| ValkeyError::String(format!("flash: hdel set_expire: {e}")))?;
+        }
 
         let serialized = hash_serialize(&current_fields);
         cache.put(&key_bytes, serialized.clone());

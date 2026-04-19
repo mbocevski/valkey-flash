@@ -58,7 +58,7 @@ pub fn flash_lset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     };
 
     let (mut items, old_ttl) = {
-        let ttl = existing.ttl_ms;
+        let ttl = crate::util_expire::preserve_ttl(ctx, key, existing.ttl_ms);
         let list = match &existing.tier {
             Tier::Hot(l) => l.clone(),
             Tier::Cold {

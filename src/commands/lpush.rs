@@ -78,7 +78,7 @@ fn do_push(
             (VecDeque::new(), None)
         }
         Some(obj) => {
-            let ttl = obj.ttl_ms;
+            let ttl = crate::util_expire::preserve_ttl(ctx, key, obj.ttl_ms);
             let list = match &obj.tier {
                 Tier::Hot(l) => l.clone(),
                 Tier::Cold {
