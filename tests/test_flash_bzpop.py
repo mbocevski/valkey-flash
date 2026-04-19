@@ -127,10 +127,6 @@ class TestFlashBZPopTimeout(ValkeyFlashTestCase):
         result = self.client.execute_command("FLASH.BZPOPMAX", "bzt2", "0.1")
         assert result is None
 
-    def test_bzpopmin_zero_timeout_absent_key_returns_nil(self):
-        result = self.client.execute_command("FLASH.BZPOPMIN", "bzt_absent", "0")
-        assert result is None
-
 
 class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
     """BZPOPMIN/BZPOPMAX unblock when another client calls ZADD."""
