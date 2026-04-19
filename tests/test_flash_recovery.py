@@ -125,49 +125,73 @@ class TestFlashRecovery(ValkeyFlashTestCase):
         _bgsave_and_restart(self.server)
         self.server.verify_string_in_logfile("flash: recovery complete: 0 records applied")
 
-    def test_corrupted_wal_module_loads_ready(self):
-        # Write a WAL file with a corrupt frame; module should still load ready.
+    def _sigkill_server(self):
+        """SIGKILL the server process and reset the framework's handle so
+        `start()` will spawn a new process (instead of refusing with 'Server
+        already started')."""
+        import os as _os
+        import signal as _signal
+        _os.kill(self.server.pid(), _signal.SIGKILL)
+        self.server.server.wait(timeout=5)
+        # Let framework's start() know there is no running server.
+        self.server.server = None
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        self.client = None
+
+    def _write_corrupt_wal_offline(self):
+        """Stop the server, overwrite its WAL with a corrupt frame, and leave the
+        server stopped so the caller can restart into the tampered state.
+
+        Writing the WAL while the server is still running races with the flusher
+        thread and, on clean shutdown, gets silently rewritten — which defeats
+        the test's purpose."""
+        self._sigkill_server()
         wal_path = _wal_path(_default_flash_path(self))
         header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
         corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
         with open(wal_path, "wb") as f:
             f.write(header)
             f.write(corrupt_frame)
+        return wal_path
 
-        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+    def test_corrupted_wal_module_loads_ready(self):
+        # Write a WAL file with a corrupt frame; module should still load ready.
+        self._write_corrupt_wal_offline()
+        # Fresh start() after SIGKILL: no RDB was written, so
+        # is_rdb_done_loading would never flip to True. start() already
+        # waits for "Ready to accept connections" before returning.
+        self.client = self.server.start(connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(self.server.is_rdb_done_loading, True)
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
 
     def test_corrupted_wal_warn_logged(self):
-        wal_path = _wal_path(_default_flash_path(self))
-        header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
-        corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
-        with open(wal_path, "wb") as f:
-            f.write(header)
-            f.write(corrupt_frame)
-
-        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        self._write_corrupt_wal_offline()
+        # Fresh start() after SIGKILL: no RDB was written, so
+        # is_rdb_done_loading would never flip to True. start() already
+        # waits for "Ready to accept connections" before returning.
+        self.client = self.server.start(connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(self.server.is_rdb_done_loading, True)
         self.server.verify_string_in_logfile("flash: recovery: WAL corruption at offset")
 
     def test_corrupted_wal_truncated_to_header(self):
-        wal_path = _wal_path(_default_flash_path(self))
-        header = struct.pack("<IB", WAL_MAGIC, WAL_VERSION) + b"\x00" * 11
-        corrupt_frame = struct.pack("<II", 10, 0xDEADBEEF) + b"\xff" * 10
-        with open(wal_path, "wb") as f:
-            f.write(header)
-            f.write(corrupt_frame)
-
-        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        wal_path = self._write_corrupt_wal_offline()
+        # Fresh start() after SIGKILL: no RDB was written, so
+        # is_rdb_done_loading would never flip to True. start() already
+        # waits for "Ready to accept connections" before returning.
+        self.client = self.server.start(connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(self.server.is_rdb_done_loading, True)
         # WAL should be truncated to just the 16-byte header.
         assert wal_path.stat().st_size == HEADER_SIZE
 
     def test_valid_wal_records_applied_on_recovery(self):
         # Write WAL records manually; recovery should count them.
+        # SIGKILL the server first — otherwise clean shutdown rewrites the WAL.
+        self._sigkill_server()
+
         wal_path = _wal_path(_default_flash_path(self))
         _write_wal(
             wal_path,
@@ -178,9 +202,11 @@ class TestFlashRecovery(ValkeyFlashTestCase):
             ],
         )
 
-        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        # Fresh start() after SIGKILL: no RDB was written, so
+        # is_rdb_done_loading would never flip to True. start() already
+        # waits for "Ready to accept connections" before returning.
+        self.client = self.server.start(connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(self.server.is_rdb_done_loading, True)
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
         self.server.verify_string_in_logfile("flash: recovery complete: 3 records applied")
 

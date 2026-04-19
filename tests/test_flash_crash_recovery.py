@@ -314,10 +314,12 @@ class TestFlashWalCorruption(_CrashTestBase):
         self.client.execute_command("FLASH.SET", "k3", "v3")
         _sigkill(self.server)
 
-        # remove_rdb=True deletes the RDB → no aux on next load → cursor = 0
+        # remove_rdb=True deletes the RDB → no aux on next load → cursor = 0.
+        # Also: with no RDB, Valkey never logs "Done loading RDB", so we can't
+        # wait for is_rdb_done_loading — restart() already blocks on the
+        # server's "Ready to accept connections" log line.
         self.server.restart(remove_rdb=True, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(self.server.is_rdb_done_loading, True)
 
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
         assert _recovery_count(self.server) == 3

@@ -111,8 +111,12 @@ class TestFlashReplicaTierEnabled(ReplicationTestCase):
         # Replica gets its own unique path + the tier-enabled flag.
         # Module-init args use raw config names (no `flash.` prefix); the
         # prefixed name is only used in CONFIG GET/SET.
+        # `replica-read-only no` lets the test issue FLASH.DEBUG.DEMOTE directly
+        # on the replica — otherwise Valkey rejects any write (even module
+        # admin-only debug commands) against a default read-only replica.
         self._replica_args = {
             "enable-debug-command": "yes",
+            "replica-read-only": "no",
             "loadmodule": (
                 f"{module_path} path {self._replica_path} "
                 f"capacity-bytes 16777216 replica-tier-enabled yes"
