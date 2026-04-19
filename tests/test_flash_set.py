@@ -20,10 +20,15 @@ def _server_path():
     return os.path.join(_binaries_dir(), "valkey-server")
 
 
-def _server_args():
+def _server_args(flash_path=None):
+    if flash_path is None:
+        import tempfile
+        flash_path = os.path.join(tempfile.mkdtemp(prefix="flash_repl_set_"), "flash.bin")
     return {
         "enable-debug-command": "yes",
-        "loadmodule": os.getenv("MODULE_PATH"),
+        "loadmodule": (
+            f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
+        ),
     }
 
 
@@ -182,12 +187,35 @@ class TestFlashSetReplication(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()
-        self.args = _server_args()
+        import shutil
+        import tempfile
+        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_set_", dir=self.testdir)
+        primary_path = os.path.join(self._flash_dir, "primary.bin")
+        self.args = _server_args(primary_path)
         self.server, self.client = self.create_server(
             testdir=self.testdir,
             server_path=_server_path(),
             args=self.args,
         )
+        yield
+        shutil.rmtree(self._flash_dir, ignore_errors=True)
+
+    def setup_replication(self, num_replicas=1):
+        """Override so each replica gets its own flash.bin path."""
+        self.num_replicas = num_replicas
+        self.replicas = []
+        self.skip_teardown = False
+        self.create_replicas(num_replicas)
+        for i, replica in enumerate(self.replicas):
+            replica_path = os.path.join(self._flash_dir, f"replica{i}.bin")
+            replica.args["loadmodule"] = _server_args(replica_path)["loadmodule"]
+        self.start_replicas()
+        self.wait_for_replicas(self.num_replicas)
+        self.wait_for_primary_link_up_all_replicas()
+        self.wait_for_all_replicas_online(self.num_replicas)
+        for i in range(len(self.replicas)):
+            self.waitForReplicaToSyncUp(self.replicas[i])
+        return self.replicas
 
     def test_flash_set_replicates_to_replica(self):
         self.setup_replication(num_replicas=1)

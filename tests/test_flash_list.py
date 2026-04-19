@@ -356,13 +356,20 @@ class TestFlashListColdTier(ValkeyFlashTestCase):
 
 class TestFlashListReplication(ValkeyFlashTestCase):
     def _make_replica(self):
+        import os as _os
+        import tempfile as _tempfile
         primary_port = self.server.port
+        replica_dir = _tempfile.mkdtemp(prefix="flash_repl_list_", dir=self.testdir)
+        replica_path = _os.path.join(replica_dir, "flash.bin")
         replica_server, replica_client = self.create_server(
             testdir=self.testdir,
             server_path=self.server.valkey_path,
             args={
                 "enable-debug-command": "yes",
-                "loadmodule": __import__("os").getenv("MODULE_PATH"),
+                "loadmodule": (
+                    f"{_os.getenv('MODULE_PATH')} "
+                    f"path {replica_path} capacity-bytes 16777216"
+                ),
                 "replicaof": f"127.0.0.1 {primary_port}",
             },
         )
