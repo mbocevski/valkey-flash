@@ -1,12 +1,12 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::CACHE;
-use crate::commands::list_common::current_time_ms;
 use crate::commands::zset_common::{ZSetReply, finish_zset_write, parse_score, promote_cold_zset};
 use crate::types::Tier;
 use crate::types::zset::{
     FLASH_ZSET_TYPE, FlashZSetObject, ZSetInner, format_score, zset_serialize,
 };
+use crate::util_expire::{preserve_ttl, remaining_ttl_duration};
 
 // ── FLASH.ZADD ────────────────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     };
 
     let key_existed = existing.is_some();
-    let (mut inner, old_ttl): (ZSetInner, Option<i64>) = match existing {
+    let (mut inner, tracked_ttl): (ZSetInner, Option<i64>) = match existing {
         None => (ZSetInner::new(), None),
         Some(obj) => {
             let ttl = obj.ttl_ms;
@@ -114,6 +114,13 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
             (inner, ttl)
         }
     };
+
+    // Valkey's VM_ModuleTypeSetValue (called below by set_value) internally
+    // does VM_DeleteKey which clears the key's expiry. If we tracked a TTL
+    // explicitly via FLASH.ZADD EX/PX, use it; otherwise fall back to the
+    // native key-level TTL (set via EXPIRE/PEXPIRE from outside). This keeps
+    // PEXPIRE + FLASH.ZADD update idempotent for the TTL.
+    let old_ttl = preserve_ttl(ctx, key, tracked_ttl);
 
     let mut added = 0i64;
     let mut changed = 0i64;
@@ -197,11 +204,11 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         )
         .map_err(|e| ValkeyError::String(format!("flash: zadd set_value: {e}")))?;
 
-    if let Some(abs_ms) = old_ttl {
-        use std::time::Duration;
-        let remaining_ms = (abs_ms - current_time_ms()).max(1) as u64;
+    if let Some(abs_ms) = old_ttl
+        && let Some(duration) = remaining_ttl_duration(abs_ms)
+    {
         key_handle
-            .set_expire(Duration::from_millis(remaining_ms))
+            .set_expire(duration)
             .map_err(|e| ValkeyError::String(format!("flash: zadd set_expire: {e}")))?;
     }
 

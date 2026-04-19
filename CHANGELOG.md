@@ -74,6 +74,8 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 - Migration bandwidth throttle corrected: the limit was computed as MiB/s instead of Mbps (≈8× too permissive) and sub-second windows were unthrottled; both fixed.
 - `AtomicSlotMigration` struct layout (`version`, `num_slot_ranges`) corrected to match the C header, preventing a crash when reading `slot_ranges` during migration.
 - `FLASH.MIGRATE.PROBE` no longer inserts into the cache when caching is disabled (`flash.migration-probe-cache-sec = 0`).
+- `FLASH.HGET` now honours key-level TTL expiry: previously the in-memory cache short-circuited the type/existence check, so expired keys returned stale hash field values until the next Valkey eviction pass. The type check now runs first via `open_key`, which triggers Valkey's expiry hook.
+- `FLASH.ZADD` on an existing key no longer wipes the native `PEXPIRE`/`EXPIRE` TTL set from outside the module. `VM_ModuleTypeSetValue` internally calls `VM_DeleteKey`, which clears the key's expiry unconditionally (no `SETKEY_KEEPTTL`-equivalent flag is exposed). `FLASH.ZADD` now reads the remaining TTL via `VM_GetExpire` before the write and re-applies it via `set_expire` after.
 
 ### Security
 

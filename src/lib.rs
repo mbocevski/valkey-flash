@@ -20,6 +20,7 @@ pub mod replication;
 pub mod storage;
 pub mod types;
 pub mod util;
+pub mod util_expire;
 
 use crate::async_io::AsyncThreadPool;
 use crate::config::SyncMode;
@@ -143,6 +144,7 @@ static COMPACTION_THREAD: LazyLock<Mutex<Option<std::thread::JoinHandle<()>>>> =
 // ── Module lifecycle ──────────────────────────────────────────────────────────
 
 fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
+    logging::log_notice("flash: initialize() entered");
     // 0 is the sentinel default for flash.io-threads (auto-detect).
     // Replace it with the actual logical CPU count once the server is running.
     if FLASH_IO_THREADS.load(Ordering::Relaxed) == 0 {

@@ -72,19 +72,10 @@ pub fn flash_hget_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    // Cache hit: deserialise and return field without touching keyspace.
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        HGET_HITS.fetch_add(1, Ordering::Relaxed);
-        let val = hash_deserialize(&cached_bytes).and_then(|m| m.get(&field).cloned());
-        return Ok(match val {
-            Some(v) => ValkeyValue::StringBuffer(v),
-            None => ValkeyValue::Null,
-        });
-    }
-
-    HGET_MISSES.fetch_add(1, Ordering::Relaxed);
-
-    // Scoped borrow so key_handle is dropped before any blocking operation.
+    // Type-check the key FIRST: Valkey's open_key triggers the expiry check, so
+    // if the key has TTL-expired, open_key returns None and we reply nil.
+    // Consulting the cache without this check would return stale data for
+    // expired keys (the cache isn't evicted when Valkey drops the key).
     let tier_data: Option<(Option<Vec<u8>>, Vec<u8>)>; // Hot: (field_val, serialized)
     let cold_info: Option<(u64, u32)>;
 
@@ -92,9 +83,26 @@ pub fn flash_hget_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         let key_handle = ctx.open_key(key);
         let obj = match key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
             Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => return Ok(ValkeyValue::Null),
+            Ok(None) => {
+                // Key is expired or never existed — ensure stale cache entry
+                // doesn't linger (defensive; Valkey's expiry hook should have
+                // dropped the object already, which the cache tracks).
+                cache.delete(key.as_slice());
+                return Ok(ValkeyValue::Null);
+            }
             Ok(Some(obj)) => obj,
         };
+
+        // Key exists and is the right type. Now cache-optimize the common case.
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            HGET_HITS.fetch_add(1, Ordering::Relaxed);
+            let val = hash_deserialize(&cached_bytes).and_then(|m| m.get(&field).cloned());
+            return Ok(match val {
+                Some(v) => ValkeyValue::StringBuffer(v),
+                None => ValkeyValue::Null,
+            });
+        }
+        HGET_MISSES.fetch_add(1, Ordering::Relaxed);
 
         match &obj.tier {
             Tier::Hot(fields) => {
