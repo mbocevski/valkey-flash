@@ -4,7 +4,9 @@ use crate::storage::backend::StorageBackend;
 use crate::storage::file_io_uring::FileIoUringBackend;
 use crate::types::Tier;
 use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_serialize};
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, zset_serialize};
 use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
 
 /// `FLASH.DEBUG.DEMOTE key`
@@ -66,6 +68,42 @@ pub fn flash_debug_demote_command(ctx: &Context, args: Vec<ValkeyString>) -> Val
         Ok(Some(obj)) => {
             let bytes = match &obj.tier {
                 Tier::Hot(fields) => hash_serialize(fields),
+                Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
+            };
+            let result = demote_bytes(key, storage, &bytes, &mut obj.tier);
+            if result.is_ok() {
+                ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", key);
+            }
+            return result;
+        }
+        Ok(None) => return Err(ValkeyError::Str("ERR key does not exist")),
+        Err(_) => {} // wrong type for hash — fall through to list probe
+    }
+
+    // ── Try flash-list ────────────────────────────────────────────────────────
+
+    match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
+        Ok(Some(obj)) => {
+            let bytes = match &obj.tier {
+                Tier::Hot(items) => list_serialize(items),
+                Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
+            };
+            let result = demote_bytes(key, storage, &bytes, &mut obj.tier);
+            if result.is_ok() {
+                ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", key);
+            }
+            return result;
+        }
+        Ok(None) => return Err(ValkeyError::Str("ERR key does not exist")),
+        Err(_) => {} // wrong type for list — fall through to zset probe
+    }
+
+    // ── Try flash-zset ────────────────────────────────────────────────────────
+
+    match key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
+        Ok(Some(obj)) => {
+            let bytes = match &obj.tier {
+                Tier::Hot(inner) => zset_serialize(inner),
                 Tier::Cold { .. } => return Ok(ValkeyValue::SimpleStringStatic("ALREADY_COLD")),
             };
             let result = demote_bytes(key, storage, &bytes, &mut obj.tier);

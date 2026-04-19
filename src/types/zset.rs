@@ -86,7 +86,7 @@ impl ZSetInner {
 /// Format a score for wire output (bulk string reply).
 pub fn format_score(score: f64) -> String {
     if score == f64::INFINITY {
-        return "inf".to_string();
+        return "+inf".to_string();
     }
     if score == f64::NEG_INFINITY {
         return "-inf".to_string();
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn format_score_infinity() {
-        assert_eq!(format_score(f64::INFINITY), "inf");
+        assert_eq!(format_score(f64::INFINITY), "+inf");
         assert_eq!(format_score(f64::NEG_INFINITY), "-inf");
     }
 
