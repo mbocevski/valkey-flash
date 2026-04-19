@@ -261,6 +261,23 @@ pub unsafe extern "C" fn aux_load(
             .as_str(),
         );
 
+        // Apply the NVMe allocator snapshot immediately. aux_load BEFORE runs
+        // after initialize() has already opened STORAGE, so the restore call
+        // in initialize() sees None. Applying the snapshot here guarantees
+        // the free-list and next_block cursor are restored before any command
+        // touches the allocator.
+        if let Some(storage) = crate::STORAGE.get() {
+            storage.restore_state(payload.nvme_next_block, payload.free_blocks.clone());
+            logging::log_notice(
+                format!(
+                    "flash: restored NVMe allocator from aux_load: next_block={}, free_ranges={}",
+                    payload.nvme_next_block,
+                    payload.free_blocks.len()
+                )
+                .as_str(),
+            );
+        }
+
         if let Ok(mut guard) = LOADED_AUX_STATE.lock() {
             let state = guard.get_or_insert_with(|| AuxState {
                 before: payload.clone(),
