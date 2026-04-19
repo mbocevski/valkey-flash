@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Applied edition-2024 alphabetical import ordering crate-wide (style-only)
 - Migrated crate to Rust edition 2024: `cargo fix --edition` added explicit `unsafe {}` blocks inside `unsafe extern "C"` callbacks; `let`-chain collapsible-if patterns collapsed via `cargo clippy --fix`; `rdb_load` (zset) inner `unsafe {}` wrapper replaced with fine-grained block scoped to the cfg-gated function-pointer calls; `CLAUDE.md` convention updated to edition 2024 (#93)
 - Python tooling: uv + ruff as blocking CI gate — `pyproject.toml` declares deps and ruff config; `uv.lock` pins transitive deps; CI uses `uv sync --frozen` and `uv run pytest`; `uv run ruff check/format --check` gates every `build-ubuntu` run; bumped pytest to ≥8; converted Python deps to semver ranges (lockfile is authoritative); dropped `requirements.txt`
 - CI now caches uv dependencies across runs via `setup-uv enable-cache: true` (keyed on `uv.lock`) in all Python jobs
