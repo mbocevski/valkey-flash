@@ -1,7 +1,5 @@
 import pytest
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
-
 
 ALL_FLASH_COMMANDS = [
     b"flash.set",
@@ -13,6 +11,49 @@ ALL_FLASH_COMMANDS = [
     b"flash.hdel",
     b"flash.hexists",
     b"flash.hlen",
+    # List commands
+    b"flash.lpush",
+    b"flash.rpush",
+    b"flash.lpushx",
+    b"flash.rpushx",
+    b"flash.lpop",
+    b"flash.rpop",
+    b"flash.lrange",
+    b"flash.llen",
+    b"flash.lindex",
+    b"flash.lset",
+    b"flash.linsert",
+    b"flash.lrem",
+    b"flash.ltrim",
+    b"flash.lmove",
+    b"flash.blpop",
+    b"flash.brpop",
+    b"flash.blmove",
+    # ZSet commands
+    b"flash.zadd",
+    b"flash.zrem",
+    b"flash.zincrby",
+    b"flash.zpopmin",
+    b"flash.zpopmax",
+    b"flash.zscore",
+    b"flash.zrank",
+    b"flash.zrevrank",
+    b"flash.zcard",
+    b"flash.zcount",
+    b"flash.zlexcount",
+    b"flash.zrange",
+    b"flash.zrangebyscore",
+    b"flash.zrevrangebyscore",
+    b"flash.zrangebylex",
+    b"flash.zrevrangebylex",
+    b"flash.zscan",
+    b"flash.bzpopmin",
+    b"flash.bzpopmax",
+    b"flash.zunionstore",
+    b"flash.zinterstore",
+    b"flash.zdiffstore",
+    b"flash.zrangestore",
+    # Admin
     b"flash.debug.demote",
     b"flash.debug.state",
     b"flash.compaction.stats",
@@ -121,3 +162,69 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             assert "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
         finally:
             self._acl_deluser("flash_none")
+
+    def test_flash_list_acl_categories(self):
+        def categories(cmd):
+            return self.client.execute_command("COMMAND", "INFO", cmd)[0][6]
+
+        # Write commands must be @write @flash
+        lp = categories("FLASH.LPUSH")
+        assert b"@write" in lp
+        assert b"@flash" in lp
+        assert b"@read" not in lp
+
+        # Read commands must be @read @flash
+        lr = categories("FLASH.LRANGE")
+        assert b"@read" in lr
+        assert b"@flash" in lr
+        assert b"@write" not in lr
+
+        # O(1) read must also carry @fast
+        ll = categories("FLASH.LLEN")
+        assert b"@read" in ll
+        assert b"@fast" in ll
+        assert b"@flash" in ll
+
+        # Blocking commands must be @slow @flash
+        bl = categories("FLASH.BLPOP")
+        assert b"@write" in bl
+        assert b"@slow" in bl
+        assert b"@flash" in bl
+
+    def test_flash_zset_acl_categories(self):
+        def categories(cmd):
+            return self.client.execute_command("COMMAND", "INFO", cmd)[0][6]
+
+        # Write commands must be @write @flash
+        za = categories("FLASH.ZADD")
+        assert b"@write" in za
+        assert b"@flash" in za
+        assert b"@read" not in za
+
+        # O(1) read commands must be @read @fast @flash
+        zs = categories("FLASH.ZSCORE")
+        assert b"@read" in zs
+        assert b"@fast" in zs
+        assert b"@flash" in zs
+
+        zc = categories("FLASH.ZCARD")
+        assert b"@read" in zc
+        assert b"@fast" in zc
+        assert b"@flash" in zc
+
+        # Range reads must be @read @flash (not @fast — O(log N + M))
+        zr = categories("FLASH.ZRANGE")
+        assert b"@read" in zr
+        assert b"@flash" in zr
+
+        # Blocking commands must be @slow @flash
+        bz = categories("FLASH.BZPOPMIN")
+        assert b"@write" in bz
+        assert b"@slow" in bz
+        assert b"@flash" in bz
+
+        # Store ops must be @write @slow @flash
+        zu = categories("FLASH.ZUNIONSTORE")
+        assert b"@write" in zu
+        assert b"@slow" in zu
+        assert b"@flash" in zu

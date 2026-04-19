@@ -1,6 +1,6 @@
 import time
+
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
@@ -108,3 +108,123 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
                 messages.append(msg)
             msg = ps.get_message()
         assert messages == [], f"Expected no events but got: {messages}"
+
+    # ── List notifications ─────────────────────────────────────────────────
+
+    def test_list_notifications_fire_on_push(self):
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.RPUSH", "ks_lpush", "a", "b")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.push", "ks_lpush")
+
+    def test_list_lpop_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_lpop", "x", "y")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LPOP", "ks_lpop")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.pop", "ks_lpop")
+
+    def test_list_lset_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_lset", "a", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LSET", "ks_lset", "0", "A")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.set", "ks_lset")
+
+    def test_list_linsert_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_lins", "a", "c")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LINSERT", "ks_lins", "BEFORE", "c", "b")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.insert", "ks_lins")
+
+    def test_list_lrem_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_lrem", "a", "a", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LREM", "ks_lrem", "0", "a")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.rem", "ks_lrem")
+
+    def test_list_ltrim_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_ltrim", "a", "b", "c")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LTRIM", "ks_ltrim", "0", "1")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.list.trim", "ks_ltrim")
+
+    def test_list_lmove_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_lmv_src", "a", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command(
+            "FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT"
+        )
+        messages = self._collect_messages(ps, 4)
+        self._assert_event(messages, "flash.list.move", "ks_lmv_src")
+        self._assert_event(messages, "flash.list.move", "ks_lmv_dst")
+
+    # ── ZSet notifications ─────────────────────────────────────────────────
+
+    def test_zset_notifications_fire_on_zadd(self):
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZADD", "ks_zadd", "1.0", "a", "2.0", "b")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zadd", "ks_zadd")
+
+    def test_zset_zrem_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zrem", "1.0", "a", "2.0", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZREM", "ks_zrem", "a")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zrem", "ks_zrem")
+
+    def test_zset_zincrby_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zinc", "3.0", "m")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZINCRBY", "ks_zinc", "2.0", "m")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zincrby", "ks_zinc")
+
+    def test_zset_zpopmin_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zpm", "1.0", "a", "2.0", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZPOPMIN", "ks_zpm")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zpopmin", "ks_zpm")
+
+    def test_zset_zpopmax_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zpmax", "1.0", "a", "2.0", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZPOPMAX", "ks_zpmax")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zpopmax", "ks_zpmax")
+
+    def test_zset_zunionstore_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zu1", "1.0", "a")
+        self.client.execute_command("FLASH.ZADD", "ks_zu2", "2.0", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZUNIONSTORE", "ks_zudst", "2", "ks_zu1", "ks_zu2")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zunionstore", "ks_zudst")
+
+    def test_zset_zinterstore_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zi1", "1.0", "x")
+        self.client.execute_command("FLASH.ZADD", "ks_zi2", "2.0", "x")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZINTERSTORE", "ks_zidst", "2", "ks_zi1", "ks_zi2")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zinterstore", "ks_zidst")
+
+    def test_zset_zdiffstore_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zd1", "1.0", "a", "2.0", "b")
+        self.client.execute_command("FLASH.ZADD", "ks_zd2", "1.0", "a")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZDIFFSTORE", "ks_zddst", "2", "ks_zd1", "ks_zd2")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zdiffstore", "ks_zddst")
+
+    def test_zset_zrangestore_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zrs_src", "1.0", "a", "2.0", "b")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.ZRANGESTORE", "ks_zrs_dst", "ks_zrs_src", "0", "-1")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.zrangestore", "ks_zrs_dst")
