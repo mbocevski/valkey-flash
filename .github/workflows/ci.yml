@@ -136,7 +136,11 @@ jobs:
     - name: Set module path
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests
-      run: uv run pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
+      # -x: stop on first ERROR/FAIL. Each framework-test fixture waits up to
+      # 90s for "Ready to accept connections" — if the module fails to load,
+      # every test errors sequentially and the 15-minute job budget is blown
+      # before diagnostics can run. Fail fast, upload logs on the way out.
+      run: uv run pytest --cache-clear -v -x tests/ --ignore=tests/test_docker_smoke.py
     - name: Capture valkey-server logs on failure
       if: failure()
       run: |
@@ -245,7 +249,7 @@ jobs:
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests with ASAN
       run: |
-        uv run pytest --capture=sys --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py -m "not skip_for_asan" 2>&1 | tee test_output.tmp
+        uv run pytest --capture=sys --cache-clear -v -x tests/ --ignore=tests/test_docker_smoke.py -m "not skip_for_asan" 2>&1 | tee test_output.tmp
 
         if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
           echo "Memory leaks detected in the following tests:"
