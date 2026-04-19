@@ -423,12 +423,21 @@ jobs:
         docker exec seccomp-smoke valkey-cli FLASH.GET smokekey | grep -q smokeval
         docker rm -f seccomp-smoke
     - name: Run Docker integration tests
-      run: USE_DOCKER=1 uv run pytest --cache-clear -v tests/test_docker_smoke.py -m docker_${{ matrix.topology }}
+      # Use the marker filter against the whole `tests/` tree so every
+      # docker-tagged test runs, not just the smoke file. `-m docker_cluster`
+      # picks up the full cluster suite (failover, redirects, resharding,
+      # replication-integration, replica-tier, no-flash-target, metrics,
+      # cluster-init, cluster-basic) in addition to the smoke test.
+      run: USE_DOCKER=1 uv run pytest --cache-clear -v tests/ -m docker_${{ matrix.topology }}
     - name: Collect compose logs on failure
       if: failure()
       run: |
-        docker compose -f docker/compose.${{ matrix.topology }}.yml \
-          -p vf-${{ matrix.topology }} logs --no-color > /tmp/compose.log 2>&1 || true
+        for project in vf-single vf-cluster vf-cluster-rt; do
+          for cfile in docker/compose.single.yml docker/compose.cluster.yml; do
+            docker compose -f "$cfile" -p "$project" logs --no-color \
+              >> /tmp/compose.log 2>/dev/null || true
+          done
+        done
     - name: Upload compose logs
       if: failure()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
