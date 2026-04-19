@@ -1,17 +1,24 @@
 import pytest
 from valkey import ResponseError
+from valkeytestframework.util.waiters import wait_for_equal
 from valkeytestframework.valkey_test_case import ValkeyAction
 from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 def _enable_aof(client):
     client.config_set("appendonly", "yes")
+    wait_for_equal(
+        lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30
+    )
 
 
 def _bgrewriteaof_and_restart(server):
     server.client.bgrewriteaof()
     server.wait_for_action_done(ValkeyAction.AOF_REWRITE)
-    server.restart()
+    server.args["appendonly"] = "yes"
+    server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+    assert server.is_alive()
+    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
 
 
 class TestFlashZAdd(ValkeyFlashTestCase):

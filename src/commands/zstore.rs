@@ -341,6 +341,11 @@ pub fn flash_zrangestore_command(ctx: &Context, args: Vec<ValkeyString>) -> Valk
     if by_score && by_lex {
         return Err(ValkeyError::Str("ERR syntax error"));
     }
+    if limit.is_some() && !by_score && !by_lex {
+        return Err(ValkeyError::Str(
+            "ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX",
+        ));
+    }
 
     let inner = match open_source_zset(ctx, src)? {
         None => return write_dest_zset(ctx, dst, ZSetInner::new(), "flash.zrangestore"),
