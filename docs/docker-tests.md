@@ -14,7 +14,7 @@ valkey-flash ships Docker infrastructure for two topologies:
 | Docker Engine | 20.10 | Compose v2 plugin bundled since 23.0; for older installs, `docker compose` must be on PATH |
 | Docker Compose | v2 (`docker compose`) | v1 (`docker-compose`) is **not** supported |
 | Linux kernel | 5.6 | Required for `io_uring`; the compose files use `security_opt: seccomp:unconfined` (see [seccomp note](#seccomp-and-io_uring)) |
-| Python | 3.11+ | For the pytest fixtures (`pip install -r requirements.txt`) |
+| Python | 3.11+ | For the pytest fixtures (`uv sync` — see [CONTRIBUTING.md](../CONTRIBUTING.md)) |
 
 macOS with Docker Desktop works — the Linux VM it runs satisfies the kernel requirement.
 

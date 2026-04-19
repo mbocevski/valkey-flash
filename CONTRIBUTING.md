@@ -34,8 +34,6 @@ uv run ruff format --check .     # format check
 uv run ruff format .             # format (auto-fix)
 ```
 
-`requirements.txt` is kept as a compatibility shim only — `pyproject.toml` / `uv.lock` are authoritative.
-
 ## Commit style
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
