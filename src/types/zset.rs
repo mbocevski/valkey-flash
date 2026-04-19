@@ -626,12 +626,57 @@ pub unsafe extern "C" fn defrag(
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
 ) -> i32 {
+    use std::mem;
     use valkey_module::defrag::Defrag;
+
     let dfg = Defrag::new(ctx);
-    let new_ptr = dfg.alloc(*value);
-    if !new_ptr.is_null() {
-        *value = new_ptr;
+
+    // Step 1: relocate the FlashZSetObject struct itself.
+    let new_struct = dfg.alloc(*value);
+    if !new_struct.is_null() {
+        *value = new_struct;
     }
+
+    // Step 2: for Hot tier, relocate each member Vec's backing buffer in both
+    // the scores BTreeMap and the members HashMap (they are separate allocations).
+    let obj: &mut FlashZSetObject = &mut *(*value).cast::<FlashZSetObject>();
+    if let Tier::Hot(ref mut inner) = obj.tier {
+        let score_entries: Vec<((ScoreF64, Vec<u8>), ())> =
+            mem::take(&mut inner.scores).into_iter().collect();
+        for ((score, mut member), ()) in score_entries {
+            if member.capacity() > 0 {
+                let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
+                if !new_buf.is_null() {
+                    let (len, cap) = (member.len(), member.capacity());
+                    let old = mem::replace(
+                        &mut member,
+                        Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
+                    );
+                    mem::forget(old);
+                }
+            }
+            inner.scores.insert((score, member), ());
+        }
+
+        let member_entries: Vec<(Vec<u8>, f64)> =
+            mem::take(&mut inner.members).into_iter().collect();
+        for (mut member, score) in member_entries {
+            if member.capacity() > 0 {
+                let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
+                if !new_buf.is_null() {
+                    let (len, cap) = (member.len(), member.capacity());
+                    let old = mem::replace(
+                        &mut member,
+                        Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
+                    );
+                    mem::forget(old);
+                }
+            }
+            inner.members.insert(member, score);
+        }
+    }
+    // Cold tier: only primitive scalars — nothing to relocate.
+
     0
 }
 

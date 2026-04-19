@@ -116,3 +116,92 @@ class TestFlashCopyHash(ValkeyFlashTestCase):
         result = client.execute_command("COPY", "src_hrep", "dst_hrep", "REPLACE")
         assert result == 1
         assert client.execute_command("FLASH.HGET", "dst_hrep", "field") == b"new_val"
+
+
+class TestFlashCopyList(ValkeyFlashTestCase):
+
+    def test_copy_hot_list_dst_has_correct_elements(self):
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "src_list", "a", "b", "c")
+        result = client.execute_command("COPY", "src_list", "dst_list")
+        assert result == 1
+        assert client.execute_command("FLASH.LLEN", "dst_list") == 3
+        assert client.execute_command("FLASH.LINDEX", "dst_list", 0) == b"a"
+        assert client.execute_command("FLASH.LINDEX", "dst_list", 2) == b"c"
+
+    def test_copy_hot_list_src_unchanged(self):
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "src_list2", "x", "y")
+        client.execute_command("COPY", "src_list2", "dst_list2")
+        assert client.execute_command("FLASH.LLEN", "src_list2") == 2
+
+    def test_copy_hot_list_dst_is_independent(self):
+        """Pushing to dst must not affect src."""
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "src_lind", "original")
+        client.execute_command("COPY", "src_lind", "dst_lind")
+        client.execute_command("FLASH.RPUSH", "dst_lind", "extra")
+        assert client.execute_command("FLASH.LLEN", "src_lind") == 1
+        assert client.execute_command("FLASH.LLEN", "dst_lind") == 2
+
+    def test_copy_list_to_existing_without_replace_returns_zero(self):
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "src_lex", "v")
+        client.execute_command("FLASH.RPUSH", "dst_lex", "old")
+        result = client.execute_command("COPY", "src_lex", "dst_lex")
+        assert result == 0
+        assert client.execute_command("FLASH.LLEN", "dst_lex") == 1
+
+    def test_copy_list_with_replace(self):
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "src_lrep", "new")
+        client.execute_command("FLASH.RPUSH", "dst_lrep", "old1", "old2")
+        result = client.execute_command("COPY", "src_lrep", "dst_lrep", "REPLACE")
+        assert result == 1
+        assert client.execute_command("FLASH.LLEN", "dst_lrep") == 1
+        assert client.execute_command("FLASH.LINDEX", "dst_lrep", 0) == b"new"
+
+
+class TestFlashCopyZSet(ValkeyFlashTestCase):
+
+    def test_copy_hot_zset_dst_has_correct_members(self):
+        client = self.client
+        client.execute_command("FLASH.ZADD", "src_zset", "1.0", "a", "2.0", "b")
+        result = client.execute_command("COPY", "src_zset", "dst_zset")
+        assert result == 1
+        assert client.execute_command("FLASH.ZCARD", "dst_zset") == 2
+        assert float(client.execute_command("FLASH.ZSCORE", "dst_zset", "a")) == 1.0
+        assert float(client.execute_command("FLASH.ZSCORE", "dst_zset", "b")) == 2.0
+
+    def test_copy_hot_zset_src_unchanged(self):
+        client = self.client
+        client.execute_command("FLASH.ZADD", "src_zset2", "5.0", "m")
+        client.execute_command("COPY", "src_zset2", "dst_zset2")
+        assert client.execute_command("FLASH.ZCARD", "src_zset2") == 1
+
+    def test_copy_hot_zset_dst_is_independent(self):
+        """Adding to dst must not affect src."""
+        client = self.client
+        client.execute_command("FLASH.ZADD", "src_zind", "1.0", "x")
+        client.execute_command("COPY", "src_zind", "dst_zind")
+        client.execute_command("FLASH.ZADD", "dst_zind", "99.0", "extra")
+        assert client.execute_command("FLASH.ZCARD", "src_zind") == 1
+        assert client.execute_command("FLASH.ZCARD", "dst_zind") == 2
+
+    def test_copy_zset_to_existing_without_replace_returns_zero(self):
+        client = self.client
+        client.execute_command("FLASH.ZADD", "src_zex", "1.0", "a")
+        client.execute_command("FLASH.ZADD", "dst_zex", "2.0", "b")
+        result = client.execute_command("COPY", "src_zex", "dst_zex")
+        assert result == 0
+        assert client.execute_command("FLASH.ZCARD", "dst_zex") == 1
+
+    def test_copy_zset_with_replace(self):
+        client = self.client
+        client.execute_command("FLASH.ZADD", "src_zrep", "3.0", "new_m")
+        client.execute_command("FLASH.ZADD", "dst_zrep", "1.0", "old_m")
+        result = client.execute_command("COPY", "src_zrep", "dst_zrep", "REPLACE")
+        assert result == 1
+        assert client.execute_command("FLASH.ZCARD", "dst_zrep") == 1
+        assert client.execute_command("FLASH.ZSCORE", "dst_zrep", "old_m") is None
+        assert float(client.execute_command("FLASH.ZSCORE", "dst_zrep", "new_m")) == 3.0

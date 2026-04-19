@@ -121,3 +121,100 @@ class TestFlashDefragHash(ValkeyFlashTestCase):
                 )
 
         assert client.execute_command("PING") == b"PONG"
+
+
+class TestFlashDefragList(ValkeyFlashTestCase):
+
+    def test_list_data_intact_with_activedefrag_enabled(self):
+        """FLASH.RPUSH values must be readable after activedefrag runs."""
+        client = self.client
+        n = 100
+
+        for i in range(n):
+            client.execute_command(
+                "FLASH.RPUSH", f"dflist_{i}", *[f"item_{j}" * 4 for j in range(5)]
+            )
+
+        defrag_available = _try_enable_activedefrag(client)
+
+        for i in range(0, n, 2):
+            client.execute_command("DEL", f"dflist_{i}")
+        for i in range(0, n, 2):
+            client.execute_command(
+                "FLASH.RPUSH", f"dflist_{i}", *[f"item_{j}" * 4 for j in range(5)]
+            )
+
+        if defrag_available:
+            time.sleep(0.15)
+
+        for i in range(n):
+            assert client.execute_command("FLASH.LLEN", f"dflist_{i}") == 5
+            assert client.execute_command("FLASH.LINDEX", f"dflist_{i}", 0) == (
+                "item_0" * 4
+            ).encode()
+
+    def test_list_server_survives_repeated_writes_with_activedefrag(self):
+        """Server must not crash under sustained list write pressure with defrag on."""
+        client = self.client
+        _try_enable_activedefrag(client)
+
+        for i in range(300):
+            client.execute_command("FLASH.RPUSH", f"lstress_{i}", "x" * 64, "y" * 64)
+            if i % 30 == 0:
+                client.execute_command(
+                    "DEL", *[f"lstress_{k}" for k in range(i, min(i + 5, 300))]
+                )
+
+        assert client.execute_command("PING") == b"PONG"
+
+
+class TestFlashDefragZSet(ValkeyFlashTestCase):
+
+    def test_zset_data_intact_with_activedefrag_enabled(self):
+        """FLASH.ZADD members and scores must be readable after activedefrag runs."""
+        client = self.client
+        n = 100
+
+        for i in range(n):
+            pairs = []
+            for j in range(5):
+                pairs += [str(float(j)), f"member_{i}_{j}" * 3]
+            client.execute_command("FLASH.ZADD", f"dfzset_{i}", *pairs)
+
+        defrag_available = _try_enable_activedefrag(client)
+
+        for i in range(0, n, 2):
+            client.execute_command("DEL", f"dfzset_{i}")
+        for i in range(0, n, 2):
+            pairs = []
+            for j in range(5):
+                pairs += [str(float(j)), f"member_{i}_{j}" * 3]
+            client.execute_command("FLASH.ZADD", f"dfzset_{i}", *pairs)
+
+        if defrag_available:
+            time.sleep(0.15)
+
+        for i in range(n):
+            assert client.execute_command("FLASH.ZCARD", f"dfzset_{i}") == 5
+            score = client.execute_command(
+                "FLASH.ZSCORE", f"dfzset_{i}", f"member_{i}_2" * 3
+            )
+            assert float(score) == 2.0, (
+                f"dfzset_{i}[member_{i}_2] corrupted after defrag: got {score!r}"
+            )
+
+    def test_zset_server_survives_repeated_writes_with_activedefrag(self):
+        """Server must not crash under sustained zset write pressure with defrag on."""
+        client = self.client
+        _try_enable_activedefrag(client)
+
+        for i in range(300):
+            client.execute_command(
+                "FLASH.ZADD", f"zstress_{i}", "1.0", "a" * 32, "2.0", "b" * 32
+            )
+            if i % 30 == 0:
+                client.execute_command(
+                    "DEL", *[f"zstress_{k}" for k in range(i, min(i + 5, 300))]
+                )
+
+        assert client.execute_command("PING") == b"PONG"
