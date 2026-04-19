@@ -45,11 +45,10 @@ pub fn flash_llen_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         .get()
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
-    if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        let len = list_deserialize(&cached_bytes).map_or(0, |l| l.len() as i64);
-        return Ok(ValkeyValue::Integer(len));
-    }
-
+    // Type-check the key before consulting the cache: the cache is keyed on the
+    // raw byte string and would otherwise return data for a key that now holds
+    // a different module type (e.g. FLASH.HSET followed by FLASH.LLEN on the
+    // same key should be WRONGTYPE, not a stale cache read).
     let cold_info: Option<(u64, u32)>;
     {
         let key_handle = ctx.open_key(key);
@@ -58,6 +57,11 @@ pub fn flash_llen_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
             Ok(None) => return Ok(ValkeyValue::Integer(0)),
             Ok(Some(obj)) => obj,
         };
+
+        if let Some(cached_bytes) = cache.get(key.as_slice()) {
+            let len = list_deserialize(&cached_bytes).map_or(0, |l| l.len() as i64);
+            return Ok(ValkeyValue::Integer(len));
+        }
 
         match &obj.tier {
             Tier::Hot(items) => {
