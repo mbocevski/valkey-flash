@@ -494,7 +494,9 @@ class TestFlashZSetReplication(_ReplTC):
         server_path = _os.path.join(binaries_dir, "valkey-server")
         existing = _os.environ.get("LD_LIBRARY_PATH", "")
         _os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
-        self._flash_dir = _tempfile.mkdtemp(prefix="flash_repl_zset_", dir=self.testdir)
+        self._flash_dir = _os.path.abspath(
+            _tempfile.mkdtemp(prefix="flash_repl_zset_", dir=self.testdir)
+        )
         primary_path = _os.path.join(self._flash_dir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",

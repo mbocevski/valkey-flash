@@ -33,7 +33,7 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # config name/value pairs. Note: module-init args use the raw config
         # name (`path`), without the `flash.` prefix — the `flash.` prefix
         # only applies when addressing the knob via `CONFIG GET`/`SET`.
-        self.flash_dir = tempfile.mkdtemp(prefix="flash_", dir=self.testdir)
+        self.flash_dir = os.path.abspath(tempfile.mkdtemp(prefix="flash_", dir=self.testdir))
         flash_path = os.path.join(self.flash_dir, "flash.bin")
         args = {
             "enable-debug-command": "yes",

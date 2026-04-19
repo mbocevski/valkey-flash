@@ -189,7 +189,9 @@ class TestFlashSetReplication(ReplicationTestCase):
         import shutil
         import tempfile
 
-        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_set_", dir=self.testdir)
+        self._flash_dir = os.path.abspath(
+            tempfile.mkdtemp(prefix="flash_repl_set_", dir=self.testdir)
+        )
         primary_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = _server_args(primary_path)
         self.server, self.client = self.create_server(

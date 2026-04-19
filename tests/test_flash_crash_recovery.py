@@ -107,7 +107,7 @@ class _CrashTestBase(ValkeyFlashTestCase):
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         import tempfile
 
-        self._flash_dir = tempfile.mkdtemp(prefix="flash_crash_", dir=self.testdir)
+        self._flash_dir = os.path.abspath(tempfile.mkdtemp(prefix="flash_crash_", dir=self.testdir))
         flash_path = os.path.join(self._flash_dir, "flash.bin")
         args = {
             "enable-debug-command": "yes",
