@@ -1,12 +1,13 @@
 import os
 import time
+
 import pytest
 from valkey import ResponseError
-from valkeytestframework.valkey_test_case import ReplicationTestCase
 from valkey_flash_test_case import ValkeyFlashTestCase
-
+from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 # ── Helper ────────────────────────────────────────────────────────────────────
+
 
 def _binaries_dir():
     return (
@@ -22,9 +23,7 @@ def _server_path():
 def _prepend_lib_path():
     binaries_dir = _binaries_dir()
     existing = os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LD_LIBRARY_PATH"] = (
-        f"{binaries_dir}:{existing}" if existing else binaries_dir
-    )
+    os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
 
 
 def _server_args(extra=None):
@@ -39,8 +38,8 @@ def _server_args(extra=None):
 
 # ── Basic FLASH.GET tests ─────────────────────────────────────────────────────
 
-class TestFlashGet(ValkeyFlashTestCase):
 
+class TestFlashGet(ValkeyFlashTestCase):
     def test_get_after_set_returns_value(self):
         self.client.execute_command("FLASH.SET", "getkey", "hello")
         result = self.client.execute_command("FLASH.GET", "getkey")
@@ -67,7 +66,7 @@ class TestFlashGet(ValkeyFlashTestCase):
     def test_no_args_rejected(self):
         try:
             self.client.execute_command("FLASH.GET")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError:
             pass
 
@@ -77,7 +76,7 @@ class TestFlashGet(ValkeyFlashTestCase):
         self.client.execute_command("SET", "nativekey", "hello")
         try:
             self.client.execute_command("FLASH.GET", "nativekey")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
 
@@ -85,7 +84,7 @@ class TestFlashGet(ValkeyFlashTestCase):
         self.client.execute_command("RPUSH", "listkey", "a", "b")
         try:
             self.client.execute_command("FLASH.GET", "listkey")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
 
@@ -117,9 +116,7 @@ class TestFlashGet(ValkeyFlashTestCase):
         def get_fn():
             self.client.execute_command("FLASH.GET", "nbkey")
 
-        self.verify_nonblocking_during(
-            self.client, get_fn, probe_client, "PING"
-        )
+        self.verify_nonblocking_during(self.client, get_fn, probe_client, "PING")
 
 
 # ── Cache-eviction / re-promotion ─────────────────────────────────────────────
@@ -129,8 +126,8 @@ class TestFlashGet(ValkeyFlashTestCase):
 # in Valkey's keyspace still holds Tier::Hot. FLASH.GET must re-promote and
 # return the correct value.
 
-class TestFlashGetEviction(ValkeyFlashTestCase):
 
+class TestFlashGetEviction(ValkeyFlashTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()
@@ -165,8 +162,8 @@ class TestFlashGetEviction(ValkeyFlashTestCase):
 
 # ── Replication test ──────────────────────────────────────────────────────────
 
-class TestFlashGetReplication(ReplicationTestCase):
 
+class TestFlashGetReplication(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()

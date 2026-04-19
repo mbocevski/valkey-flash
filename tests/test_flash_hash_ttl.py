@@ -3,11 +3,9 @@ import time
 import pytest
 from valkey import ResponseError
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestFlashHSetTTL(ValkeyFlashTestCase):
-
     # ── EX / PX / EXAT / PXAT ────────────────────────────────────────────────
 
     def test_hset_ex_key_expires(self):
@@ -111,9 +109,7 @@ class TestFlashHSetTTL(ValkeyFlashTestCase):
 
     def test_hset_keepttl_and_ex_is_error(self):
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.HSET", "err_key", "f", "v", "KEEPTTL", "EX", "10"
-            )
+            self.client.execute_command("FLASH.HSET", "err_key", "f", "v", "KEEPTTL", "EX", "10")
 
     def test_hset_odd_fv_with_ttl_is_error(self):
         with pytest.raises((ResponseError, Exception)):

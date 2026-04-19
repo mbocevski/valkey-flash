@@ -1,24 +1,21 @@
-import os
+from valkey_flash_test_case import ValkeyFlashTestCase
 from valkeytestframework.util.waiters import wait_for_equal
 from valkeytestframework.valkey_test_case import ValkeyAction
-from valkey_flash_test_case import ValkeyFlashTestCase
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _bgsave_and_restart(server):
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _enable_aof(client):
     client.config_set("appendonly", "yes")
-    wait_for_equal(
-        lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30
-    )
+    wait_for_equal(lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30)
 
 
 def _bgrewriteaof_and_restart(server):
@@ -27,18 +24,18 @@ def _bgrewriteaof_and_restart(server):
     server.args["appendonly"] = "yes"
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _hgetall_as_dict(client, key):
     flat = client.execute_command("FLASH.HGETALL", key)
-    return dict(zip(flat[::2], flat[1::2]))
+    return dict(zip(flat[::2], flat[1::2], strict=False))
 
 
 # ── RDB round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashHashRdb(ValkeyFlashTestCase):
 
+class TestFlashHashRdb(ValkeyFlashTestCase):
     def test_single_field_hash_survives_restart(self):
         self.client.execute_command("FLASH.HSET", "rh1", "name", "alice")
         _bgsave_and_restart(self.server)
@@ -120,8 +117,8 @@ class TestFlashHashRdb(ValkeyFlashTestCase):
 
 # ── AOF round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashHashAof(ValkeyFlashTestCase):
 
+class TestFlashHashAof(ValkeyFlashTestCase):
     def test_hash_survives_aof_rewrite_and_restart(self):
         _enable_aof(self.client)
         self.client.execute_command("FLASH.HSET", "ah1", "color", "red", "size", "large")
@@ -149,7 +146,9 @@ class TestFlashHashAof(ValkeyFlashTestCase):
             self.client.execute_command("FLASH.HSET", f"ah_multi:{i}", "n", str(i))
         _bgrewriteaof_and_restart(self.server)
         for i in range(4):
-            assert self.client.execute_command("FLASH.HGET", f"ah_multi:{i}", "n") == str(i).encode()
+            assert (
+                self.client.execute_command("FLASH.HGET", f"ah_multi:{i}", "n") == str(i).encode()
+            )
 
     def test_overwritten_hash_field_reflects_last_write_after_aof(self):
         _enable_aof(self.client)
@@ -179,7 +178,10 @@ class TestFlashHashAof(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.HSET", "ah6", *pairs)
         _bgrewriteaof_and_restart(self.server)
         for i in range(100):
-            assert self.client.execute_command("FLASH.HGET", "ah6", f"field{i}") == f"value{i}".encode()
+            assert (
+                self.client.execute_command("FLASH.HGET", "ah6", f"field{i}")
+                == f"value{i}".encode()
+            )
 
     def test_debug_reload_preserves_hash_fields(self):
         _enable_aof(self.client)

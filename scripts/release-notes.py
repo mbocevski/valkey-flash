@@ -14,18 +14,18 @@ import sys
 
 TYPE_ORDER = ["feat", "fix", "perf", "refactor", "docs", "test", "ci", "build", "chore"]
 TYPE_LABELS = {
-    "feat":     "Features",
-    "fix":      "Bug Fixes",
-    "perf":     "Performance",
+    "feat": "Features",
+    "fix": "Bug Fixes",
+    "perf": "Performance",
     "refactor": "Refactoring",
-    "docs":     "Documentation",
-    "test":     "Tests",
-    "ci":       "CI/CD",
-    "build":    "Build",
-    "chore":    "Chores",
+    "docs": "Documentation",
+    "test": "Tests",
+    "ci": "CI/CD",
+    "build": "Build",
+    "chore": "Chores",
 }
 
-CC_RE = re.compile(r'^(\w+)(?:\([\w/.\-]+\))?(!)?:\s+(.+)$')
+CC_RE = re.compile(r"^(\w+)(?:\([\w/.\-]+\))?(!)?:\s+(.+)$")
 
 
 def git(*args: str) -> str:

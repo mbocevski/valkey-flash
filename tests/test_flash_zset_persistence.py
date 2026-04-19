@@ -1,18 +1,18 @@
 """Integration tests for FlashZSet RDB and AOF persistence."""
 
+from valkey_flash_test_case import ValkeyFlashTestCase
 from valkeytestframework.util.waiters import wait_for_equal
 from valkeytestframework.valkey_test_case import ValkeyAction
-from valkey_flash_test_case import ValkeyFlashTestCase
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _bgsave_and_restart(server):
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _bgrewriteaof_and_restart(server):
@@ -21,20 +21,18 @@ def _bgrewriteaof_and_restart(server):
     server.args["appendonly"] = "yes"
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _enable_aof(client):
     client.config_set("appendonly", "yes")
-    wait_for_equal(
-        lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30
-    )
+    wait_for_equal(lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30)
 
 
 # ── RDB round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashZSetRdb(ValkeyFlashTestCase):
 
+class TestFlashZSetRdb(ValkeyFlashTestCase):
     def test_zset_bgsave_round_trip_small(self):
         self.client.execute_command("FLASH.ZADD", "rz1", "1.0", "a", "2.0", "b", "3.0", "c")
         _bgsave_and_restart(self.server)
@@ -68,7 +66,9 @@ class TestFlashZSetRdb(ValkeyFlashTestCase):
 
     def test_zset_bgsave_preserves_scores_exactly(self):
         # Test that f64 scores survive the RDB round-trip without precision loss.
-        self.client.execute_command("FLASH.ZADD", "rz5", "3.14", "pi", "-inf", "neginf", "inf", "posinf")
+        self.client.execute_command(
+            "FLASH.ZADD", "rz5", "3.14", "pi", "-inf", "neginf", "inf", "posinf"
+        )
         _bgsave_and_restart(self.server)
         assert self.client.execute_command("FLASH.ZSCORE", "rz5", "neginf") == b"-inf"
         assert self.client.execute_command("FLASH.ZSCORE", "rz5", "posinf") == b"inf"
@@ -113,8 +113,8 @@ class TestFlashZSetRdb(ValkeyFlashTestCase):
 
 # ── AOF round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashZSetAofPersistence(ValkeyFlashTestCase):
 
+class TestFlashZSetAofPersistence(ValkeyFlashTestCase):
     def test_zset_bgrewriteaof_small(self):
         _enable_aof(self.client)
         self.client.execute_command("FLASH.ZADD", "az1", "1.0", "a", "2.0", "b")

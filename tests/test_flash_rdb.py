@@ -1,9 +1,10 @@
 import os
-from valkeytestframework.util.waiters import wait_for_equal
-from valkey_flash_test_case import ValkeyFlashTestCase
 
+from valkey_flash_test_case import ValkeyFlashTestCase
+from valkeytestframework.util.waiters import wait_for_equal
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _binaries_dir():
     return (
@@ -29,13 +30,13 @@ def _bgsave_and_restart(server):
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 # ── RDB round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashRdb(ValkeyFlashTestCase):
 
+class TestFlashRdb(ValkeyFlashTestCase):
     def test_hot_string_survives_restart(self):
         self.client.execute_command("FLASH.SET", "rdbkey", "rdbval")
         _bgsave_and_restart(self.server)

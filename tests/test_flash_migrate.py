@@ -16,14 +16,17 @@ import shutil
 import tempfile
 
 import pytest
-from valkeytestframework.valkey_test_case import ValkeyTestCase
+from valkey import ResponseError
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 
 def _binaries_dir():
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 
@@ -40,12 +43,14 @@ def _setup_ld_path():
 def _probe_response_to_dict(resp):
     """Convert a flat list ['key', 'val', ...] to a dict."""
     it = iter(resp)
-    return {k.decode() if isinstance(k, bytes) else k:
-            v.decode() if isinstance(v, bytes) else v
-            for k, v in zip(it, it)}
+    return {
+        k.decode() if isinstance(k, bytes) else k: v.decode() if isinstance(v, bytes) else v
+        for k, v in zip(it, it, strict=False)
+    }
 
 
 # ── Local probe tests ─────────────────────────────────────────────────────────
+
 
 class TestFlashMigrateProbeLocal(ValkeyTestCase):
     """FLASH.MIGRATE.PROBE with no arguments returns local module info."""
@@ -99,6 +104,7 @@ class TestFlashMigrateProbeLocal(ValkeyTestCase):
 
 # ── Remote probe timeout test ─────────────────────────────────────────────────
 
+
 class TestFlashMigrateProbeRemote(ValkeyTestCase):
     """FLASH.MIGRATE.PROBE host port returns error when target is unreachable."""
 
@@ -126,12 +132,11 @@ class TestFlashMigrateProbeRemote(ValkeyTestCase):
             self.client.execute_command("FLASH.MIGRATE.PROBE", "127.0.0.1", "1")
         error = str(exc_info.value)
         # Should contain either "did not respond within timeout" or "invalid address"
-        assert "FLASH-MIGRATE" in error, (
-            f"Expected FLASH-MIGRATE error message, got: {error}"
-        )
+        assert "FLASH-MIGRATE" in error, f"Expected FLASH-MIGRATE error message, got: {error}"
 
 
 # ── Remote probe: no flash module on target ───────────────────────────────────
+
 
 class TestFlashMigrateProbeNoFlash(ValkeyTestCase):
     """FLASH.MIGRATE.PROBE to a plain Valkey node returns 'does not have flash-module loaded'."""
@@ -151,7 +156,8 @@ class TestFlashMigrateProbeNoFlash(ValkeyTestCase):
         )
         # Target node has NO flash module.
         self.plain_server, self.plain_client = self.create_server(
-            testdir=self.testdir, server_path=_server_path(),
+            testdir=self.testdir,
+            server_path=_server_path(),
             args={"enable-debug-command": "yes"},
         )
 
@@ -171,6 +177,7 @@ class TestFlashMigrateProbeNoFlash(ValkeyTestCase):
 
 
 # ── Remote probe: flash on target ────────────────────────────────────────────
+
 
 class TestFlashMigrateProbeWithFlash(ValkeyTestCase):
     """FLASH.MIGRATE.PROBE host port returns probe info when target has flash loaded."""
@@ -212,6 +219,7 @@ class TestFlashMigrateProbeWithFlash(ValkeyTestCase):
 
 
 # ── Migration config knobs ────────────────────────────────────────────────────
+
 
 class TestFlashMigrationConfig(ValkeyTestCase):
     """All four flash.migration-* config knobs are readable via CONFIG GET."""
@@ -270,10 +278,10 @@ class TestFlashMigrationConfig(ValkeyTestCase):
 
     def test_migration_max_key_bytes_immutable(self):
         """flash.migration-max-key-bytes is IMMUTABLE (CONFIG SET should fail)."""
-        with pytest.raises(Exception):
+        with pytest.raises(ResponseError):
             self.client.config_set("flash.migration-max-key-bytes", "1024")
 
     def test_migration_probe_cache_sec_immutable(self):
         """flash.migration-probe-cache-sec is IMMUTABLE (CONFIG SET should fail)."""
-        with pytest.raises(Exception):
+        with pytest.raises(ResponseError):
             self.client.config_set("flash.migration-probe-cache-sec", "120")

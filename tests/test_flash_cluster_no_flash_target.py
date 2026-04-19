@@ -33,11 +33,11 @@ import socket
 import subprocess
 import tempfile
 import time
+from contextlib import suppress
 
 import pytest
 import valkey
 import valkey.exceptions
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +47,9 @@ _PRIMARY_PORTS = (7001, 7002, 7003)
 def _binaries_dir():
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 
@@ -152,9 +154,8 @@ def _probe_dict(resp) -> dict:
     """Convert flat ['key', 'val', ...] probe response to a dict."""
     it = iter(resp)
     return {
-        (k.decode() if isinstance(k, bytes) else k):
-        (v.decode() if isinstance(v, bytes) else v)
-        for k, v in zip(it, it)
+        (k.decode() if isinstance(k, bytes) else k): (v.decode() if isinstance(v, bytes) else v)
+        for k, v in zip(it, it, strict=False)
     }
 
 
@@ -195,6 +196,7 @@ def _owning_primary_port(key: str) -> int:
 
 # ── Scenario 1: target has no flash module ────────────────────────────────────
 
+
 @pytest.mark.docker_cluster
 def test_probe_to_no_flash_target_returns_error(docker_cluster):
     """FLASH.MIGRATE.PROBE from a cluster primary to a plain Valkey node reports
@@ -233,23 +235,17 @@ def test_migrate_to_no_flash_target_source_retains_key(docker_cluster):
         src = valkey.Valkey(host="localhost", port=src_port, socket_timeout=10)
         try:
             with pytest.raises(valkey.exceptions.ResponseError):
-                src.execute_command(
-                    "MIGRATE", "127.0.0.1", str(server.port), key, 0, 10_000
-                )
+                src.execute_command("MIGRATE", "127.0.0.1", str(server.port), key, 0, 10_000)
         finally:
             src.close()
 
         # Key must still be accessible on the cluster.
         val = docker_cluster.execute_command("FLASH.GET", key)
-        assert val == b"owner-check", (
-            f"Key lost after failed MIGRATE to no-flash target: {val!r}"
-        )
+        assert val == b"owner-check", f"Key lost after failed MIGRATE to no-flash target: {val!r}"
     finally:
         server.close()
-        try:
+        with suppress(Exception):
             docker_cluster.execute_command("FLASH.DEL", key)
-        except Exception:
-            pass
 
 
 # ── Scenario 2: flash.path empty/unreachable — infeasible, no test ────────────
@@ -302,9 +298,7 @@ def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
 
         src = valkey.Valkey(host="localhost", port=7001, socket_timeout=10)
         try:
-            resp = src.execute_command(
-                "FLASH.MIGRATE.PROBE", "127.0.0.1", str(server.port)
-            )
+            resp = src.execute_command("FLASH.MIGRATE.PROBE", "127.0.0.1", str(server.port))
             info = _probe_dict(resp)
 
             assert "free_bytes" in info, f"probe response missing free_bytes: {info}"
@@ -349,11 +343,13 @@ def test_flash_migrate_rejects_migration_when_target_full(docker_cluster):
             with pytest.raises(valkey.exceptions.ResponseError) as exc_info:
                 src_c.execute_command(
                     "FLASH.MIGRATE",
-                    "127.0.0.1", str(target.port),
-                    "",       # empty key — KEYS form
-                    "0",      # destination-db
-                    "5000",   # timeout ms
-                    "KEYS", _KEY,
+                    "127.0.0.1",
+                    str(target.port),
+                    "",  # empty key — KEYS form
+                    "0",  # destination-db
+                    "5000",  # timeout ms
+                    "KEYS",
+                    _KEY,
                 )
             error = str(exc_info.value)
             assert "insufficient flash capacity" in error, (

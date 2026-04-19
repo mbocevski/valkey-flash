@@ -4,7 +4,6 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 class TestFlashZUnionStore(ValkeyFlashTestCase):
-
     def test_zunionstore_basic(self):
         self.client.execute_command("FLASH.ZADD", "zu1a", "1.0", "a", "2.0", "b")
         self.client.execute_command("FLASH.ZADD", "zu1b", "3.0", "b", "4.0", "c")
@@ -48,9 +47,7 @@ class TestFlashZUnionStore(ValkeyFlashTestCase):
 
     def test_zunionstore_missing_source_treated_as_empty(self):
         self.client.execute_command("FLASH.ZADD", "zu6a", "1.0", "a")
-        result = self.client.execute_command(
-            "FLASH.ZUNIONSTORE", "zu6dst", "2", "zu6a", "nokey"
-        )
+        result = self.client.execute_command("FLASH.ZUNIONSTORE", "zu6dst", "2", "zu6a", "nokey")
         assert result == 1
 
     def test_zunionstore_overwrites_existing_dst(self):
@@ -62,9 +59,7 @@ class TestFlashZUnionStore(ValkeyFlashTestCase):
 
     def test_zunionstore_all_empty_deletes_dst(self):
         self.client.execute_command("FLASH.ZADD", "zu8dst", "1.0", "x")
-        result = self.client.execute_command(
-            "FLASH.ZUNIONSTORE", "zu8dst", "1", "nokey"
-        )
+        result = self.client.execute_command("FLASH.ZUNIONSTORE", "zu8dst", "1", "nokey")
         assert result == 0
         assert self.client.execute_command("FLASH.ZCARD", "zu8dst") == 0
 
@@ -72,13 +67,10 @@ class TestFlashZUnionStore(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "zu9str", "v")
         self.client.execute_command("FLASH.ZADD", "zu9z", "1.0", "a")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.ZUNIONSTORE", "zu9dst", "2", "zu9z", "zu9str"
-            )
+            self.client.execute_command("FLASH.ZUNIONSTORE", "zu9dst", "2", "zu9z", "zu9str")
 
 
 class TestFlashZInterStore(ValkeyFlashTestCase):
-
     def test_zinterstore_basic(self):
         self.client.execute_command("FLASH.ZADD", "zi1a", "1.0", "a", "2.0", "b")
         self.client.execute_command("FLASH.ZADD", "zi1b", "3.0", "b", "4.0", "c")
@@ -115,9 +107,7 @@ class TestFlashZInterStore(ValkeyFlashTestCase):
 
     def test_zinterstore_missing_source_returns_empty(self):
         self.client.execute_command("FLASH.ZADD", "zi5a", "1.0", "a")
-        result = self.client.execute_command(
-            "FLASH.ZINTERSTORE", "zi5dst", "2", "zi5a", "nokey"
-        )
+        result = self.client.execute_command("FLASH.ZINTERSTORE", "zi5dst", "2", "zi5a", "nokey")
         assert result == 0
 
     def test_zinterstore_three_sources(self):
@@ -134,13 +124,10 @@ class TestFlashZInterStore(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.RPUSH", "zi7list", "v")
         self.client.execute_command("FLASH.ZADD", "zi7z", "1.0", "a")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.ZINTERSTORE", "zi7dst", "2", "zi7z", "zi7list"
-            )
+            self.client.execute_command("FLASH.ZINTERSTORE", "zi7dst", "2", "zi7z", "zi7list")
 
 
 class TestFlashZDiffStore(ValkeyFlashTestCase):
-
     def test_zdiffstore_basic(self):
         self.client.execute_command("FLASH.ZADD", "zd1a", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.ZADD", "zd1b", "99.0", "b")
@@ -175,13 +162,10 @@ class TestFlashZDiffStore(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "zd5str", "v")
         self.client.execute_command("FLASH.ZADD", "zd5z", "1.0", "a")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.ZDIFFSTORE", "zd5dst", "2", "zd5z", "zd5str"
-            )
+            self.client.execute_command("FLASH.ZDIFFSTORE", "zd5dst", "2", "zd5z", "zd5str")
 
 
 class TestFlashZRangeStore(ValkeyFlashTestCase):
-
     def test_zrangestore_index_range(self):
         self.client.execute_command(
             "FLASH.ZADD", "zrs1", "1.0", "a", "2.0", "b", "3.0", "c", "4.0", "d"
@@ -192,9 +176,7 @@ class TestFlashZRangeStore(ValkeyFlashTestCase):
         assert float(self.client.execute_command("FLASH.ZSCORE", "zrs1dst", "c")) == 3.0
 
     def test_zrangestore_byscore(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrs2", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrs2", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command(
             "FLASH.ZRANGESTORE", "zrs2dst", "zrs2", "1.5", "3.0", "BYSCORE"
         )
@@ -203,18 +185,14 @@ class TestFlashZRangeStore(ValkeyFlashTestCase):
         assert float(self.client.execute_command("FLASH.ZSCORE", "zrs2dst", "b")) == 2.0
 
     def test_zrangestore_bylex(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrs3", "0", "a", "0", "b", "0", "c", "0", "d"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrs3", "0", "a", "0", "b", "0", "c", "0", "d")
         result = self.client.execute_command(
             "FLASH.ZRANGESTORE", "zrs3dst", "zrs3", "[b", "[c", "BYLEX"
         )
         assert result == 2
 
     def test_zrangestore_rev(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrs4", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrs4", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command(
             "FLASH.ZRANGESTORE", "zrs4dst", "zrs4", "0", "1", "REV"
         )
@@ -236,9 +214,7 @@ class TestFlashZRangeStore(ValkeyFlashTestCase):
         assert float(self.client.execute_command("FLASH.ZSCORE", "zrs5dst", "c")) == 3.0
 
     def test_zrangestore_missing_src_creates_empty_dst(self):
-        result = self.client.execute_command(
-            "FLASH.ZRANGESTORE", "zrs6dst", "nosrc", "0", "-1"
-        )
+        result = self.client.execute_command("FLASH.ZRANGESTORE", "zrs6dst", "nosrc", "0", "-1")
         assert result == 0
 
     def test_zrangestore_overwrites_existing_dst(self):
@@ -251,9 +227,7 @@ class TestFlashZRangeStore(ValkeyFlashTestCase):
     def test_zrangestore_wrongtype_src_raises_error(self):
         self.client.execute_command("FLASH.SET", "zrs8str", "v")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.ZRANGESTORE", "zrs8dst", "zrs8str", "0", "-1"
-            )
+            self.client.execute_command("FLASH.ZRANGESTORE", "zrs8dst", "zrs8str", "0", "-1")
 
     def test_zrangestore_limit_without_byscore_bylex_errors(self):
         self.client.execute_command("FLASH.ZADD", "zrs9", "1.0", "a", "2.0", "b")

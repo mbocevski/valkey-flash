@@ -1,8 +1,8 @@
 import pathlib
-import re
+
 import pytest
-from valkeytestframework.util.waiters import wait_for_equal
 from valkey_flash_test_case import ValkeyFlashTestCase
+from valkeytestframework.util.waiters import wait_for_equal
 
 
 def _wal_path() -> pathlib.Path:
@@ -14,13 +14,13 @@ def _bgsave_and_restart(server):
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _crash_restart(server):
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _parse_stats(raw) -> dict:
@@ -34,7 +34,6 @@ def _parse_stats(raw) -> dict:
 
 
 class TestFlashCompaction(ValkeyFlashTestCase):
-
     @pytest.mark.compaction
     def test_compaction_stats_returns_expected_keys(self):
         raw = self.client.execute_command("FLASH.COMPACTION.STATS")
@@ -45,9 +44,7 @@ class TestFlashCompaction(ValkeyFlashTestCase):
 
     @pytest.mark.compaction
     def test_del_increments_bytes_reclaimed(self):
-        raw_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         self.client.execute_command("FLASH.SET", "k1", "hello")
         self.client.execute_command("FLASH.DEL", "k1")
         raw_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
@@ -56,18 +53,14 @@ class TestFlashCompaction(ValkeyFlashTestCase):
     @pytest.mark.compaction
     def test_del_increases_free_blocks(self):
         self.client.execute_command("FLASH.SET", "k1", "hello")
-        raw_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         self.client.execute_command("FLASH.DEL", "k1")
         raw_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert raw_after["free_blocks"] > raw_before["free_blocks"]
 
     @pytest.mark.compaction
     def test_trigger_increments_compaction_runs(self):
-        raw_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert self.client.execute_command("FLASH.COMPACTION.TRIGGER") == b"OK"
         raw_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert raw_after["compaction_runs"] == raw_before["compaction_runs"] + 1
@@ -82,25 +75,16 @@ class TestFlashCompaction(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "b", "v")
         self.client.execute_command("FLASH.SET", "c", "v")
 
-        # Capture free_blocks count before any deletes.
-        raw_before_del = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
-
         self.client.execute_command("FLASH.DEL", "a")
         self.client.execute_command("FLASH.DEL", "b")
         self.client.execute_command("FLASH.DEL", "c")
 
-        raw_after_del = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_after_del = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         free_before_trigger = raw_after_del["free_blocks"]
 
         assert self.client.execute_command("FLASH.COMPACTION.TRIGGER") == b"OK"
 
-        raw_after_trigger = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_after_trigger = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         # Coalescing should reduce free_blocks (3 adjacent 1-block ranges → 1 3-block range)
         # while preserving the total number of free block units.
         assert raw_after_trigger["free_blocks"] == free_before_trigger
@@ -128,17 +112,13 @@ class TestFlashCompaction(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "pk1", "hello")
         self.client.execute_command("FLASH.DEL", "pk1")
 
-        raw_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert raw_before["free_blocks"] > 0
 
         _bgsave_and_restart(self.server)
 
         # After restart, free_blocks are restored from aux — still > 0.
-        raw_after = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        raw_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert raw_after["free_blocks"] > 0
 
     @pytest.mark.compaction

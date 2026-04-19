@@ -1,6 +1,5 @@
-import time
 import pytest
-from valkeytestframework.util.waiters import wait_for_equal
+from valkey import ResponseError
 from valkey_flash_test_case import ValkeyFlashTestCase
 
 
@@ -15,7 +14,6 @@ def _parse_stats(raw) -> dict:
 
 
 class TestFlashTtlReclaim(ValkeyFlashTestCase):
-
     @pytest.mark.ttl_reclaim
     def test_debug_demote_returns_ok(self):
         """FLASH.DEBUG.DEMOTE on a hot key returns OK."""
@@ -26,7 +24,6 @@ class TestFlashTtlReclaim(ValkeyFlashTestCase):
     @pytest.mark.ttl_reclaim
     def test_debug_demote_nonexistent_key_errors(self):
         """FLASH.DEBUG.DEMOTE on a missing key returns an error."""
-        from valkey import ResponseError
         with pytest.raises(ResponseError):
             self.client.execute_command("FLASH.DEBUG.DEMOTE", "no_such_key")
 
@@ -49,9 +46,7 @@ class TestFlashTtlReclaim(ValkeyFlashTestCase):
     @pytest.mark.ttl_reclaim
     def test_cold_key_expiry_reclaims_blocks(self):
         """After TTL expires a cold key, bytes_reclaimed increases."""
-        stats_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        stats_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
 
         self.client.execute_command("FLASH.SET", "ttl_cold_k", "data")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "ttl_cold_k")
@@ -65,9 +60,7 @@ class TestFlashTtlReclaim(ValkeyFlashTestCase):
         # Trigger lazy expiry scan to ensure free() has been called.
         self.client.execute_command("DEBUG", "SLEEP", "0")
 
-        stats_after = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        stats_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert stats_after["bytes_reclaimed"] > stats_before["bytes_reclaimed"]
 
     @pytest.mark.ttl_reclaim
@@ -76,17 +69,13 @@ class TestFlashTtlReclaim(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "ttl_fb_k", "data")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "ttl_fb_k")
 
-        stats_before = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        stats_before = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
 
         self.client.execute_command("PEXPIRE", "ttl_fb_k", "200")
         self.wait_for_key_expiry(self.client, "ttl_fb_k", timeout_s=3)
         self.client.execute_command("DEBUG", "SLEEP", "0")
 
-        stats_after = _parse_stats(
-            self.client.execute_command("FLASH.COMPACTION.STATS")
-        )
+        stats_after = _parse_stats(self.client.execute_command("FLASH.COMPACTION.STATS"))
         assert stats_after["free_blocks"] > stats_before["free_blocks"]
 
     @pytest.mark.ttl_reclaim

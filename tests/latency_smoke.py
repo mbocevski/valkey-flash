@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
 
 import valkey
 
@@ -72,12 +73,18 @@ def main():
     try:
         cmd = [
             server_bin,
-            "--port", str(port),
-            "--daemonize", "no",
-            "--loadmodule", module_path,
-            "--flash.path", flash_path,
-            "--save", "",
-            "--loglevel", "warning",
+            "--port",
+            str(port),
+            "--daemonize",
+            "no",
+            "--loadmodule",
+            module_path,
+            "--flash.path",
+            flash_path,
+            "--save",
+            "",
+            "--loglevel",
+            "warning",
         ]
 
         env = os.environ.copy()
@@ -119,10 +126,8 @@ def main():
             except subprocess.TimeoutExpired:
                 proc.kill()
     finally:
-        try:
+        with suppress(OSError):
             os.unlink(flash_path)
-        except OSError:
-            pass
 
     set_times.sort()
     get_times.sort()
@@ -148,7 +153,9 @@ def main():
 
     print(f"FLASH.SET  p50={results['set']['p50_us']:.1f}µs  p99={results['set']['p99_us']:.1f}µs")
     print(f"FLASH.GET  p50={results['get']['p50_us']:.1f}µs  p99={results['get']['p99_us']:.1f}µs")
-    print(f"Mixed      p50={results['mixed']['p50_us']:.1f}µs  p99={results['mixed']['p99_us']:.1f}µs")
+    print(
+        f"Mixed      p50={results['mixed']['p50_us']:.1f}µs  p99={results['mixed']['p99_us']:.1f}µs"
+    )
     print(f"Thresholds: p50≤{P50_THRESHOLD_US}µs  p99≤{P99_THRESHOLD_US}µs")
 
     failures = []

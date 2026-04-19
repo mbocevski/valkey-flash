@@ -15,11 +15,9 @@ import shutil
 import tempfile
 
 import pytest
-from valkeytestframework.valkey_test_case import ReplicationTestCase
-from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-
 from util.waiters import wait_for_true
-
+from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
+from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 _MAX_SYNC_WAIT = 60
 
@@ -27,7 +25,9 @@ _MAX_SYNC_WAIT = 60
 def _binaries_dir():
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 
@@ -51,10 +51,12 @@ def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAI
             return rep.get("slave_repl_offset") == pri.get("master_repl_offset")
         except Exception:
             return False
+
     wait_for_true(_synced, timeout=timeout)
 
 
 # ── Scenario 1 — default: replica is RAM-only ─────────────────────────────────
+
 
 class TestFlashReplicaTierDefault(ReplicationTestCase):
     """Default (flash.replica-tier-enabled=false): replica never opens NVMe storage."""
@@ -91,6 +93,7 @@ class TestFlashReplicaTierDefault(ReplicationTestCase):
 
 # ── Scenarios 2–4: replica-tier-enabled=yes ───────────────────────────────────
 
+
 class TestFlashReplicaTierEnabled(ReplicationTestCase):
     """flash.replica-tier-enabled=true: replica opens its own local NVMe backend."""
 
@@ -109,8 +112,7 @@ class TestFlashReplicaTierEnabled(ReplicationTestCase):
         self._replica_args = {
             "enable-debug-command": "yes",
             "loadmodule": (
-                f"{module_path} flash.path {self._replica_path} "
-                f"flash.replica-tier-enabled yes"
+                f"{module_path} flash.path {self._replica_path} flash.replica-tier-enabled yes"
             ),
         }
         self.server, self.client = self.create_server(
@@ -121,8 +123,14 @@ class TestFlashReplicaTierEnabled(ReplicationTestCase):
         super().teardown()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def create_replicas(self, num_replicas, primaryhost=None, primaryport=None,
-                        connection_type="tcp", server_path=None):
+    def create_replicas(
+        self,
+        num_replicas,
+        primaryhost=None,
+        primaryport=None,
+        connection_type="tcp",
+        server_path=None,
+    ):
         """Pass replica-specific module args (unique path + tier enabled)."""
         primaryhost = primaryhost or self.server.bind_ip
         primaryport = primaryport or self.server.port

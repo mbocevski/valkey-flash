@@ -7,13 +7,13 @@ Scenario 6 requires Docker: USE_DOCKER=1 pytest tests/test_flash_replication_int
 """
 
 import os
+from contextlib import suppress
 
 import pytest
 import valkey
-from valkeytestframework.valkey_test_case import ReplicationTestCase
-from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
 from util.waiters import wait_for_true
-
+from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
+from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 _MAX_SYNC_WAIT = 60
 
@@ -21,7 +21,9 @@ _MAX_SYNC_WAIT = 60
 def _binaries_dir():
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 
@@ -37,6 +39,7 @@ def _setup_ld_path():
 
 def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAIT):
     """Poll until master_link_status:up and replica offset matches primary offset."""
+
     def _synced():
         try:
             rep = replica_client.info("replication")
@@ -46,11 +49,11 @@ def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAI
             return rep.get("slave_repl_offset") == pri.get("master_repl_offset")
         except Exception:
             return False
+
     wait_for_true(_synced, timeout=timeout)
 
 
 class TestFlashReplicationIntegration(ReplicationTestCase):
-
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _setup_ld_path()
@@ -120,7 +123,9 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         r = self.replicas[0]
         for i in range(N):
             assert r.client.execute_command("FLASH.GET", f"rdb_{i}") == f"val_{i}".encode()
-            assert r.client.execute_command("FLASH.HGET", f"rdb_h{i}", "field") == f"hval_{i}".encode()
+            assert (
+                r.client.execute_command("FLASH.HGET", f"rdb_h{i}", "field") == f"hval_{i}".encode()
+            )
 
     # -------------------------------------------------------------------------
     # Scenario 4 — diskless resync
@@ -160,10 +165,8 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         for line in text.splitlines():
             parts = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
             if "S" in parts.get("flags", ""):
-                try:
+                with suppress(Exception):
                     self.client.execute_command("CLIENT KILL", "ID", parts["id"])
-                except Exception:
-                    pass
                 break
 
         # Batch 2 — written while replica is reconnecting.
@@ -181,6 +184,7 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
 # -------------------------------------------------------------------------
 # Scenario 6 — cluster replication (Docker only)
 # -------------------------------------------------------------------------
+
 
 @pytest.mark.docker_cluster
 def test_cluster_flash_replication(docker_cluster):

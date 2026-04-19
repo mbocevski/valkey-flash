@@ -6,7 +6,6 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 class TestFlashLPushRPush(ValkeyFlashTestCase):
-
     def test_lpush_creates_key_and_returns_length(self):
         result = self.client.execute_command("FLASH.LPUSH", "lp1", "a", "b", "c")
         assert result == 3
@@ -51,7 +50,6 @@ class TestFlashLPushRPush(ValkeyFlashTestCase):
 
 
 class TestFlashLPushXRPushX(ValkeyFlashTestCase):
-
     def test_lpushx_returns_zero_for_missing_key(self):
         result = self.client.execute_command("FLASH.LPUSHX", "nokey", "v")
         assert result == 0
@@ -79,7 +77,6 @@ class TestFlashLPushXRPushX(ValkeyFlashTestCase):
 
 
 class TestFlashLPopRPop(ValkeyFlashTestCase):
-
     def test_lpop_returns_head(self):
         self.client.execute_command("FLASH.RPUSH", "lpo1", "a", "b", "c")
         result = self.client.execute_command("FLASH.LPOP", "lpo1")
@@ -116,7 +113,6 @@ class TestFlashLPopRPop(ValkeyFlashTestCase):
 
 
 class TestFlashLRange(ValkeyFlashTestCase):
-
     def test_lrange_full(self):
         self.client.execute_command("FLASH.RPUSH", "lr1", "a", "b", "c")
         result = self.client.execute_command("FLASH.LRANGE", "lr1", "0", "-1")
@@ -147,7 +143,6 @@ class TestFlashLRange(ValkeyFlashTestCase):
 
 
 class TestFlashLLen(ValkeyFlashTestCase):
-
     def test_llen_returns_count(self):
         self.client.execute_command("FLASH.RPUSH", "ll1", "a", "b", "c")
         assert self.client.execute_command("FLASH.LLEN", "ll1") == 3
@@ -167,7 +162,6 @@ class TestFlashLLen(ValkeyFlashTestCase):
 
 
 class TestFlashLIndex(ValkeyFlashTestCase):
-
     def test_lindex_positive(self):
         self.client.execute_command("FLASH.RPUSH", "li1", "a", "b", "c")
         assert self.client.execute_command("FLASH.LINDEX", "li1", "1") == b"b"
@@ -189,7 +183,6 @@ class TestFlashLIndex(ValkeyFlashTestCase):
 
 
 class TestFlashLSet(ValkeyFlashTestCase):
-
     def test_lset_replaces_element(self):
         self.client.execute_command("FLASH.RPUSH", "ls1", "a", "b", "c")
         self.client.execute_command("FLASH.LSET", "ls1", "1", "B")
@@ -215,7 +208,6 @@ class TestFlashLSet(ValkeyFlashTestCase):
 
 
 class TestFlashLInsert(ValkeyFlashTestCase):
-
     def test_linsert_before(self):
         self.client.execute_command("FLASH.RPUSH", "lin1", "a", "c")
         result = self.client.execute_command("FLASH.LINSERT", "lin1", "BEFORE", "c", "b")
@@ -245,7 +237,6 @@ class TestFlashLInsert(ValkeyFlashTestCase):
 
 
 class TestFlashLRem(ValkeyFlashTestCase):
-
     def test_lrem_removes_from_head(self):
         self.client.execute_command("FLASH.RPUSH", "lrem1", "a", "b", "a", "c", "a")
         result = self.client.execute_command("FLASH.LREM", "lrem1", "2", "a")
@@ -276,7 +267,6 @@ class TestFlashLRem(ValkeyFlashTestCase):
 
 
 class TestFlashLTrim(ValkeyFlashTestCase):
-
     def test_ltrim_keeps_middle(self):
         self.client.execute_command("FLASH.RPUSH", "lt1", "a", "b", "c", "d", "e")
         self.client.execute_command("FLASH.LTRIM", "lt1", "1", "3")
@@ -300,7 +290,6 @@ class TestFlashLTrim(ValkeyFlashTestCase):
 
 
 class TestFlashLMove(ValkeyFlashTestCase):
-
     def test_lmove_left_to_right(self):
         self.client.execute_command("FLASH.RPUSH", "lm_src", "a", "b", "c")
         self.client.execute_command("FLASH.RPUSH", "lm_dst", "x")
@@ -345,7 +334,6 @@ class TestFlashLMove(ValkeyFlashTestCase):
 
 
 class TestFlashListColdTier(ValkeyFlashTestCase):
-
     def test_lrange_after_demote(self):
         self.client.execute_command("FLASH.RPUSH", "cold_lr", "a", "b", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lr")
@@ -367,7 +355,6 @@ class TestFlashListColdTier(ValkeyFlashTestCase):
 
 
 class TestFlashListReplication(ValkeyFlashTestCase):
-
     def _make_replica(self):
         primary_port = self.server.port
         replica_server, replica_client = self.create_server(
@@ -417,7 +404,6 @@ class TestFlashListReplication(ValkeyFlashTestCase):
 
 
 class TestFlashListTTL(ValkeyFlashTestCase):
-
     def test_lpush_ex_sets_ttl(self):
         self.client.execute_command("FLASH.LPUSH", "ttl_lpex", "v", "EX", "60")
         assert 0 < self.client.execute_command("TTL", "ttl_lpex") <= 60
@@ -450,7 +436,6 @@ class TestFlashListTTL(ValkeyFlashTestCase):
 
 
 class TestFlashListColdTierExtended(ValkeyFlashTestCase):
-
     def test_lpop_after_demote_returns_head(self):
         self.client.execute_command("FLASH.RPUSH", "cold_lpop", "a", "b", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lpop")
@@ -501,13 +486,14 @@ class TestFlashListColdTierExtended(ValkeyFlashTestCase):
     def test_lmove_after_demote(self):
         self.client.execute_command("FLASH.RPUSH", "cold_lmv", "a", "b", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lmv")
-        elem = self.client.execute_command("FLASH.LMOVE", "cold_lmv", "cold_lmv_dst", "LEFT", "RIGHT")
+        elem = self.client.execute_command(
+            "FLASH.LMOVE", "cold_lmv", "cold_lmv_dst", "LEFT", "RIGHT"
+        )
         assert elem == b"a"
         assert self.client.execute_command("FLASH.LLEN", "cold_lmv") == 2
 
 
 class TestFlashListEdgeCases(ValkeyFlashTestCase):
-
     def test_rpop_with_count(self):
         self.client.execute_command("FLASH.RPUSH", "rpoc", "a", "b", "c", "d")
         result = self.client.execute_command("FLASH.RPOP", "rpoc", "2")

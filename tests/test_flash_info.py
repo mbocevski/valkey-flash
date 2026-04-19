@@ -20,7 +20,6 @@ EXPECTED_FIELDS = [
 
 
 class TestFlashInfo(ValkeyFlashTestCase):
-
     def _info(self):
         return self.client.info("flash")
 
@@ -103,7 +102,9 @@ class TestFlashInfo(ValkeyFlashTestCase):
 
     def test_numeric_fields_are_non_negative(self):
         info = self._info()
-        numeric_fields = [f for f in EXPECTED_FIELDS if f != "flash_module_state" and f != "flash_cache_hit_ratio"]
+        numeric_fields = [
+            f for f in EXPECTED_FIELDS if f not in ("flash_module_state", "flash_cache_hit_ratio")
+        ]
         for field in numeric_fields:
             assert info[field] >= 0, f"field {field} is negative: {info[field]}"
 

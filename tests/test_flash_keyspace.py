@@ -4,7 +4,6 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
-
     def _setup_pubsub(self):
         self.client.execute_command("CONFIG", "SET", "notify-keyspace-events", "KEA")
         sub_client = self.server.get_new_client()
@@ -35,12 +34,12 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
         keyevent_ch = f"__keyevent@0__:{event}".encode()
         key_b = key.encode()
         event_b = event.encode()
-        assert any(
-            m["channel"] == keyspace_ch and m["data"] == event_b for m in messages
-        ), f"No keyspace message for event={event} key={key}; got {messages}"
-        assert any(
-            m["channel"] == keyevent_ch and m["data"] == key_b for m in messages
-        ), f"No keyevent message for event={event} key={key}; got {messages}"
+        assert any(m["channel"] == keyspace_ch and m["data"] == event_b for m in messages), (
+            f"No keyspace message for event={event} key={key}; got {messages}"
+        )
+        assert any(m["channel"] == keyevent_ch and m["data"] == key_b for m in messages), (
+            f"No keyevent message for event={event} key={key}; got {messages}"
+        )
 
     def test_flash_set_emits_keyspace_event(self):
         ps = self._setup_pubsub()
@@ -155,9 +154,7 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
     def test_list_lmove_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lmv_src", "a", "b")
         ps = self._setup_pubsub()
-        self.client.execute_command(
-            "FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT"
-        )
+        self.client.execute_command("FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT")
         messages = self._collect_messages(ps, 4)
         self._assert_event(messages, "flash.list.move", "ks_lmv_src")
         self._assert_event(messages, "flash.list.move", "ks_lmv_dst")

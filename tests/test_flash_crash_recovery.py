@@ -1,22 +1,26 @@
 import os
+import pathlib
 import re
 import signal
 import struct
-import pathlib
 import threading
-import time
-import pytest
-from valkeytestframework.util.waiters import wait_for_equal
-from valkey_flash_test_case import ValkeyFlashTestCase
 
+import pytest
+from valkey_flash_test_case import ValkeyFlashTestCase
+from valkeytestframework.util.waiters import wait_for_equal
+
+try:
+    import crc32c as _crc32c_lib
+except ImportError:
+    _crc32c_lib = None
 
 # ── WAL layout constants ──────────────────────────────────────────────────────
 
-WAL_MAGIC = 0x5753_4C46        # "FLSW" LE
+WAL_MAGIC = 0x5753_4C46  # "FLSW" LE
 WAL_VERSION = 1
-HEADER_SIZE = 16               # [u32 magic][u8 version][11 pad]
-PUT_PAYLOAD_SIZE = 26          # OP_VER(1)+OP_PUT(1)+key_hash(8)+offset(8)+value_hash(8)
-FRAME_OVERHEAD = 8             # [u32 len][u32 crc]
+HEADER_SIZE = 16  # [u32 magic][u8 version][11 pad]
+PUT_PAYLOAD_SIZE = 26  # OP_VER(1)+OP_PUT(1)+key_hash(8)+offset(8)+value_hash(8)
+FRAME_OVERHEAD = 8  # [u32 len][u32 crc]
 PUT_FRAME_SIZE = FRAME_OVERHEAD + PUT_PAYLOAD_SIZE  # 34 bytes per Put record
 
 OP_VER = 1
@@ -33,10 +37,9 @@ def _fresh_wal_header() -> bytes:
 
 
 def _crc32c(data: bytes) -> int:
-    try:
-        import crc32c as _lib
-        return _lib.crc32c(data)
-    except ImportError:
+    if _crc32c_lib is not None:
+        return _crc32c_lib.crc32c(data)
+    else:
         crc = 0xFFFF_FFFF
         table = []
         for i in range(256):
@@ -51,20 +54,21 @@ def _crc32c(data: bytes) -> int:
 
 # ── Restart helpers ───────────────────────────────────────────────────────────
 
+
 def _bgsave_and_restart(server):
     """BGSAVE + restart: advances the WAL cursor past all current records."""
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _crash_restart(server):
     """Restart without BGSAVE (simulates crash): replays WAL from saved cursor."""
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _sigkill(server):
@@ -84,6 +88,7 @@ def _recovery_count(server) -> int:
 
 # ── Base class that customises the sync mode ──────────────────────────────────
 
+
 class _CrashTestBase(ValkeyFlashTestCase):
     """ValkeyFlashTestCase that passes flash.sync=<_sync_mode> at server startup."""
 
@@ -97,9 +102,7 @@ class _CrashTestBase(ValkeyFlashTestCase):
         )
         server_path = os.path.join(binaries_dir, "valkey-server")
         existing = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = (
-            f"{binaries_dir}:{existing}" if existing else binaries_dir
-        )
+        os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         args = {
             "enable-debug-command": "yes",
             "loadmodule": f"{os.getenv('MODULE_PATH')} flash.sync {self._sync_mode}",
@@ -110,6 +113,7 @@ class _CrashTestBase(ValkeyFlashTestCase):
 
 
 # ── Scenarios 1 & 2: always mode ─────────────────────────────────────────────
+
 
 class TestFlashCrashAlwaysMode(_CrashTestBase):
     """Scenarios 1 & 2: flash.sync=always — WAL is fsynced before reply."""
@@ -136,7 +140,7 @@ class TestFlashCrashAlwaysMode(_CrashTestBase):
 
         t = threading.Thread(target=do_set, daemon=True)
         t.start()
-        _sigkill(self.server)   # kill before reply (racy by design)
+        _sigkill(self.server)  # kill before reply (racy by design)
         t.join(timeout=2)
 
         _crash_restart(self.server)
@@ -165,6 +169,7 @@ class TestFlashCrashAlwaysMode(_CrashTestBase):
 
 # ── Scenario 3: everysec mode ─────────────────────────────────────────────────
 
+
 class TestFlashCrashEverysecMode(_CrashTestBase):
     """Scenario 3: flash.sync=everysec — fsync happens in background every second."""
 
@@ -191,6 +196,7 @@ class TestFlashCrashEverysecMode(_CrashTestBase):
 
 # ── Scenario 4: no-sync mode ──────────────────────────────────────────────────
 
+
 class TestFlashCrashNoSyncMode(_CrashTestBase):
     """Scenario 4: flash.sync=no — writes are never fsynced proactively."""
 
@@ -214,10 +220,11 @@ class TestFlashCrashNoSyncMode(_CrashTestBase):
 
 # ── Scenarios 5–9: WAL file manipulation ─────────────────────────────────────
 
+
 class TestFlashWalCorruption(_CrashTestBase):
     """Scenarios 5–9: inject WAL corruption, verify recovery truncates and continues."""
 
-    _sync_mode = "always"   # always mode: records definitely reach disk before kill
+    _sync_mode = "always"  # always mode: records definitely reach disk before kill
 
     @pytest.mark.crash_recovery
     def test_torn_wal_frame_truncated_prior_records_applied(self):
@@ -272,7 +279,7 @@ class TestFlashWalCorruption(_CrashTestBase):
             f.seek(rec2_crc_offset)
             original = f.read(1)
             f.seek(rec2_crc_offset)
-            f.write(bytes([original[0] ^ 0xFF]))   # flip all bits → CRC mismatch
+            f.write(bytes([original[0] ^ 0xFF]))  # flip all bits → CRC mismatch
 
         _crash_restart(self.server)
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
@@ -297,7 +304,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         # remove_rdb=True deletes the RDB → no aux on next load → cursor = 0
         self.server.restart(remove_rdb=True, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+        wait_for_equal(self.server.is_rdb_done_loading, True)
 
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
         assert _recovery_count(self.server) == 3
@@ -310,7 +317,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         (header only) and seeks past EOF — no records found. Module continues.
         """
         self.client.execute_command("FLASH.SET", "k1", "v1")
-        _bgsave_and_restart(self.server)   # saves aux with cursor past k1's record
+        _bgsave_and_restart(self.server)  # saves aux with cursor past k1's record
 
         _sigkill(self.server)
 
@@ -340,9 +347,7 @@ class TestFlashWalCorruption(_CrashTestBase):
         # The module load failure causes Valkey to exit — start() will timeout.
         log_path = os.path.join(self.server.cwd, self.server.args["logfile"])
         with pytest.raises((RuntimeError, Exception)):
-            self.server.restart(
-                remove_rdb=False, remove_nodes_conf=False, connect_client=True
-            )
+            self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
 
         # Log written by the failed startup contains the recovery error.
         with open(log_path) as f:
@@ -353,7 +358,5 @@ class TestFlashWalCorruption(_CrashTestBase):
         # Restore valid WAL so the test framework can tear down cleanly.
         with open(wal, "wb") as f:
             f.write(_fresh_wal_header())
-        self.server.restart(
-            remove_rdb=False, remove_nodes_conf=False, connect_client=True
-        )
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()

@@ -1,11 +1,7 @@
-import pytest
-from valkey import ResponseError
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestFlashCopyString(ValkeyFlashTestCase):
-
     def test_copy_hot_string_dst_has_correct_value(self):
         client = self.client
         client.execute_command("FLASH.SET", "src_str", "hello_world")
@@ -73,7 +69,6 @@ class TestFlashCopyString(ValkeyFlashTestCase):
 
 
 class TestFlashCopyHash(ValkeyFlashTestCase):
-
     def test_copy_hot_hash_dst_has_correct_fields(self):
         client = self.client
         client.execute_command("FLASH.HSET", "src_hash", "f1", "v1", "f2", "v2")
@@ -119,7 +114,6 @@ class TestFlashCopyHash(ValkeyFlashTestCase):
 
 
 class TestFlashCopyList(ValkeyFlashTestCase):
-
     def test_copy_hot_list_dst_has_correct_elements(self):
         client = self.client
         client.execute_command("FLASH.RPUSH", "src_list", "a", "b", "c")
@@ -163,7 +157,6 @@ class TestFlashCopyList(ValkeyFlashTestCase):
 
 
 class TestFlashCopyZSet(ValkeyFlashTestCase):
-
     def test_copy_hot_zset_dst_has_correct_members(self):
         client = self.client
         client.execute_command("FLASH.ZADD", "src_zset", "1.0", "a", "2.0", "b")
@@ -208,7 +201,6 @@ class TestFlashCopyZSet(ValkeyFlashTestCase):
 
 
 class TestFlashCopyTTL(ValkeyFlashTestCase):
-
     def test_list_copy_preserves_ttl(self):
         client = self.client
         client.execute_command("FLASH.RPUSH", "ttlcpy_lsrc", "a", "b", "c")
@@ -229,12 +221,9 @@ class TestFlashCopyTTL(ValkeyFlashTestCase):
 
 
 class TestFlashCopyColdTier(ValkeyFlashTestCase):
-
     def test_list_copy_from_cold_tier(self):
         client = self.client
-        client.execute_command(
-            "FLASH.RPUSH", "cold_lsrc", *[f"v{i}" for i in range(100)]
-        )
+        client.execute_command("FLASH.RPUSH", "cold_lsrc", *[f"v{i}" for i in range(100)])
         client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lsrc")
         result = client.execute_command("COPY", "cold_lsrc", "cold_ldst")
         assert result == 1

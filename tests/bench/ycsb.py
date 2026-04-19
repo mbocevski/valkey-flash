@@ -37,24 +37,23 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
-from typing import List, Optional
+from contextlib import contextmanager, suppress
 
 import valkey
 
 # ── Parameters ────────────────────────────────────────────────────────────────
 
-BASE_CACHE_BYTES = 16 * 1024 * 1024   # flash.cache-size-bytes for every combo
-VALUE_BYTES = 1024                     # 1 KiB per key
+BASE_CACHE_BYTES = 16 * 1024 * 1024  # flash.cache-size-bytes for every combo
+VALUE_BYTES = 1024  # 1 KiB per key
 FLASH_CAPACITY_BYTES = 512 * 1024 * 1024  # 512 MiB flash file per combo
 
-OPS = 5_000    # measurement ops per combo
-WARMUP = 200   # warmup ops per combo (not measured)
+OPS = 5_000  # measurement ops per combo
+WARMUP = 200  # warmup ops per combo (not measured)
 
-RATIOS = [0.25, 1.0, 4.0, 16.0]   # working-set / cache size ratios
-ZIPF_THETA = 0.99                  # YCSB standard skew parameter
+RATIOS = [0.25, 1.0, 4.0, 16.0]  # working-set / cache size ratios
+ZIPF_THETA = 0.99  # YCSB standard skew parameter
 
-REGRESSION_WARN_PCT = 20           # emit ::warning:: on > 20% p99 regression
+REGRESSION_WARN_PCT = 20  # emit ::warning:: on > 20% p99 regression
 
 REPORT_FILE = "ycsb-report.json"
 IN_CI = "GITHUB_ACTIONS" in os.environ
@@ -70,6 +69,7 @@ WORKLOADS = [
 
 # ── Zipfian key generator (matches YCSB-core ZipfianGenerator) ────────────────
 
+
 class ZipfianGenerator:
     """
     Zipfian distribution over [0, n_items).
@@ -84,10 +84,7 @@ class ZipfianGenerator:
         self.alpha = 1.0 / (1.0 - theta)
         self.zeta2 = sum(math.pow(i, -theta) for i in range(1, 3))
         self.zetan = sum(math.pow(i, -theta) for i in range(1, n_items + 1))
-        self.eta = (
-            (1.0 - math.pow(2.0 / n_items, 1.0 - theta))
-            / (1.0 - self.zeta2 / self.zetan)
-        )
+        self.eta = (1.0 - math.pow(2.0 / n_items, 1.0 - theta)) / (1.0 - self.zeta2 / self.zetan)
 
     def next(self, rng: random.Random) -> int:
         u = rng.random()
@@ -96,22 +93,20 @@ class ZipfianGenerator:
             return 0
         if uz < 1.0 + math.pow(0.5, self.theta):
             return 1
-        return (
-            int(self.n * math.pow(self.eta * u - self.eta + 1.0, self.alpha))
-            % self.n
-        )
+        return int(self.n * math.pow(self.eta * u - self.eta + 1.0, self.alpha)) % self.n
 
 
 # ── Statistics ────────────────────────────────────────────────────────────────
 
-def percentile(sorted_vals: List[float], p: float) -> float:
+
+def percentile(sorted_vals: list[float], p: float) -> float:
     if not sorted_vals:
         return 0.0
     idx = max(0, int(len(sorted_vals) * p / 100.0) - 1)
     return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
 
-def compute_stats(times_us: List[float]) -> dict:
+def compute_stats(times_us: list[float]) -> dict:
     s = sorted(times_us)
     total_s = sum(times_us) / 1_000_000
     return {
@@ -124,6 +119,7 @@ def compute_stats(times_us: List[float]) -> dict:
 
 
 # ── Server lifecycle ──────────────────────────────────────────────────────────
+
 
 def find_free_port() -> int:
     with socket.socket() as s:
@@ -167,23 +163,29 @@ def running_server(module_path: str, server_bin: str):
 
     cmd = [
         server_bin,
-        "--port", str(port),
-        "--daemonize", "no",
-        "--loadmodule", module_path,
-        "--flash.path", flash_path,
-        "--flash.capacity-bytes", str(FLASH_CAPACITY_BYTES),
-        "--flash.cache-size-bytes", str(BASE_CACHE_BYTES),
-        "--save", "",
-        "--loglevel", "warning",
+        "--port",
+        str(port),
+        "--daemonize",
+        "no",
+        "--loadmodule",
+        module_path,
+        "--flash.path",
+        flash_path,
+        "--flash.capacity-bytes",
+        str(FLASH_CAPACITY_BYTES),
+        "--flash.cache-size-bytes",
+        str(BASE_CACHE_BYTES),
+        "--save",
+        "",
+        "--loglevel",
+        "warning",
     ]
 
     env = os.environ.copy()
     existing_ld = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing_ld}" if existing_ld else binaries_dir
 
-    proc = subprocess.Popen(
-        cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         if not wait_for_server(port):
             proc.terminate()
@@ -197,13 +199,12 @@ def running_server(module_path: str, server_bin: str):
         except subprocess.TimeoutExpired:
             proc.kill()
         for p in (flash_path, flash_path + ".wal"):
-            try:
+            with suppress(OSError):
                 os.unlink(p)
-            except OSError:
-                pass
 
 
 # ── Benchmark core ────────────────────────────────────────────────────────────
+
 
 def run_combo(
     workload_name: str,
@@ -251,8 +252,8 @@ def run_combo(
                 client.execute_command("FLASH.SET", f"ycsb:{zipf.next(rng)}", value)
 
         # Measurement
-        read_times: List[float] = []
-        write_times: List[float] = []
+        read_times: list[float] = []
+        write_times: list[float] = []
         misses = 0
 
         for _ in range(OPS):
@@ -290,6 +291,7 @@ def run_combo(
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
+
 
 def annotate(level: str, msg: str) -> None:
     if IN_CI:
@@ -339,7 +341,7 @@ def write_step_summary(results: dict) -> None:
             )
 
 
-def compare_with_baseline(current: dict, baseline: dict) -> List[str]:
+def compare_with_baseline(current: dict, baseline: dict) -> list[str]:
     warnings = []
     for key, curr in current.items():
         if key.startswith("_") or not isinstance(curr, dict) or "p99_us" not in curr:
@@ -358,29 +360,33 @@ def compare_with_baseline(current: dict, baseline: dict) -> List[str]:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     parser.add_argument(
-        "--baseline", metavar="FILE",
+        "--baseline",
+        metavar="FILE",
         help="Previous ycsb-report.json for p99 regression comparison",
     )
     args = parser.parse_args()
 
     server_version = os.environ.get("SERVER_VERSION", "unstable")
     module_path = os.path.realpath(
-        os.environ.get("MODULE_PATH",
-                       os.path.join("target", "release", "libvalkey_flash.so"))
+        os.environ.get("MODULE_PATH", os.path.join("target", "release", "libvalkey_flash.so"))
     )
     server_bin = os.path.realpath(
-        os.environ.get("SERVER_BIN",
-                       os.path.join("tests", "build", "binaries",
-                                    server_version, "valkey-server"))
+        os.environ.get(
+            "SERVER_BIN",
+            os.path.join("tests", "build", "binaries", server_version, "valkey-server"),
+        )
     )
 
     total_combos = len(WORKLOADS) * len(RATIOS)
     print(f"valkey-flash YCSB v2  module={module_path}")
     print(f"  {total_combos} combos ({len(WORKLOADS)} workloads × {len(RATIOS)} ratios)")
-    print(f"  ops/combo={OPS:,}  warmup={WARMUP}  cache={BASE_CACHE_BYTES//2**20}MiB  value={VALUE_BYTES}B")
+    print(
+        f"  ops/combo={OPS:,}  warmup={WARMUP}  cache={BASE_CACHE_BYTES // 2**20}MiB  value={VALUE_BYTES}B"
+    )
 
     results: dict = {}
     done = 0
@@ -396,8 +402,13 @@ def main() -> None:
             )
 
             stats = run_combo(
-                wl_name, read_frac, write_frac, insert_frac, ratio,
-                module_path, server_bin,
+                wl_name,
+                read_frac,
+                write_frac,
+                insert_frac,
+                ratio,
+                module_path,
+                server_bin,
             )
             results[combo_key] = stats
 
@@ -407,7 +418,7 @@ def main() -> None:
                 f" p99={stats['p99_us']:.0f}µs"
                 f" p999={stats['p999_us']:.0f}µs"
                 f" ops/s={stats['throughput_ops_s']:.0f}"
-                f" miss_est={stats['miss_ratio_est']*100:.0f}%",
+                f" miss_est={stats['miss_ratio_est'] * 100:.0f}%",
             )
 
     results["_meta"] = {

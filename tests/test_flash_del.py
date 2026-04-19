@@ -1,11 +1,12 @@
 import os
+
 import pytest
 from valkey import ResponseError
-from valkeytestframework.valkey_test_case import ReplicationTestCase
 from valkey_flash_test_case import ValkeyFlashTestCase
-
+from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 # ── Helper ────────────────────────────────────────────────────────────────────
+
 
 def _binaries_dir():
     return (
@@ -21,9 +22,7 @@ def _server_path():
 def _prepend_lib_path():
     binaries_dir = _binaries_dir()
     existing = os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LD_LIBRARY_PATH"] = (
-        f"{binaries_dir}:{existing}" if existing else binaries_dir
-    )
+    os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
 
 
 def _server_args():
@@ -35,8 +34,8 @@ def _server_args():
 
 # ── Basic FLASH.DEL tests ─────────────────────────────────────────────────────
 
-class TestFlashDel(ValkeyFlashTestCase):
 
+class TestFlashDel(ValkeyFlashTestCase):
     def test_del_existing_key_returns_one(self):
         self.client.execute_command("FLASH.SET", "delkey", "val")
         result = self.client.execute_command("FLASH.DEL", "delkey")
@@ -71,7 +70,7 @@ class TestFlashDel(ValkeyFlashTestCase):
     def test_no_args_rejected(self):
         try:
             self.client.execute_command("FLASH.DEL")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError:
             pass
 
@@ -81,7 +80,7 @@ class TestFlashDel(ValkeyFlashTestCase):
         self.client.execute_command("SET", "nativekey", "hello")
         try:
             self.client.execute_command("FLASH.DEL", "nativekey")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
 
@@ -92,7 +91,7 @@ class TestFlashDel(ValkeyFlashTestCase):
         self.client.execute_command("SET", "native", "n")
         try:
             self.client.execute_command("FLASH.DEL", "safe", "native")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
         # k1 must still exist — no partial deletion.
@@ -123,15 +122,13 @@ class TestFlashDel(ValkeyFlashTestCase):
         def del_fn():
             self.client.execute_command("FLASH.DEL", *keys)
 
-        self.verify_nonblocking_during(
-            self.client, del_fn, probe_client, "PING"
-        )
+        self.verify_nonblocking_during(self.client, del_fn, probe_client, "PING")
 
 
 # ── Replication test ──────────────────────────────────────────────────────────
 
-class TestFlashDelReplication(ReplicationTestCase):
 
+class TestFlashDelReplication(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()

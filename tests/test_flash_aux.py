@@ -1,16 +1,15 @@
-import os
-from valkeytestframework.util.waiters import wait_for_equal
 from valkey_flash_test_case import ValkeyFlashTestCase
-
+from valkeytestframework.util.waiters import wait_for_equal
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _bgsave_and_restart(server):
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _aux_info(client):
@@ -19,13 +18,13 @@ def _aux_info(client):
     if not raw:
         return {}
     it = iter(raw)
-    return {k: v for k, v in zip(it, it)}
+    return {k: v for k, v in zip(it, it, strict=False)}
 
 
 # ── Aux state tests ───────────────────────────────────────────────────────────
 
-class TestFlashAux(ValkeyFlashTestCase):
 
+class TestFlashAux(ValkeyFlashTestCase):
     def test_aux_info_empty_before_first_save(self):
         # No BGSAVE yet — LOADED_AUX_STATE is None on a fresh start.
         info = _aux_info(self.client)
@@ -75,9 +74,7 @@ class TestFlashAux(ValkeyFlashTestCase):
 
     def test_log_message_aux_load_before(self):
         _bgsave_and_restart(self.server)
-        self.server.verify_string_in_logfile(
-            "flash: aux_load BEFORE: loaded 0 tiering entries"
-        )
+        self.server.verify_string_in_logfile("flash: aux_load BEFORE: loaded 0 tiering entries")
 
     def test_log_message_aux_load_after(self):
         _bgsave_and_restart(self.server)

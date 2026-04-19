@@ -1,11 +1,13 @@
 import os
+import time
+
 import pytest
 from valkey import ResponseError
-from valkeytestframework.valkey_test_case import ReplicationTestCase
 from valkey_flash_test_case import ValkeyFlashTestCase
-
+from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 # ── Helper ────────────────────────────────────────────────────────────────────
+
 
 def _binaries_dir():
     return (
@@ -28,15 +30,13 @@ def _server_args():
 def _prepend_lib_path():
     binaries_dir = _binaries_dir()
     existing = os.environ.get("LD_LIBRARY_PATH", "")
-    os.environ["LD_LIBRARY_PATH"] = (
-        f"{binaries_dir}:{existing}" if existing else binaries_dir
-    )
+    os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
 
 
 # ── Basic FLASH.SET tests ─────────────────────────────────────────────────────
 
-class TestFlashSet(ValkeyFlashTestCase):
 
+class TestFlashSet(ValkeyFlashTestCase):
     def test_set_returns_ok(self):
         result = self.client.execute_command("FLASH.SET mykey hello")
         assert result == b"OK"
@@ -66,49 +66,49 @@ class TestFlashSet(ValkeyFlashTestCase):
     def test_too_few_args_rejected(self):
         try:
             self.client.execute_command("FLASH.SET onlykey")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError:
             pass
 
     def test_no_args_rejected(self):
         try:
             self.client.execute_command("FLASH.SET")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError:
             pass
 
     def test_unknown_option_rejected(self):
         try:
             self.client.execute_command("FLASH.SET k v KEEPTTL")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError as e:
             assert "syntax error" in str(e).lower()
 
     def test_nx_and_xx_together_rejected(self):
         try:
             self.client.execute_command("FLASH.SET k v NX XX")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError as e:
             assert "compatible" in str(e).lower() or "syntax" in str(e).lower()
 
     def test_ex_zero_rejected(self):
         try:
             self.client.execute_command("FLASH.SET k v EX 0")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError as e:
             assert "expire" in str(e).lower() or "invalid" in str(e).lower()
 
     def test_ex_negative_rejected(self):
         try:
             self.client.execute_command("FLASH.SET k v EX -5")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError:
             pass
 
     def test_px_missing_value_rejected(self):
         try:
             self.client.execute_command("FLASH.SET k v PX")
-            assert False, "Expected error"
+            pytest.fail("Expected error")
         except ResponseError as e:
             assert "syntax error" in str(e).lower()
 
@@ -152,7 +152,6 @@ class TestFlashSet(ValkeyFlashTestCase):
         self.wait_for_key_expiry(self.client, "expkey", timeout_s=3)
 
     def test_no_ttl_key_persists(self):
-        import time
         self.client.execute_command("FLASH.SET persist val")
         time.sleep(0.2)
         assert self.client.execute_command("EXISTS persist") == 1
@@ -163,7 +162,7 @@ class TestFlashSet(ValkeyFlashTestCase):
         self.client.execute_command("SET nativekey hello")
         try:
             self.client.execute_command("FLASH.SET nativekey world")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
 
@@ -171,15 +170,15 @@ class TestFlashSet(ValkeyFlashTestCase):
         self.client.execute_command("RPUSH listkey a b c")
         try:
             self.client.execute_command("FLASH.SET listkey val")
-            assert False, "Expected WRONGTYPE error"
+            pytest.fail("Expected WRONGTYPE error")
         except ResponseError as e:
             assert "WRONGTYPE" in str(e)
 
 
 # ── Replication test ──────────────────────────────────────────────────────────
 
-class TestFlashSetReplication(ReplicationTestCase):
 
+class TestFlashSetReplication(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()

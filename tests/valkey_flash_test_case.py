@@ -1,13 +1,13 @@
 import os
-import time
 import threading
+import time
+
 import pytest
-from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkey import ResponseError
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 
 class ValkeyFlashTestCase(ValkeyTestCase):
-
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         binaries_dir = (
@@ -18,9 +18,7 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # Ensure libvalkeylua.so (present in newer Valkey unstable builds) is
         # findable by the server process when it lives next to the binary.
         existing = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = (
-            f"{binaries_dir}:{existing}" if existing else binaries_dir
-        )
+        os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         args = {
             "enable-debug-command": "yes",
             "loadmodule": os.getenv("MODULE_PATH"),
@@ -32,7 +30,7 @@ class ValkeyFlashTestCase(ValkeyTestCase):
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
             client.execute_command(cmd)
-            assert False, f"Expected ResponseError for: {cmd}"
+            pytest.fail(f"Expected ResponseError for: {cmd}")
         except ResponseError as e:
             assert str(e) == expected_err_reply, (
                 f"Actual error '{str(e)}' != expected '{expected_err_reply}'"
@@ -106,6 +104,4 @@ class ValkeyFlashTestCase(ValkeyTestCase):
             if client.execute_command(f"EXISTS {key}") == 0:
                 return
             time.sleep(0.05)
-        raise AssertionError(
-            f"Key '{key}' did not expire within {timeout_s}s"
-        )
+        raise AssertionError(f"Key '{key}' did not expire within {timeout_s}s")

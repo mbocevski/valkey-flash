@@ -13,8 +13,8 @@ import time
 
 import pytest
 import valkey
-from valkey import ValkeyCluster
 from python_on_whales import DockerClient
+from valkey import ValkeyCluster
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SINGLE_COMPOSE = os.path.join(_REPO_ROOT, "docker", "compose.single.yml")
@@ -41,9 +41,7 @@ def _all_healthy(docker: DockerClient, services: list, timeout: float = 90) -> N
         time.sleep(2)
     # Collect logs from unhealthy containers for the failure message.
     logs = docker.compose.logs()
-    raise RuntimeError(
-        f"Services {services} did not become healthy within {timeout}s.\n{logs}"
-    )
+    raise RuntimeError(f"Services {services} did not become healthy within {timeout}s.\n{logs}")
 
 
 def _connect_cluster_with_retry(host: str, port: int, timeout: float = 30) -> ValkeyCluster:
@@ -64,14 +62,11 @@ def _wait_cluster_init(docker: DockerClient, timeout: float = 120) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         for c in docker.compose.ps(all=True):
-            if "cluster-init" in c.name:
-                if c.state.status == "exited":
-                    if c.state.exit_code == 0:
-                        return
-                    logs = docker.compose.logs()
-                    raise RuntimeError(
-                        f"cluster-init exited with code {c.state.exit_code}.\n{logs}"
-                    )
+            if "cluster-init" in c.name and c.state.status == "exited":
+                if c.state.exit_code == 0:
+                    return
+                logs = docker.compose.logs()
+                raise RuntimeError(f"cluster-init exited with code {c.state.exit_code}.\n{logs}")
         time.sleep(2)
     logs = docker.compose.logs()
     raise RuntimeError(f"cluster-init did not complete within {timeout}s.\n{logs}")
@@ -98,7 +93,7 @@ def docker_cluster():
         pytest.skip("set USE_DOCKER=1 to run Docker-based tests")
 
     _PRIMARIES = ["flash-primary-1", "flash-primary-2", "flash-primary-3"]
-    _REPLICAS  = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
+    _REPLICAS = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
 
     docker = DockerClient(compose_files=[_CLUSTER_COMPOSE], compose_project_name="vf-cluster")
     docker.compose.up(detach=True, build=True)
@@ -122,7 +117,7 @@ def docker_cluster_replica_tier():
         pytest.skip("set USE_DOCKER=1 to run Docker-based tests")
 
     _PRIMARIES = ["flash-primary-1", "flash-primary-2", "flash-primary-3"]
-    _REPLICAS  = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
+    _REPLICAS = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
 
     docker = DockerClient(
         compose_files=[_CLUSTER_COMPOSE, _REPLICA_TIER_COMPOSE],

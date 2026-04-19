@@ -30,8 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
-from typing import Dict, List, Optional
+from contextlib import contextmanager, suppress
 
 import valkey
 
@@ -41,25 +40,26 @@ OPS = 10_000
 WARMUP = 200
 VALUE_SIZES_BYTES = [64, 1_024, 16_384, 131_072]
 
-HOT_CACHE_BYTES = 32 * 1024 * 1024   # 32 MiB
-COLD_CACHE_BYTES = 4 * 1024 * 1024    # 4 MiB — working set will be 4×
-COLD_VALUE_BYTES = 4 * 1024           # 4 KiB values for cold scenario
+HOT_CACHE_BYTES = 32 * 1024 * 1024  # 32 MiB
+COLD_CACHE_BYTES = 4 * 1024 * 1024  # 4 MiB — working set will be 4×
+COLD_VALUE_BYTES = 4 * 1024  # 4 KiB values for cold scenario
 
 # CI regression thresholds (µs, p99).
 # These are intentionally generous for the first CI run; calibrate from artifacts.
-THRESHOLDS: Dict[str, float] = {
-    "flash_set_64b_p99":   5_000,
-    "flash_set_1kb_p99":   10_000,
-    "flash_set_16kb_p99":  50_000,
+THRESHOLDS: dict[str, float] = {
+    "flash_set_64b_p99": 5_000,
+    "flash_set_1kb_p99": 10_000,
+    "flash_set_16kb_p99": 50_000,
     "flash_set_128kb_p99": 200_000,
-    "flash_get_hot_p99":   5_000,
-    "flash_get_cold_p99":  500_000,
+    "flash_get_hot_p99": 5_000,
+    "flash_get_cold_p99": 500_000,
 }
 
 REPORT_FILE = "bench-report.json"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def find_free_port() -> int:
     with socket.socket() as s:
@@ -78,14 +78,14 @@ def wait_for_server(port: int, timeout: float = 15.0) -> bool:
     return False
 
 
-def pct(sorted_vals: List[float], p: float) -> float:
+def pct(sorted_vals: list[float], p: float) -> float:
     if not sorted_vals:
         return 0.0
     idx = max(0, int(len(sorted_vals) * p / 100.0) - 1)
     return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
 
-def compute_stats(times_us: List[float]) -> dict:
+def compute_stats(times_us: list[float]) -> dict:
     s = sorted(times_us)
     total_s = sum(times_us) / 1_000_000
     return {
@@ -98,20 +98,31 @@ def compute_stats(times_us: List[float]) -> dict:
 
 
 @contextmanager
-def running_server(module_path: str, server_bin: str, server_version: str,
-                   flash_path: str, extra_args: Optional[List[str]] = None):
+def running_server(
+    module_path: str,
+    server_bin: str,
+    server_version: str,
+    flash_path: str,
+    extra_args: list[str] | None = None,
+):
     """Start valkey-server with the flash module; yield a connected client."""
     port = find_free_port()
     binaries_dir = os.path.dirname(server_bin)
 
     cmd = [
         server_bin,
-        "--port", str(port),
-        "--daemonize", "no",
-        "--loadmodule", module_path,
-        "--flash.path", flash_path,
-        "--save", "",
-        "--loglevel", "warning",
+        "--port",
+        str(port),
+        "--daemonize",
+        "no",
+        "--loadmodule",
+        module_path,
+        "--flash.path",
+        flash_path,
+        "--save",
+        "",
+        "--loglevel",
+        "warning",
     ]
     if extra_args:
         cmd.extend(extra_args)
@@ -149,8 +160,8 @@ def measure_get(client, cmd: str, key: str) -> float:
 
 # ── Scenario 1: FLASH.SET vs SET ─────────────────────────────────────────────
 
-def scenario_flash_set_vs_set(module_path: str, server_bin: str,
-                               server_version: str) -> dict:
+
+def scenario_flash_set_vs_set(module_path: str, server_bin: str, server_version: str) -> dict:
     results = {}
     with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
         flash_path = tf.name
@@ -178,17 +189,15 @@ def scenario_flash_set_vs_set(module_path: str, server_bin: str,
                 results[f"native_set_{label}"] = compute_stats(set_times)
     finally:
         for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
-            try:
+            with suppress(OSError):
                 os.unlink(p)
-            except OSError:
-                pass
     return results
 
 
 # ── Scenario 2: FLASH.GET hot-path ───────────────────────────────────────────
 
-def scenario_flash_get_hot(module_path: str, server_bin: str,
-                            server_version: str) -> dict:
+
+def scenario_flash_get_hot(module_path: str, server_bin: str, server_version: str) -> dict:
     n_keys = 500
     value = b"h" * 1_024  # 1 KiB values
 
@@ -196,8 +205,9 @@ def scenario_flash_get_hot(module_path: str, server_bin: str,
         flash_path = tf.name
     try:
         extra = ["--flash.cache-size-bytes", str(HOT_CACHE_BYTES)]
-        with running_server(module_path, server_bin, server_version, flash_path,
-                            extra_args=extra) as client:
+        with running_server(
+            module_path, server_bin, server_version, flash_path, extra_args=extra
+        ) as client:
             # Populate working set (fits in 32 MiB cache: 500 × 1 KiB = 500 KiB)
             for i in range(n_keys):
                 client.execute_command("FLASH.SET", f"hot:{i}", value)
@@ -212,17 +222,15 @@ def scenario_flash_get_hot(module_path: str, server_bin: str,
                 times.append(measure_get(client, "FLASH.GET", f"hot:{i % n_keys}"))
     finally:
         for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
-            try:
+            with suppress(OSError):
                 os.unlink(p)
-            except OSError:
-                pass
     return {"flash_get_hot": compute_stats(times)}
 
 
 # ── Scenario 3: FLASH.GET cold-path ──────────────────────────────────────────
 
-def scenario_flash_get_cold(module_path: str, server_bin: str,
-                             server_version: str) -> dict:
+
+def scenario_flash_get_cold(module_path: str, server_bin: str, server_version: str) -> dict:
     # 4× cache size worth of data: 4 MiB cache, 4 KiB values → 4096 keys = 16 MiB
     n_keys = int(COLD_CACHE_BYTES * 4 / COLD_VALUE_BYTES)
     value = b"c" * COLD_VALUE_BYTES
@@ -231,11 +239,14 @@ def scenario_flash_get_cold(module_path: str, server_bin: str,
         flash_path = tf.name
     try:
         extra = [
-            "--flash.cache-size-bytes", str(COLD_CACHE_BYTES),
-            "--flash.capacity-bytes", str(128 * 1024 * 1024),  # 128 MiB
+            "--flash.cache-size-bytes",
+            str(COLD_CACHE_BYTES),
+            "--flash.capacity-bytes",
+            str(128 * 1024 * 1024),  # 128 MiB
         ]
-        with running_server(module_path, server_bin, server_version, flash_path,
-                            extra_args=extra) as client:
+        with running_server(
+            module_path, server_bin, server_version, flash_path, extra_args=extra
+        ) as client:
             # Populate — writes to both cache and NVMe
             for i in range(n_keys):
                 client.execute_command("FLASH.SET", f"cold:{i}", value)
@@ -248,14 +259,13 @@ def scenario_flash_get_cold(module_path: str, server_bin: str,
                 times.append(measure_get(client, "FLASH.GET", f"cold:{key_idx}"))
     finally:
         for p in (flash_path, os.path.splitext(flash_path)[0] + ".wal"):
-            try:
+            with suppress(OSError):
                 os.unlink(p)
-            except OSError:
-                pass
     return {"flash_get_cold": compute_stats(times)}
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
+
 
 def _size_label(n: int) -> str:
     if n < 1024:
@@ -277,7 +287,7 @@ def print_table(results: dict) -> None:
     print()
 
 
-def check_thresholds(results: dict) -> List[str]:
+def check_thresholds(results: dict) -> list[str]:
     failures = []
     for scenario_key, threshold_us in THRESHOLDS.items():
         # e.g. "flash_set_64b_p99" → scenario="flash_set_64b", metric="p99_us"
@@ -298,6 +308,7 @@ def check_thresholds(results: dict) -> List[str]:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     server_version = os.environ.get("SERVER_VERSION", "unstable")
     module_path = os.environ.get(
@@ -311,7 +322,7 @@ def main() -> None:
     module_path = os.path.realpath(module_path)
     server_bin = os.path.realpath(server_bin)
 
-    print(f"valkey-flash benchmark v1")
+    print("valkey-flash benchmark v1")
     print(f"  module:  {module_path}")
     print(f"  server:  {server_bin}")
     print(f"  ops/scenario: {OPS:,}  warmup: {WARMUP}")

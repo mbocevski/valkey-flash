@@ -1,15 +1,17 @@
+import math
+import os as _os
+import time as _time
+
 import pytest
 from valkey import ResponseError
+from valkey_flash_test_case import ValkeyFlashTestCase
 from valkeytestframework.util.waiters import wait_for_equal
 from valkeytestframework.valkey_test_case import ValkeyAction
-from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 def _enable_aof(client):
     client.config_set("appendonly", "yes")
-    wait_for_equal(
-        lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30
-    )
+    wait_for_equal(lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30)
 
 
 def _bgrewriteaof_and_restart(server):
@@ -18,11 +20,10 @@ def _bgrewriteaof_and_restart(server):
     server.args["appendonly"] = "yes"
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 class TestFlashZAdd(ValkeyFlashTestCase):
-
     def test_zadd_creates_key_returns_added_count(self):
         result = self.client.execute_command("FLASH.ZADD", "z1", "1.0", "a")
         assert result == 1
@@ -104,7 +105,6 @@ class TestFlashZAdd(ValkeyFlashTestCase):
 
 
 class TestFlashZRem(ValkeyFlashTestCase):
-
     def test_zrem_existing_member_returns_1(self):
         self.client.execute_command("FLASH.ZADD", "zr1", "1.0", "a")
         result = self.client.execute_command("FLASH.ZREM", "zr1", "a")
@@ -131,7 +131,6 @@ class TestFlashZRem(ValkeyFlashTestCase):
 
 
 class TestFlashZIncrBy(ValkeyFlashTestCase):
-
     def test_zincrby_increments_score(self):
         self.client.execute_command("FLASH.ZADD", "zi1", "3.0", "a")
         result = self.client.execute_command("FLASH.ZINCRBY", "zi1", "2.0", "a")
@@ -148,7 +147,6 @@ class TestFlashZIncrBy(ValkeyFlashTestCase):
 
 
 class TestFlashZPopMinMax(ValkeyFlashTestCase):
-
     def test_zpopmin_returns_min_element(self):
         self.client.execute_command("FLASH.ZADD", "zp1", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZPOPMIN", "zp1")
@@ -178,7 +176,6 @@ class TestFlashZPopMinMax(ValkeyFlashTestCase):
 
 
 class TestFlashZScore(ValkeyFlashTestCase):
-
     def test_zscore_returns_score(self):
         self.client.execute_command("FLASH.ZADD", "zs1", "3.14", "pi")
         result = self.client.execute_command("FLASH.ZSCORE", "zs1", "pi")
@@ -198,7 +195,6 @@ class TestFlashZScore(ValkeyFlashTestCase):
 
 
 class TestFlashZRankRevRank(ValkeyFlashTestCase):
-
     def test_zrank_ascending(self):
         self.client.execute_command("FLASH.ZADD", "zrank1", "1.0", "a", "2.0", "b", "3.0", "c")
         assert self.client.execute_command("FLASH.ZRANK", "zrank1", "a") == 0
@@ -226,7 +222,6 @@ class TestFlashZRankRevRank(ValkeyFlashTestCase):
 
 
 class TestFlashZCard(ValkeyFlashTestCase):
-
     def test_zcard_returns_count(self):
         self.client.execute_command("FLASH.ZADD", "zc1", "1.0", "a", "2.0", "b")
         assert self.client.execute_command("FLASH.ZCARD", "zc1") == 2
@@ -236,7 +231,6 @@ class TestFlashZCard(ValkeyFlashTestCase):
 
 
 class TestFlashZCount(ValkeyFlashTestCase):
-
     def test_zcount_all_members(self):
         self.client.execute_command("FLASH.ZADD", "zct1", "1.0", "a", "2.0", "b", "3.0", "c")
         assert self.client.execute_command("FLASH.ZCOUNT", "zct1", "-inf", "+inf") == 3
@@ -254,7 +248,6 @@ class TestFlashZCount(ValkeyFlashTestCase):
 
 
 class TestFlashZLexCount(ValkeyFlashTestCase):
-
     def test_zlexcount_range(self):
         self.client.execute_command("FLASH.ZADD", "zlc1", "0", "a", "0", "b", "0", "c", "0", "d")
         assert self.client.execute_command("FLASH.ZLEXCOUNT", "zlc1", "[b", "[c") == 2
@@ -269,7 +262,6 @@ class TestFlashZLexCount(ValkeyFlashTestCase):
 
 
 class TestFlashZRange(ValkeyFlashTestCase):
-
     def test_zrange_by_index(self):
         self.client.execute_command("FLASH.ZADD", "zrng1", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZRANGE", "zrng1", "0", "-1")
@@ -297,7 +289,9 @@ class TestFlashZRange(ValkeyFlashTestCase):
         assert result == [b"b", b"c"]
 
     def test_zrange_limit(self):
-        self.client.execute_command("FLASH.ZADD", "zrng6", "1.0", "a", "2.0", "b", "3.0", "c", "4.0", "d")
+        self.client.execute_command(
+            "FLASH.ZADD", "zrng6", "1.0", "a", "2.0", "b", "3.0", "c", "4.0", "d"
+        )
         result = self.client.execute_command(
             "FLASH.ZRANGE", "zrng6", "-inf", "+inf", "BYSCORE", "LIMIT", "1", "2"
         )
@@ -309,7 +303,6 @@ class TestFlashZRange(ValkeyFlashTestCase):
 
 
 class TestFlashZRangeByScore(ValkeyFlashTestCase):
-
     def test_zrangebyscore_basic(self):
         self.client.execute_command("FLASH.ZADD", "zrbs1", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZRANGEBYSCORE", "zrbs1", "1.0", "2.0")
@@ -317,7 +310,9 @@ class TestFlashZRangeByScore(ValkeyFlashTestCase):
 
     def test_zrangebyscore_withscores(self):
         self.client.execute_command("FLASH.ZADD", "zrbs2", "1.0", "a", "2.0", "b")
-        result = self.client.execute_command("FLASH.ZRANGEBYSCORE", "zrbs2", "-inf", "+inf", "WITHSCORES")
+        result = self.client.execute_command(
+            "FLASH.ZRANGEBYSCORE", "zrbs2", "-inf", "+inf", "WITHSCORES"
+        )
         assert result == [b"a", b"1", b"b", b"2"]
 
     def test_zrangebyscore_limit(self):
@@ -334,7 +329,6 @@ class TestFlashZRangeByScore(ValkeyFlashTestCase):
 
 
 class TestFlashZRangeByLex(ValkeyFlashTestCase):
-
     def test_zrangebylex_basic(self):
         self.client.execute_command("FLASH.ZADD", "zrbl1", "0", "a", "0", "b", "0", "c", "0", "d")
         result = self.client.execute_command("FLASH.ZRANGEBYLEX", "zrbl1", "[b", "[c")
@@ -352,7 +346,6 @@ class TestFlashZRangeByLex(ValkeyFlashTestCase):
 
 
 class TestFlashZScan(ValkeyFlashTestCase):
-
     def test_zscan_returns_all_members(self):
         self.client.execute_command("FLASH.ZADD", "zsc1", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZSCAN", "zsc1", "0")
@@ -361,7 +354,9 @@ class TestFlashZScan(ValkeyFlashTestCase):
         assert len(items) == 6  # 3 member+score pairs
 
     def test_zscan_match_filter(self):
-        self.client.execute_command("FLASH.ZADD", "zsc2", "1.0", "apple", "2.0", "banana", "3.0", "avocado")
+        self.client.execute_command(
+            "FLASH.ZADD", "zsc2", "1.0", "apple", "2.0", "banana", "3.0", "avocado"
+        )
         result = self.client.execute_command("FLASH.ZSCAN", "zsc2", "0", "MATCH", "a*")
         _, items = result
         members = items[::2]
@@ -391,8 +386,8 @@ class TestFlashZScan(ValkeyFlashTestCase):
 
 # ── NaN guard tests ───────────────────────────────────────────────────────────
 
-class TestFlashZSetNaN(ValkeyFlashTestCase):
 
+class TestFlashZSetNaN(ValkeyFlashTestCase):
     def test_zincrby_nan_returns_error(self):
         self.client.execute_command("FLASH.ZADD", "znan1", "+inf", "a")
         with pytest.raises(ResponseError, match="NaN"):
@@ -406,25 +401,21 @@ class TestFlashZSetNaN(ValkeyFlashTestCase):
 
 # ── Cold-tier AOF persistence ─────────────────────────────────────────────────
 
-class TestFlashZSetAof(ValkeyFlashTestCase):
 
+class TestFlashZSetAof(ValkeyFlashTestCase):
     def test_cold_zset_survives_aof(self):
         _enable_aof(self.client)
-        self.client.execute_command(
-            "FLASH.ZADD", "zaof_cold", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zaof_cold", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "zaof_cold")
         _bgrewriteaof_and_restart(self.server)
-        result = self.client.execute_command(
-            "FLASH.ZRANGE", "zaof_cold", "0", "-1", "WITHSCORES"
-        )
+        result = self.client.execute_command("FLASH.ZRANGE", "zaof_cold", "0", "-1", "WITHSCORES")
         assert result == [b"a", b"1", b"b", b"2", b"c", b"3"]
 
 
 # ── Cold-tier demotion + promotion ────────────────────────────────────────────
 
-class TestFlashZSetColdTier(ValkeyFlashTestCase):
 
+class TestFlashZSetColdTier(ValkeyFlashTestCase):
     def test_zscore_after_demote(self):
         self.client.execute_command("FLASH.ZADD", "cold_zs", "3.14", "pi")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zs")
@@ -442,25 +433,19 @@ class TestFlashZSetColdTier(ValkeyFlashTestCase):
         assert self.client.execute_command("FLASH.ZCARD", "cold_zcard") == 2
 
     def test_zrange_after_demote(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "cold_zrng", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "cold_zrng", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zrng")
         result = self.client.execute_command("FLASH.ZRANGE", "cold_zrng", "0", "-1")
         assert result == [b"a", b"b", b"c"]
 
     def test_zrangebyscore_after_demote(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "cold_zrbs", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "cold_zrbs", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zrbs")
         result = self.client.execute_command("FLASH.ZRANGEBYSCORE", "cold_zrbs", "1.0", "2.0")
         assert result == [b"a", b"b"]
 
     def test_zpopmin_after_demote_promotes_and_pops(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "cold_zpm", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "cold_zpm", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zpm")
         result = self.client.execute_command("FLASH.ZPOPMIN", "cold_zpm")
         assert result == [b"a", b"1"]
@@ -480,9 +465,7 @@ class TestFlashZSetColdTier(ValkeyFlashTestCase):
         assert float(result) == 8.0
 
     def test_zrem_after_demote(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "cold_zrem", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "cold_zrem", "1.0", "a", "2.0", "b", "3.0", "c")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zrem")
         result = self.client.execute_command("FLASH.ZREM", "cold_zrem", "b")
         assert result == 1
@@ -491,12 +474,8 @@ class TestFlashZSetColdTier(ValkeyFlashTestCase):
 
 # ── Replication ───────────────────────────────────────────────────────────────
 
-import time as _time
-import os as _os
-
 
 class TestFlashZSetReplication(ValkeyFlashTestCase):
-
     def _make_replica(self):
         primary_port = self.server.port
         replica_server, replica_client = self.create_server(
@@ -516,7 +495,9 @@ class TestFlashZSetReplication(ValkeyFlashTestCase):
         try:
             self.client.execute_command("FLASH.ZADD", "repl_z1", "1.0", "a", "2.0", "b")
             _time.sleep(0.3)
-            result = replica_client.execute_command("FLASH.ZRANGE", "repl_z1", "0", "-1", "WITHSCORES")
+            result = replica_client.execute_command(
+                "FLASH.ZRANGE", "repl_z1", "0", "-1", "WITHSCORES"
+            )
             assert result == [b"a", b"1", b"b", b"2"]
         finally:
             replica_server.stop()
@@ -548,8 +529,8 @@ class TestFlashZSetReplication(ValkeyFlashTestCase):
 
 # ── TTL ───────────────────────────────────────────────────────────────────────
 
-class TestFlashZSetTTL(ValkeyFlashTestCase):
 
+class TestFlashZSetTTL(ValkeyFlashTestCase):
     def test_zadd_pexpire_sets_ttl(self):
         self.client.execute_command("FLASH.ZADD", "zttl1", "1.0", "a")
         self.client.execute_command("PEXPIRE", "zttl1", 30_000)
@@ -580,8 +561,8 @@ class TestFlashZSetTTL(ValkeyFlashTestCase):
 
 # ── Score edge cases ──────────────────────────────────────────────────────────
 
-class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
 
+class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
     def test_zscore_negative_infinity(self):
         self.client.execute_command("FLASH.ZADD", "zedge1", "-inf", "lo")
         result = self.client.execute_command("FLASH.ZSCORE", "zedge1", "lo")
@@ -596,7 +577,6 @@ class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
         large = "1.7976931348623157e+308"
         self.client.execute_command("FLASH.ZADD", "zedge3", large, "m")
         result = self.client.execute_command("FLASH.ZSCORE", "zedge3", "m")
-        import math
         assert math.isfinite(float(result))
         assert float(result) > 1e308
 
@@ -621,12 +601,8 @@ class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
         assert result == [b"hi", b"inf"]
 
     def test_zrangebyscore_exclusive_both_ends(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zedge8", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
-        result = self.client.execute_command(
-            "FLASH.ZRANGEBYSCORE", "zedge8", "(1.0", "(3.0"
-        )
+        self.client.execute_command("FLASH.ZADD", "zedge8", "1.0", "a", "2.0", "b", "3.0", "c")
+        result = self.client.execute_command("FLASH.ZRANGEBYSCORE", "zedge8", "(1.0", "(3.0")
         assert result == [b"b"]
 
     def test_zrangebyscore_with_limit(self):
@@ -641,24 +617,16 @@ class TestFlashZSetScoreEdges(ValkeyFlashTestCase):
 
 # ── Advanced ZRANGE combos ────────────────────────────────────────────────────
 
-class TestFlashZRangeCombos(ValkeyFlashTestCase):
 
+class TestFlashZRangeCombos(ValkeyFlashTestCase):
     def test_zrange_rev_byscore(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrc1", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
-        result = self.client.execute_command(
-            "FLASH.ZRANGE", "zrc1", "3.0", "1.0", "BYSCORE", "REV"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrc1", "1.0", "a", "2.0", "b", "3.0", "c")
+        result = self.client.execute_command("FLASH.ZRANGE", "zrc1", "3.0", "1.0", "BYSCORE", "REV")
         assert result == [b"c", b"b", b"a"]
 
     def test_zrange_bylex_rev(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrc2", "0", "a", "0", "b", "0", "c", "0", "d"
-        )
-        result = self.client.execute_command(
-            "FLASH.ZRANGE", "zrc2", "[c", "[a", "BYLEX", "REV"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrc2", "0", "a", "0", "b", "0", "c", "0", "d")
+        result = self.client.execute_command("FLASH.ZRANGE", "zrc2", "[c", "[a", "BYLEX", "REV")
         assert result == [b"c", b"b", b"a"]
 
     def test_zrange_byscore_withscores(self):
@@ -693,9 +661,7 @@ class TestFlashZRangeCombos(ValkeyFlashTestCase):
         assert float(result[1]) == 7.5
 
     def test_zrevrank_withscore(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zrc7", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zrc7", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZREVRANK", "zrc7", "b", "WITHSCORE")
         assert result[0] == 1
         assert float(result[1]) == 2.0
@@ -703,8 +669,8 @@ class TestFlashZRangeCombos(ValkeyFlashTestCase):
 
 # ── Dual-index consistency ────────────────────────────────────────────────────
 
-class TestFlashZSetDualIndexConsistency(ValkeyFlashTestCase):
 
+class TestFlashZSetDualIndexConsistency(ValkeyFlashTestCase):
     def test_zadd_update_changes_score_position(self):
         """After updating a score, ZRANK must reflect the new sorted position."""
         self.client.execute_command("FLASH.ZADD", "dic1", "1.0", "a", "2.0", "b", "3.0", "c")
@@ -717,12 +683,8 @@ class TestFlashZSetDualIndexConsistency(ValkeyFlashTestCase):
         self.client.execute_command(
             "FLASH.ZADD", "dic2", "0", "apple", "0", "banana", "0", "cherry"
         )
-        score_result = self.client.execute_command(
-            "FLASH.ZRANGEBYSCORE", "dic2", "0", "0"
-        )
-        lex_result = self.client.execute_command(
-            "FLASH.ZRANGEBYLEX", "dic2", "[apple", "[cherry"
-        )
+        score_result = self.client.execute_command("FLASH.ZRANGEBYSCORE", "dic2", "0", "0")
+        lex_result = self.client.execute_command("FLASH.ZRANGEBYLEX", "dic2", "[apple", "[cherry")
         assert score_result == lex_result == [b"apple", b"banana", b"cherry"]
 
     def test_zincrby_maintains_dual_index_integrity(self):
@@ -746,12 +708,10 @@ class TestFlashZSetDualIndexConsistency(ValkeyFlashTestCase):
 
 # ── ZPOPMIN / ZPOPMAX extended ────────────────────────────────────────────────
 
-class TestFlashZPopExtended(ValkeyFlashTestCase):
 
+class TestFlashZPopExtended(ValkeyFlashTestCase):
     def test_zpopmin_with_count(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zpext1", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zpext1", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZPOPMIN", "zpext1", "2")
         assert len(result) == 4  # 2 pairs
         assert result[0] == b"a"
@@ -759,9 +719,7 @@ class TestFlashZPopExtended(ValkeyFlashTestCase):
         assert self.client.execute_command("FLASH.ZCARD", "zpext1") == 1
 
     def test_zpopmax_with_count(self):
-        self.client.execute_command(
-            "FLASH.ZADD", "zpext2", "1.0", "a", "2.0", "b", "3.0", "c"
-        )
+        self.client.execute_command("FLASH.ZADD", "zpext2", "1.0", "a", "2.0", "b", "3.0", "c")
         result = self.client.execute_command("FLASH.ZPOPMAX", "zpext2", "2")
         assert result[0] == b"c"
         assert result[2] == b"b"

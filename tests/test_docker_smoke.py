@@ -5,8 +5,8 @@ Run with:
     USE_DOCKER=1 pytest tests/test_docker_smoke.py -v
 """
 
-import valkey
 import pytest
+import valkey
 
 
 @pytest.mark.docker_single

@@ -1,10 +1,8 @@
 import pytest
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestFlashConfigRuntime(ValkeyFlashTestCase):
-
     def _config_get(self, name):
         result = self.client.execute_command("CONFIG", "GET", name)
         # result is [name, value] flat list

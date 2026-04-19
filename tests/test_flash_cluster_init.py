@@ -14,7 +14,6 @@ we probe all 6 nodes directly via their individual ports (7001-7006).
 import pytest
 import valkey
 
-
 _CLUSTER_PORTS = (7001, 7002, 7003, 7004, 7005, 7006)
 
 
@@ -61,8 +60,7 @@ def test_cluster_mode_enabled_config_returns_auto(docker_cluster):
             result = client.config_get("flash.cluster-mode-enabled")
             value = result.get("flash.cluster-mode-enabled")
             assert value == "auto", (
-                f"Node on port {port}: flash.cluster-mode-enabled is {value!r}, "
-                f"expected 'auto'"
+                f"Node on port {port}: flash.cluster-mode-enabled is {value!r}, expected 'auto'"
             )
         finally:
             client.close()

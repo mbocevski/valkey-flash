@@ -76,9 +76,7 @@ class TestFlashBLPopWakeUp(ValkeyFlashTestCase):
 
         def blocker():
             # Block with a 5-second timeout on a non-existent key.
-            results["val"] = self.client.execute_command(
-                "FLASH.BLPOP", "bwake1", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BLPOP", "bwake1", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -96,9 +94,7 @@ class TestFlashBLPopWakeUp(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BRPOP", "bwake2", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BRPOP", "bwake2", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -136,9 +132,7 @@ class TestFlashBLMoveFastPath(ValkeyFlashTestCase):
 
     def test_blmove_left_to_right(self):
         self.client.execute_command("FLASH.RPUSH", "bms1", "a", "b", "c")
-        result = self.client.execute_command(
-            "FLASH.BLMOVE", "bms1", "bmd1", "LEFT", "RIGHT", "0"
-        )
+        result = self.client.execute_command("FLASH.BLMOVE", "bms1", "bmd1", "LEFT", "RIGHT", "0")
         assert result == b"a"
         src = self.client.execute_command("FLASH.LRANGE", "bms1", "0", "-1")
         dst = self.client.execute_command("FLASH.LRANGE", "bmd1", "0", "-1")
@@ -147,18 +141,14 @@ class TestFlashBLMoveFastPath(ValkeyFlashTestCase):
 
     def test_blmove_right_to_left(self):
         self.client.execute_command("FLASH.RPUSH", "bms2", "x", "y", "z")
-        result = self.client.execute_command(
-            "FLASH.BLMOVE", "bms2", "bmd2", "RIGHT", "LEFT", "0"
-        )
+        result = self.client.execute_command("FLASH.BLMOVE", "bms2", "bmd2", "RIGHT", "LEFT", "0")
         assert result == b"z"
         dst = self.client.execute_command("FLASH.LRANGE", "bmd2", "0", "-1")
         assert dst == [b"z"]
 
     def test_blmove_src_empty_after_single_element(self):
         self.client.execute_command("FLASH.RPUSH", "bms3", "only")
-        self.client.execute_command(
-            "FLASH.BLMOVE", "bms3", "bmd3", "LEFT", "RIGHT", "0"
-        )
+        self.client.execute_command("FLASH.BLMOVE", "bms3", "bmd3", "LEFT", "RIGHT", "0")
         assert self.client.execute_command("FLASH.LLEN", "bms3") == 0
         assert self.client.execute_command("FLASH.LLEN", "bmd3") == 1
 
@@ -174,15 +164,11 @@ class TestFlashBLMoveFastPath(ValkeyFlashTestCase):
 
     def test_blmove_invalid_direction(self):
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.BLMOVE", "s", "d", "UP", "RIGHT", "0"
-            )
+            self.client.execute_command("FLASH.BLMOVE", "s", "d", "UP", "RIGHT", "0")
 
     def test_blmove_negative_timeout_error(self):
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.BLMOVE", "s", "d", "LEFT", "RIGHT", "-1"
-            )
+            self.client.execute_command("FLASH.BLMOVE", "s", "d", "LEFT", "RIGHT", "-1")
 
 
 class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
@@ -220,9 +206,7 @@ class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
             # Block on bmrot (it has elements, so this tests that the signal
             # fired by a same-key LMOVE wakes a second concurrent BLPOP).
             # Use a separate key that starts empty so we are truly blocking.
-            results["val"] = self.client.execute_command(
-                "FLASH.BLPOP", "bmrot_empty", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BLPOP", "bmrot_empty", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -231,9 +215,7 @@ class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
         # LMOVE on a different key into bmrot_empty via a second connection.
         pusher = self.create_client()
         pusher.execute_command("FLASH.RPUSH", "bmrot_src2", "signal_elem")
-        pusher.execute_command(
-            "FLASH.LMOVE", "bmrot_src2", "bmrot_empty", "LEFT", "RIGHT"
-        )
+        pusher.execute_command("FLASH.LMOVE", "bmrot_src2", "bmrot_empty", "LEFT", "RIGHT")
 
         t.join(timeout=3.0)
         assert not t.is_alive(), "BLPOP on dst did not unblock after FLASH.LMOVE into it"
@@ -247,9 +229,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BLPOP", "lmove_dst", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BLPOP", "lmove_dst", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -267,9 +247,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BRPOP", "lmove_dst2", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BRPOP", "lmove_dst2", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -288,9 +266,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         results = {}
 
         def blpop_waiter():
-            results["val"] = self.client.execute_command(
-                "FLASH.BLPOP", "blmove_chain_dst", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BLPOP", "blmove_chain_dst", "5")
 
         t = threading.Thread(target=blpop_waiter, daemon=True)
         t.start()
@@ -301,8 +277,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
 
         def blmove_waiter():
             blmove_results["val"] = self.client.execute_command(
-                "FLASH.BLMOVE", "blmove_chain_src", "blmove_chain_dst",
-                "LEFT", "RIGHT", "5"
+                "FLASH.BLMOVE", "blmove_chain_src", "blmove_chain_dst", "LEFT", "RIGHT", "5"
             )
 
         t2 = threading.Thread(target=blmove_waiter, daemon=True)

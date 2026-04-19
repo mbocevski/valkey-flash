@@ -19,13 +19,17 @@ Tests use two approaches:
 Requires Docker: USE_DOCKER=1 pytest tests/test_flash_cluster_redirects.py -v
 """
 
+from contextlib import suppress
+
 import pytest
 
 try:
     import valkey
     import valkey.exceptions
+
     try:
         from valkey.cluster import ValkeyCluster
+
         _HAVE_CLUSTER_CLIENT = True
     except ImportError:
         _HAVE_CLUSTER_CLIENT = False
@@ -58,13 +62,12 @@ def _direct_client(port):
 def _cleanup(client, *keys):
     """Best-effort delete keys via cluster client."""
     for k in keys:
-        try:
+        with suppress(Exception):
             client.execute_command("FLASH.DEL", k)
-        except Exception:
-            pass
 
 
 # ── Cluster-client tests (transparent redirect) ───────────────────────────────
+
 
 @pytest.mark.docker_cluster
 @pytest.mark.skipif(not _HAVE_CLUSTER_CLIENT, reason="ValkeyCluster not available")
@@ -148,6 +151,7 @@ def test_flash_hlen_redirect(docker_cluster):
 
 # ── Direct single-node test: verify MOVED is returned, not an error ───────────
 
+
 @pytest.mark.docker_cluster
 @pytest.mark.skipif(not _HAVE_VALKEY, reason="valkey package not installed")
 def test_flash_set_wrong_node_returns_moved(docker_cluster):
@@ -167,10 +171,8 @@ def test_flash_set_wrong_node_returns_moved(docker_cluster):
             client.execute_command("FLASH.SET", _KEY_A, "probe")
             success_count += 1
             # Clean up on the owning node.
-            try:
+            with suppress(Exception):
                 client.execute_command("FLASH.DEL", _KEY_A)
-            except Exception:
-                pass
         except valkey.exceptions.ResponseError as e:
             err = str(e)
             assert err.startswith("MOVED"), (

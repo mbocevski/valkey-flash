@@ -4,7 +4,6 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 
 
 class TestFlashHSet(ValkeyFlashTestCase):
-
     def test_hset_creates_new_key_returns_field_count(self):
         result = self.client.execute_command("FLASH.HSET", "h1", "f1", "v1", "f2", "v2")
         assert result == 2
@@ -16,7 +15,9 @@ class TestFlashHSet(ValkeyFlashTestCase):
 
     def test_hset_mix_new_and_overwrite_counts_only_new(self):
         self.client.execute_command("FLASH.HSET", "h3", "existing", "v")
-        result = self.client.execute_command("FLASH.HSET", "h3", "existing", "v2", "new_field", "vn")
+        result = self.client.execute_command(
+            "FLASH.HSET", "h3", "existing", "v2", "new_field", "vn"
+        )
         assert result == 1
 
     def test_hset_wrong_arity_raises_error(self):
@@ -34,7 +35,6 @@ class TestFlashHSet(ValkeyFlashTestCase):
 
 
 class TestFlashHGet(ValkeyFlashTestCase):
-
     def test_hget_existing_field_returns_value(self):
         self.client.execute_command("FLASH.HSET", "hg1", "color", "blue")
         result = self.client.execute_command("FLASH.HGET", "hg1", "color")
@@ -62,7 +62,6 @@ class TestFlashHGet(ValkeyFlashTestCase):
 
 
 class TestFlashHGetAll(ValkeyFlashTestCase):
-
     def test_hgetall_returns_all_field_value_pairs(self):
         self.client.execute_command("FLASH.HSET", "ha1", "a", "1", "b", "2")
         result = self.client.execute_command("FLASH.HGETALL", "ha1")
@@ -90,7 +89,6 @@ class TestFlashHGetAll(ValkeyFlashTestCase):
 
 
 class TestFlashHDel(ValkeyFlashTestCase):
-
     def test_hdel_existing_field_returns_one(self):
         self.client.execute_command("FLASH.HSET", "hd1", "f1", "v1")
         result = self.client.execute_command("FLASH.HDEL", "hd1", "f1")
@@ -127,7 +125,6 @@ class TestFlashHDel(ValkeyFlashTestCase):
 
 
 class TestFlashHExists(ValkeyFlashTestCase):
-
     def test_hexists_present_field_returns_one(self):
         self.client.execute_command("FLASH.HSET", "he1", "name", "bob")
         result = self.client.execute_command("FLASH.HEXISTS", "he1", "name")
@@ -148,7 +145,6 @@ class TestFlashHExists(ValkeyFlashTestCase):
 
 
 class TestFlashHLen(ValkeyFlashTestCase):
-
     def test_hlen_returns_field_count(self):
         self.client.execute_command("FLASH.HSET", "hl1", "a", "1", "b", "2", "c", "3")
         result = self.client.execute_command("FLASH.HLEN", "hl1")
@@ -170,7 +166,6 @@ class TestFlashHLen(ValkeyFlashTestCase):
 
 
 class TestFlashHashColdTier(ValkeyFlashTestCase):
-
     def test_hget_after_demote_reads_from_nvme(self):
         self.client.execute_command("FLASH.HSET", "cold1", "field", "value")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold1")

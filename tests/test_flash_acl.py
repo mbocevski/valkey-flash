@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import pytest
 from valkey_flash_test_case import ValkeyFlashTestCase
 
@@ -63,16 +65,13 @@ ALL_FLASH_COMMANDS = [
 
 
 class TestFlashACLCategory(ValkeyFlashTestCase):
-
     def _acl_setuser(self, name, rules):
         self.client.execute_command("ACL", "SETUSER", name, *rules.split())
 
     def _acl_deluser(self, *names):
         for name in names:
-            try:
+            with suppress(Exception):
                 self.client.execute_command("ACL", "DELUSER", name)
-            except Exception:
-                pass
 
     def test_acl_cat_flash_lists_flash_commands(self):
         cmds = self.client.execute_command("ACL", "CAT", "flash")
@@ -134,7 +133,9 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             # Write must be denied.
             with pytest.raises(Exception) as exc_info:
                 c.execute_command("FLASH.SET", "acl_ro_k", "new")
-            assert "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            assert (
+                "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            )
         finally:
             self._acl_deluser("flash_ro")
 
@@ -146,7 +147,9 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             self.client.execute_command("FLASH.SET", "acl_demote_k", "v")
             with pytest.raises(Exception) as exc_info:
                 c.execute_command("FLASH.DEBUG.DEMOTE", "acl_demote_k")
-            assert "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            assert (
+                "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            )
         finally:
             self._acl_deluser("flash_noadmin")
 
@@ -159,7 +162,9 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
             c.execute_command("AUTH", "flash_none", "pass")
             with pytest.raises(Exception) as exc_info:
                 c.execute_command("FLASH.SET", "acl_none_k", "v")
-            assert "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            assert (
+                "NOPERM" in str(exc_info.value) or "no permissions" in str(exc_info.value).lower()
+            )
         finally:
             self._acl_deluser("flash_none")
 

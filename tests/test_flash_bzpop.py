@@ -45,16 +45,12 @@ class TestFlashBZPopMinFastPath(ValkeyFlashTestCase):
 
     def test_bzpopmin_multi_key_first_populated_wins(self):
         self.client.execute_command("FLASH.ZADD", "bzmk2", "7", "x")
-        result = self.client.execute_command(
-            "FLASH.BZPOPMIN", "bzmk1", "bzmk2", "bzmk3", "0"
-        )
+        result = self.client.execute_command("FLASH.BZPOPMIN", "bzmk1", "bzmk2", "bzmk3", "0")
         assert result == [b"bzmk2", b"x", b"7"]
 
     def test_bzpopmax_multi_key_first_populated_wins(self):
         self.client.execute_command("FLASH.ZADD", "bzmkx2", "42", "y")
-        result = self.client.execute_command(
-            "FLASH.BZPOPMAX", "bzmkx1", "bzmkx2", "bzmkx3", "0"
-        )
+        result = self.client.execute_command("FLASH.BZPOPMAX", "bzmkx1", "bzmkx2", "bzmkx3", "0")
         assert result == [b"bzmkx2", b"y", b"42"]
 
     def test_bzpopmin_integer_score_formatted(self):
@@ -135,9 +131,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BZPOPMIN", "bzwake1", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BZPOPMIN", "bzwake1", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -154,9 +148,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BZPOPMAX", "bzwake2", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BZPOPMAX", "bzwake2", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -193,9 +185,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BZPOPMIN", "bzwk_multi", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BZPOPMIN", "bzwk_multi", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()
@@ -212,9 +202,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         results = {}
 
         def blocker():
-            results["val"] = self.client.execute_command(
-                "FLASH.BZPOPMAX", "bzwk_max", "5"
-            )
+            results["val"] = self.client.execute_command("FLASH.BZPOPMAX", "bzwk_max", "5")
 
         t = threading.Thread(target=blocker, daemon=True)
         t.start()

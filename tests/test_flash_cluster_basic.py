@@ -23,14 +23,13 @@ import os
 import shutil
 import tempfile
 import time
+from contextlib import suppress
 
 import pytest
 import valkey
 from valkey.cluster import ValkeyCluster
-
-from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -55,10 +54,8 @@ def _cluster_rw(seed_port: int = 7001) -> ValkeyCluster:
 
 def _cleanup(client: ValkeyCluster, *keys: str) -> None:
     for k in keys:
-        try:
+        with suppress(Exception):
             client.execute_command("FLASH.DEL", k)
-        except Exception:
-            pass
 
 
 # Keys with predictable hash-tag slots (CRC-16/XMODEM mod 16384):
@@ -69,6 +66,7 @@ _KEYS_20 = [f"{{{t}}}{i}" for t in ("a", "b", "c", "d") for i in range(5)]
 
 
 # ── A. Docker cluster tests ───────────────────────────────────────────────────
+
 
 @pytest.mark.docker_cluster
 def test_module_ready_on_all_nodes(docker_cluster):
@@ -105,9 +103,7 @@ def test_flash_set_across_slots(docker_cluster):
             c.execute_command("FLASH.SET", k, f"val:{k}")
         for k in _KEYS_20:
             val = c.execute_command("FLASH.GET", k)
-            assert val == f"val:{k}".encode(), (
-                f"FLASH.GET({k!r}) returned {val!r}"
-            )
+            assert val == f"val:{k}".encode(), f"FLASH.GET({k!r}) returned {val!r}"
         _cleanup(c, *_KEYS_20)
 
 
@@ -128,9 +124,7 @@ def test_flash_get_from_replicas(docker_cluster):
             # READONLY allows read commands on replica.
             client.execute_command("READONLY")
             val = client.execute_command("FLASH.GET", key)
-            assert val == b"replica-check", (
-                f"replica port {port}: FLASH.GET returned {val!r}"
-            )
+            assert val == b"replica-check", f"replica port {port}: FLASH.GET returned {val!r}"
         except valkey.exceptions.ResponseError as e:
             # MOVED is acceptable: this replica doesn't own the slot.
             if "MOVED" not in str(e):
@@ -153,6 +147,7 @@ def test_flash_hset_hgetall_roundtrip(docker_cluster):
             zip(
                 [b.decode() if isinstance(b, bytes) else b for b in result[::2]],
                 [b.decode() if isinstance(b, bytes) else b for b in result[1::2]],
+                strict=False,
             )
         )
         assert pairs == {"f1": "v1", "f2": "v2", "f3": "v3"}, (
@@ -177,9 +172,7 @@ def test_flash_del_propagates_to_replicas(docker_cluster):
         try:
             client.execute_command("READONLY")
             val = client.execute_command("FLASH.GET", key)
-            assert val is None, (
-                f"replica port {port}: key still present after DEL: {val!r}"
-            )
+            assert val is None, f"replica port {port}: key still present after DEL: {val!r}"
         except valkey.exceptions.ResponseError as e:
             if "MOVED" not in str(e):
                 raise
@@ -209,19 +202,20 @@ def test_config_get_cluster_mode_enabled_on_all_nodes(docker_cluster):
         try:
             result = client.config_get("flash.cluster-mode-enabled")
             val = result.get("flash.cluster-mode-enabled")
-            assert val == "auto", (
-                f"port {port}: flash.cluster-mode-enabled={val!r}"
-            )
+            assert val == "auto", f"port {port}: flash.cluster-mode-enabled={val!r}"
         finally:
             client.close()
 
 
 # ── B. Parametrized single-node tests (replica_tier_enabled: yes / no) ────────
 
+
 def _binaries_dir() -> str:
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 

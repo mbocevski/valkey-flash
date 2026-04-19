@@ -1,18 +1,18 @@
 """Integration tests for FlashList RDB and AOF persistence."""
 
+from valkey_flash_test_case import ValkeyFlashTestCase
 from valkeytestframework.util.waiters import wait_for_equal
 from valkeytestframework.valkey_test_case import ValkeyAction
-from valkey_flash_test_case import ValkeyFlashTestCase
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _bgsave_and_restart(server):
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _bgrewriteaof_and_restart(server):
@@ -21,20 +21,18 @@ def _bgrewriteaof_and_restart(server):
     server.args["appendonly"] = "yes"
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _enable_aof(client):
     client.config_set("appendonly", "yes")
-    wait_for_equal(
-        lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30
-    )
+    wait_for_equal(lambda: client.info("persistence")["aof_rewrite_in_progress"], 0, timeout=30)
 
 
 # ── RDB round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashListRdb(ValkeyFlashTestCase):
 
+class TestFlashListRdb(ValkeyFlashTestCase):
     def test_single_element_list_survives_restart(self):
         self.client.execute_command("FLASH.RPUSH", "rl1", "alpha")
         _bgsave_and_restart(self.server)
@@ -109,8 +107,8 @@ class TestFlashListRdb(ValkeyFlashTestCase):
 
 # ── AOF round-trip tests ──────────────────────────────────────────────────────
 
-class TestFlashListAof(ValkeyFlashTestCase):
 
+class TestFlashListAof(ValkeyFlashTestCase):
     def test_single_element_list_survives_aof(self):
         _enable_aof(self.client)
         self.client.execute_command("FLASH.RPUSH", "al1", "hello")

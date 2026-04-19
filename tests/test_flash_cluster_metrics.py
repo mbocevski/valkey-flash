@@ -20,18 +20,21 @@ import pytest
 
 try:
     import valkey
+
     _HAVE_VALKEY = True
 except ImportError:
     _HAVE_VALKEY = False
 
-from valkeytestframework.valkey_test_case import ValkeyTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
+from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 
 def _binaries_dir():
     return os.path.join(
         os.path.dirname(os.path.realpath(__file__)),
-        "build", "binaries", os.environ["SERVER_VERSION"],
+        "build",
+        "binaries",
+        os.environ["SERVER_VERSION"],
     )
 
 

@@ -1,10 +1,13 @@
-import os
-import struct
 import pathlib
-import pytest
-from valkeytestframework.util.waiters import wait_for_equal
-from valkey_flash_test_case import ValkeyFlashTestCase
+import struct
 
+from valkey_flash_test_case import ValkeyFlashTestCase
+from valkeytestframework.util.waiters import wait_for_equal
+
+try:
+    import crc32c as _crc32c_pkg
+except ImportError:
+    _crc32c_pkg = None
 
 # ── WAL helpers ───────────────────────────────────────────────────────────────
 
@@ -39,11 +42,8 @@ def _encode_delete(key_hash: int) -> bytes:
 def _crc32c(data: bytes) -> int:
     """Compute CRC32C (Castagnoli).  Uses the `crc32c` package when available,
     falls back to a pure-Python table for test environments that lack it."""
-    try:
-        import crc32c as _crc32c_lib
-        return _crc32c_lib.crc32c(data)
-    except ImportError:
-        pass
+    if _crc32c_pkg is not None:
+        return _crc32c_pkg.crc32c(data)
     # Pure-Python CRC32C (Castagnoli polynomial 0x1EDC6F41, reflected 0x82F63B78)
     crc = 0xFFFF_FFFF
     table = []
@@ -77,18 +77,19 @@ def _write_wal(path: pathlib.Path, payloads: list[bytes]) -> None:
 
 # ── Restart helper ────────────────────────────────────────────────────────────
 
+
 def _bgsave_and_restart(server):
     server.client.execute_command("BGSAVE")
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 # ── Recovery tests ────────────────────────────────────────────────────────────
 
-class TestFlashRecovery(ValkeyFlashTestCase):
 
+class TestFlashRecovery(ValkeyFlashTestCase):
     def test_state_is_ready_on_fresh_start(self):
         result = self.client.execute_command("FLASH.DEBUG.STATE")
         assert result == b"ready"
@@ -129,7 +130,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
 
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+        wait_for_equal(self.server.is_rdb_done_loading, True)
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
 
     def test_corrupted_wal_warn_logged(self):
@@ -142,7 +143,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
 
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+        wait_for_equal(self.server.is_rdb_done_loading, True)
         self.server.verify_string_in_logfile("flash: recovery: WAL corruption at offset")
 
     def test_corrupted_wal_truncated_to_header(self):
@@ -155,22 +156,25 @@ class TestFlashRecovery(ValkeyFlashTestCase):
 
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+        wait_for_equal(self.server.is_rdb_done_loading, True)
         # WAL should be truncated to just the 16-byte header.
         assert wal_path.stat().st_size == HEADER_SIZE
 
     def test_valid_wal_records_applied_on_recovery(self):
         # Write WAL records manually; recovery should count them.
         wal_path = _wal_path(_default_flash_path())
-        _write_wal(wal_path, [
-            _encode_put(1, 0, 0xABCD),
-            _encode_put(2, 4096, 0xEF01),
-            _encode_delete(1),
-        ])
+        _write_wal(
+            wal_path,
+            [
+                _encode_put(1, 0, 0xABCD),
+                _encode_put(2, 4096, 0xEF01),
+                _encode_delete(1),
+            ],
+        )
 
         self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
         assert self.server.is_alive()
-        wait_for_equal(lambda: self.server.is_rdb_done_loading(), True)
+        wait_for_equal(self.server.is_rdb_done_loading, True)
         assert self.client.execute_command("FLASH.DEBUG.STATE") == b"ready"
         self.server.verify_string_in_logfile("flash: recovery complete: 3 records applied")
 

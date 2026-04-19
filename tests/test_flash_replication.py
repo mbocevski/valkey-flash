@@ -1,11 +1,10 @@
 import os
+
 import pytest
 from valkeytestframework.valkey_test_case import ReplicationTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 class TestFlashReplication(ReplicationTestCase):
-
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         binaries_dir = (
@@ -14,9 +13,7 @@ class TestFlashReplication(ReplicationTestCase):
         )
         server_path = os.path.join(binaries_dir, "valkey-server")
         existing = os.environ.get("LD_LIBRARY_PATH", "")
-        os.environ["LD_LIBRARY_PATH"] = (
-            f"{binaries_dir}:{existing}" if existing else binaries_dir
-        )
+        os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         self.args = {
             "enable-debug-command": "yes",
             "loadmodule": os.getenv("MODULE_PATH"),

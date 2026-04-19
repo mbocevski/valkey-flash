@@ -1,7 +1,7 @@
 import pathlib
-import pytest
-from valkeytestframework.util.waiters import wait_for_equal
+
 from valkey_flash_test_case import ValkeyFlashTestCase
+from valkeytestframework.util.waiters import wait_for_equal
 
 
 def _wal_path() -> pathlib.Path:
@@ -13,17 +13,16 @@ def _bgsave_and_restart(server):
     server.wait_for_save_done()
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 def _crash_restart(server):
     server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
     assert server.is_alive()
-    wait_for_equal(lambda: server.is_rdb_done_loading(), True)
+    wait_for_equal(server.is_rdb_done_loading, True)
 
 
 class TestFlashDurability(ValkeyFlashTestCase):
-
     def test_set_grows_wal_file(self):
         wal = _wal_path()
         size_before = wal.stat().st_size

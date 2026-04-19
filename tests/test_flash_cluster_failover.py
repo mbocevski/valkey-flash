@@ -33,15 +33,15 @@ Run (requires USE_DOCKER=1):
 
 import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
+from contextlib import suppress
 
 import pytest
 import valkey
 import valkey.exceptions
 from valkey.cluster import ValkeyCluster
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _node_id(port: int) -> str:
     c = valkey.Valkey(host="localhost", port=port, socket_timeout=5)
@@ -52,7 +52,7 @@ def _node_id(port: int) -> str:
         c.close()
 
 
-def _slot_ranges_for_node(node_id: str, seed_port: int) -> List[Tuple[int, int]]:
+def _slot_ranges_for_node(node_id: str, seed_port: int) -> list[tuple[int, int]]:
     """Return slot ranges owned by the given node ID."""
     c = valkey.Valkey(host="localhost", port=seed_port, socket_timeout=5)
     try:
@@ -68,7 +68,7 @@ def _slot_ranges_for_node(node_id: str, seed_port: int) -> List[Tuple[int, int]]
         c.close()
 
 
-def _find_replica_port(primary_port: int, replica_ports: Tuple[int, ...]) -> Optional[int]:
+def _find_replica_port(primary_port: int, replica_ports: tuple[int, ...]) -> int | None:
     """Return the external port of the replica that replicates from primary_port."""
     primary_id = _node_id(primary_port)
     for rep_port in replica_ports:
@@ -109,9 +109,13 @@ def _wait_for_promotion(
                     nodes_raw = nodes_raw.decode()
                 for line in nodes_raw.strip().split("\n"):
                     parts = line.split()
-                    if len(parts) >= 3 and parts[0] == replica_id:
-                        if "master" in parts[2] and "fail" not in parts[2]:
-                            return True
+                    if (
+                        len(parts) >= 3
+                        and parts[0] == replica_id
+                        and "master" in parts[2]
+                        and "fail" not in parts[2]
+                    ):
+                        return True
             finally:
                 c.close()
         except Exception:
@@ -154,11 +158,12 @@ def _new_cluster_client(seed_port: int) -> ValkeyCluster:
 
 # ── Shared scenario ───────────────────────────────────────────────────────────
 
+
 def _run_failover_scenario(
     seed_port: int,
     killed_port: int,
     survivor_port: int,
-    replica_ports: Tuple[int, ...],
+    replica_ports: tuple[int, ...],
     project_name: str,
 ) -> None:
     """
@@ -176,7 +181,7 @@ def _run_failover_scenario(
     # ── Step 1: Pre-failover population ──────────────────────────────────────
     # Write 30 keys.  Keys use varied hash tags so they land on different slots
     # and span all three primaries.
-    pre_keys: Dict[str, str] = {}
+    pre_keys: dict[str, str] = {}
     write_client = _new_cluster_client(seed_port)
     try:
         for i in range(30):
@@ -186,15 +191,13 @@ def _run_failover_scenario(
             pre_keys[key] = val
         # Also write some hash keys.
         write_client.execute_command("FLASH.HSET", "{fail86:h}k", "f", "hval")
-        pre_keys["{fail86:h}k:hf"] = "hval"   # marker — checked separately
+        pre_keys["{fail86:h}k:hf"] = "hval"  # marker — checked separately
     finally:
         write_client.close()
 
     # Find the replica of the primary we're about to kill.
     replica_port = _find_replica_port(killed_port, replica_ports)
-    assert replica_port is not None, (
-        f"Could not find a replica of primary on port {killed_port}"
-    )
+    assert replica_port is not None, f"Could not find a replica of primary on port {killed_port}"
 
     # ── Step 2: Hard-kill primary-1 ───────────────────────────────────────────
     subprocess.run(["docker", "kill", container_name], check=True, capture_output=True)
@@ -218,9 +221,7 @@ def _run_failover_scenario(
         post_key = "{fail86:new}k"
         post_client.execute_command("FLASH.SET", post_key, "post-promotion")
         val = post_client.execute_command("FLASH.GET", post_key)
-        assert val == b"post-promotion", (
-            f"FLASH.SET/GET failed on promoted primary: got {val!r}"
-        )
+        assert val == b"post-promotion", f"FLASH.SET/GET failed on promoted primary: got {val!r}"
 
         # ── Step 5: Pre-failover data survives ────────────────────────────────
         losses = []
@@ -237,9 +238,8 @@ def _run_failover_scenario(
             except Exception as e:
                 losses.append(f"{key!r}: error={e}")
 
-        assert not losses, (
-            f"{len(losses)} pre-failover key(s) lost or mismatched:\n"
-            + "\n".join(f"  {l}" for l in losses[:10])
+        assert not losses, f"{len(losses)} pre-failover key(s) lost or mismatched:\n" + "\n".join(
+            f"  {loss}" for loss in losses[:10]
         )
 
         # Verify the hash key survived.
@@ -271,13 +271,12 @@ def _run_failover_scenario(
         # ── Cleanup: restart the killed container ─────────────────────────────
         # Best-effort — ensures the session-scoped cluster fixture leaves the
         # stack in a recoverable state for subsequent tests.
-        try:
+        with suppress(Exception):
             subprocess.run(["docker", "start", container_name], check=True, capture_output=True)
-        except Exception:
-            pass   # non-fatal; compose teardown will clean up the stack
 
 
 # ── Test A — standard cluster (replica-tier-enabled=false) ───────────────────
+
 
 @pytest.mark.docker_cluster
 @pytest.mark.slow
@@ -294,6 +293,7 @@ def test_failover_promotes_replica_and_retains_data(docker_cluster):
 
 
 # ── Test B — replica-tier-enabled cluster ────────────────────────────────────
+
 
 @pytest.mark.docker_cluster
 @pytest.mark.slow

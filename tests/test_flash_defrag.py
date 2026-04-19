@@ -1,9 +1,7 @@
 import time
 
-import pytest
 from valkey import ResponseError
 from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.conftest import resource_port_tracker
 
 
 def _try_enable_activedefrag(client):
@@ -14,19 +12,14 @@ def _try_enable_activedefrag(client):
     """
     try:
         client.execute_command("CONFIG", "SET", "activedefrag", "yes")
-        client.execute_command(
-            "CONFIG", "SET", "active-defrag-ignore-bytes", "0"
-        )
-        client.execute_command(
-            "CONFIG", "SET", "active-defrag-threshold-lower", "0"
-        )
+        client.execute_command("CONFIG", "SET", "active-defrag-ignore-bytes", "0")
+        client.execute_command("CONFIG", "SET", "active-defrag-threshold-lower", "0")
         return True
     except ResponseError:
         return False
 
 
 class TestFlashDefragString(ValkeyFlashTestCase):
-
     def test_string_data_intact_with_activedefrag_enabled(self):
         """FLASH.SET values must be readable after activedefrag runs."""
         client = self.client
@@ -50,9 +43,7 @@ class TestFlashDefragString(ValkeyFlashTestCase):
         for i in range(n):
             result = client.execute_command("FLASH.GET", f"dfstr_{i}")
             expected = (f"val_{i}" * 8).encode()
-            assert result == expected, (
-                f"dfstr_{i} corrupted after defrag: got {result!r}"
-            )
+            assert result == expected, f"dfstr_{i} corrupted after defrag: got {result!r}"
 
     def test_string_server_survives_repeated_writes_with_activedefrag(self):
         """Server must not crash under sustained write pressure with defrag on."""
@@ -69,7 +60,6 @@ class TestFlashDefragString(ValkeyFlashTestCase):
 
 
 class TestFlashDefragHash(ValkeyFlashTestCase):
-
     def test_hash_data_intact_with_activedefrag_enabled(self):
         """FLASH.HSET field values must be readable after activedefrag runs."""
         client = self.client
@@ -98,9 +88,7 @@ class TestFlashDefragHash(ValkeyFlashTestCase):
 
         for i in range(n):
             for j in range(fields_per_key):
-                result = client.execute_command(
-                    "FLASH.HGET", f"dfhash_{i}", f"field_{j}"
-                )
+                result = client.execute_command("FLASH.HGET", f"dfhash_{i}", f"field_{j}")
                 expected = (f"hval_{i}_{j}" * 4).encode()
                 assert result == expected, (
                     f"dfhash_{i}[field_{j}] corrupted after defrag: got {result!r}"
@@ -112,19 +100,14 @@ class TestFlashDefragHash(ValkeyFlashTestCase):
         _try_enable_activedefrag(client)
 
         for i in range(300):
-            client.execute_command(
-                "FLASH.HSET", f"hstress_{i}", "f1", "a" * 32, "f2", "b" * 32
-            )
+            client.execute_command("FLASH.HSET", f"hstress_{i}", "f1", "a" * 32, "f2", "b" * 32)
             if i % 30 == 0:
-                client.execute_command(
-                    "DEL", *[f"hstress_{k}" for k in range(i, min(i + 5, 300))]
-                )
+                client.execute_command("DEL", *[f"hstress_{k}" for k in range(i, min(i + 5, 300))])
 
         assert client.execute_command("PING") == b"PONG"
 
 
 class TestFlashDefragList(ValkeyFlashTestCase):
-
     def test_list_data_intact_with_activedefrag_enabled(self):
         """FLASH.RPUSH values must be readable after activedefrag runs."""
         client = self.client
@@ -149,9 +132,9 @@ class TestFlashDefragList(ValkeyFlashTestCase):
 
         for i in range(n):
             assert client.execute_command("FLASH.LLEN", f"dflist_{i}") == 5
-            assert client.execute_command("FLASH.LINDEX", f"dflist_{i}", 0) == (
-                "item_0" * 4
-            ).encode()
+            assert (
+                client.execute_command("FLASH.LINDEX", f"dflist_{i}", 0) == ("item_0" * 4).encode()
+            )
 
     def test_list_server_survives_repeated_writes_with_activedefrag(self):
         """Server must not crash under sustained list write pressure with defrag on."""
@@ -161,15 +144,12 @@ class TestFlashDefragList(ValkeyFlashTestCase):
         for i in range(300):
             client.execute_command("FLASH.RPUSH", f"lstress_{i}", "x" * 64, "y" * 64)
             if i % 30 == 0:
-                client.execute_command(
-                    "DEL", *[f"lstress_{k}" for k in range(i, min(i + 5, 300))]
-                )
+                client.execute_command("DEL", *[f"lstress_{k}" for k in range(i, min(i + 5, 300))])
 
         assert client.execute_command("PING") == b"PONG"
 
 
 class TestFlashDefragZSet(ValkeyFlashTestCase):
-
     def test_zset_data_intact_with_activedefrag_enabled(self):
         """FLASH.ZADD members and scores must be readable after activedefrag runs."""
         client = self.client
@@ -196,9 +176,7 @@ class TestFlashDefragZSet(ValkeyFlashTestCase):
 
         for i in range(n):
             assert client.execute_command("FLASH.ZCARD", f"dfzset_{i}") == 5
-            score = client.execute_command(
-                "FLASH.ZSCORE", f"dfzset_{i}", f"member_{i}_2" * 3
-            )
+            score = client.execute_command("FLASH.ZSCORE", f"dfzset_{i}", f"member_{i}_2" * 3)
             assert float(score) == 2.0, (
                 f"dfzset_{i}[member_{i}_2] corrupted after defrag: got {score!r}"
             )
@@ -209,12 +187,8 @@ class TestFlashDefragZSet(ValkeyFlashTestCase):
         _try_enable_activedefrag(client)
 
         for i in range(300):
-            client.execute_command(
-                "FLASH.ZADD", f"zstress_{i}", "1.0", "a" * 32, "2.0", "b" * 32
-            )
+            client.execute_command("FLASH.ZADD", f"zstress_{i}", "1.0", "a" * 32, "2.0", "b" * 32)
             if i % 30 == 0:
-                client.execute_command(
-                    "DEL", *[f"zstress_{k}" for k in range(i, min(i + 5, 300))]
-                )
+                client.execute_command("DEL", *[f"zstress_{k}" for k in range(i, min(i + 5, 300))])
 
         assert client.execute_command("PING") == b"PONG"

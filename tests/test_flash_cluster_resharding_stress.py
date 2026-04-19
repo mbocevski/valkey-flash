@@ -34,12 +34,13 @@ from valkey.cluster import ValkeyCluster
 
 # ── Topology helpers ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class NodeInfo:
     node_id: str
-    internal_host: str   # as announced to cluster (Docker hostname)
-    internal_port: int   # internal port (6379)
-    external_port: int   # host-mapped port (7001-7003)
+    internal_host: str  # as announced to cluster (Docker hostname)
+    internal_port: int  # internal port (6379)
+    external_port: int  # host-mapped port (7001-7003)
 
 
 def _discover_primaries(seed_port: int = 7001) -> list[NodeInfo]:
@@ -61,14 +62,16 @@ def _discover_primaries(seed_port: int = 7001) -> list[NodeInfo]:
                 parts = line.split()
                 if parts[0] != node_id:
                     continue
-                addr = parts[1].split("@")[0]          # host:port
+                addr = parts[1].split("@")[0]  # host:port
                 host, port_str = addr.rsplit(":", 1)
-                result.append(NodeInfo(
-                    node_id=node_id,
-                    internal_host=host,
-                    internal_port=int(port_str),
-                    external_port=ext_port,
-                ))
+                result.append(
+                    NodeInfo(
+                        node_id=node_id,
+                        internal_host=host,
+                        internal_port=int(port_str),
+                        external_port=ext_port,
+                    )
+                )
                 break
         finally:
             c.close()
@@ -159,8 +162,8 @@ def _migrate_slot(
                 "MIGRATE",
                 target.internal_host,
                 target.internal_port,
-                "",                  # empty key → use KEYS option
-                0,                   # db
+                "",  # empty key → use KEYS option
+                0,  # db
                 timeout_ms,
                 "KEYS",
                 *keys,
@@ -185,6 +188,7 @@ def _migrate_slot(
 
 # ── Ack tracking ──────────────────────────────────────────────────────────────
 
+
 class AckTracker:
     """Thread-safe record of last successfully ACKed (key, value) pairs."""
 
@@ -207,6 +211,7 @@ class AckTracker:
 
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
+
 
 def _run_mixed_traffic(
     stop_event: threading.Event,
@@ -235,9 +240,11 @@ def _run_mixed_traffic(
                 # FLASH.SET
                 client.execute_command("FLASH.SET", key, value)
                 tracker.record(key, value)
-            except (valkey.exceptions.ConnectionError,
-                    valkey.exceptions.TimeoutError,
-                    valkey.exceptions.ClusterDownError):
+            except (
+                valkey.exceptions.ConnectionError,
+                valkey.exceptions.TimeoutError,
+                valkey.exceptions.ClusterDownError,
+            ):
                 tracker.record_error()
             except Exception:
                 tracker.record_error()
@@ -259,13 +266,14 @@ def _run_mixed_traffic(
                     client.execute_command("FLASH.HDEL", hkey, "v")
 
             i += 1
-            time.sleep(0.002)   # ~500 ops/thread/s — enough load without flooding
+            time.sleep(0.002)  # ~500 ops/thread/s — enough load without flooding
     finally:
         with suppress(Exception):
             client.close()
 
 
 # ── Zero-loss assertion ───────────────────────────────────────────────────────
+
 
 def _assert_zero_loss(tracker: AckTracker, desc: str, seed_port: int = 7001) -> None:
     """
@@ -305,20 +313,19 @@ def _assert_zero_loss(tracker: AckTracker, desc: str, seed_port: int = 7001) -> 
                 except Exception as e:
                     losses.append((key, str(e)))
 
-        assert not losses, (
-            f"{desc}: {len(losses)} key(s) missing after migration:\n"
-            + "\n".join(f"  {k}: {e}" for k, e in losses[:20])
+        assert not losses, f"{desc}: {len(losses)} key(s) missing after migration:\n" + "\n".join(
+            f"  {k}: {e}" for k, e in losses[:20]
         )
         assert not mismatches, (
             f"{desc}: {len(mismatches)} value mismatch(es) after migration:\n"
-            + "\n".join(f"  {k}: expected={exp!r} got={got!r}"
-                        for k, exp, got in mismatches[:20])
+            + "\n".join(f"  {k}: expected={exp!r} got={got!r}" for k, exp, got in mismatches[:20])
         )
     finally:
         client.close()
 
 
 # ── Test A — single slot migration ────────────────────────────────────────────
+
 
 @pytest.mark.docker_cluster
 @pytest.mark.slow
@@ -355,7 +362,7 @@ def test_single_slot_migration_under_load(docker_cluster):
         for k in hash_keys:
             seed.execute_command("FLASH.HSET", k, "v", f"init:{k}")
         # Demote half to Cold tier to exercise the rdb_save Cold path.
-        for k in string_keys[:n_keys // 2]:
+        for k in string_keys[: n_keys // 2]:
             with suppress(Exception):
                 seed.execute_command("FLASH.DEBUG.DEMOTE", k)
                 # non-fatal: test proceeds with Hot keys if demote unavailable
@@ -378,7 +385,7 @@ def test_single_slot_migration_under_load(docker_cluster):
     for t in threads:
         t.start()
 
-    time.sleep(1.0)   # let threads warm up before migration starts
+    time.sleep(1.0)  # let threads warm up before migration starts
 
     # -- migration --
     try:
@@ -387,7 +394,7 @@ def test_single_slot_migration_under_load(docker_cluster):
         stop.set()
         pytest.fail(f"Migration failed: {exc}")
 
-    time.sleep(0.5)   # let cluster gossip converge and in-flight ops drain
+    time.sleep(0.5)  # let cluster gossip converge and in-flight ops drain
 
     # -- stop traffic --
     stop.set()
@@ -404,7 +411,7 @@ def test_single_slot_migration_under_load(docker_cluster):
 
 # ── Test B — 16 concurrent slot migrations ────────────────────────────────────
 
-_MAX_CONCURRENT_MIGRATIONS = 4   # throttle (no flash.max-concurrent-migrations config yet)
+_MAX_CONCURRENT_MIGRATIONS = 4  # throttle (no flash.max-concurrent-migrations config yet)
 
 
 @pytest.mark.docker_cluster
@@ -520,7 +527,7 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
         for fut in concurrent.futures.as_completed(futures):
             total_migrated += fut.result()
 
-    time.sleep(1.0)   # convergence window
+    time.sleep(1.0)  # convergence window
 
     stop.set()
     for t in threads:
