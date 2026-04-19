@@ -209,6 +209,11 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::ZSET, "flash.zadd", key);
 
+    #[cfg(not(test))]
+    unsafe {
+        valkey_module::raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, key.inner);
+    }
+
     let reply = if incr {
         match incr_result {
             Some(s) => ZSetReply::BulkString(format_score(s).into_bytes()),

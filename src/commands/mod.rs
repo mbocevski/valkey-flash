@@ -1,6 +1,7 @@
 pub mod aux_info;
 pub mod blmove;
 pub mod blpop;
+pub mod bzpop;
 pub mod compaction;
 pub mod debug_demote;
 pub mod debug_state;

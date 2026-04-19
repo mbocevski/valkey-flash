@@ -278,6 +278,11 @@ pub fn flash_zincrby_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::ZSET, "flash.zincrby", key);
 
+    #[cfg(not(test))]
+    unsafe {
+        valkey_module::raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, key.inner);
+    }
+
     let reply = ZSetReply::BulkString(format_score(new_score).into_bytes());
     finish_zset_write(ctx, key.as_slice().to_vec(), serialized, reply)
 }

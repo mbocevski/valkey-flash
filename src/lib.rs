@@ -54,6 +54,7 @@ use crate::types::zset::FLASH_ZSET_TYPE;
 use crate::commands::blmove::flash_blmove_command;
 use crate::commands::blpop::flash_blpop_command;
 use crate::commands::blpop::flash_brpop_command;
+use crate::commands::bzpop::{flash_bzpopmin_command, flash_bzpopmax_command};
 use crate::commands::aux_info::flash_aux_info_command;
 use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
@@ -622,6 +623,8 @@ valkey_module! {
         ["FLASH.ZRANGEBYLEX", flash_zrangebylex_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.ZREVRANGEBYLEX", flash_zrevrangebylex_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.ZSCAN", flash_zscan_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.BZPOPMIN", flash_bzpopmin_command, "write no-multi slow", 1, -2, 1, "write slow flash"],
+        ["FLASH.BZPOPMAX", flash_bzpopmax_command, "write no-multi slow", 1, -2, 1, "write slow flash"],
         ["FLASH.ZUNIONSTORE", flash_zunionstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
         ["FLASH.ZINTERSTORE", flash_zinterstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
         ["FLASH.ZDIFFSTORE", flash_zdiffstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],

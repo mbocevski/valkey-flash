@@ -130,6 +130,11 @@ fn write_dest_zset(
     ctx.replicate_verbatim();
     ctx.notify_keyspace_event(NotifyEvent::ZSET, event, dst);
 
+    #[cfg(not(test))]
+    unsafe {
+        valkey_module::raw::RedisModule_SignalKeyAsReady.unwrap()(ctx.ctx, dst.inner);
+    }
+
     finish_zset_write(
         ctx,
         dst.as_slice().to_vec(),
