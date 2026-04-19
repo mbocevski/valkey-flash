@@ -131,6 +131,11 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
             }
             let base = old_score.unwrap_or(0.0);
             let new_score = base + score;
+            if new_score.is_nan() {
+                return Err(ValkeyError::Str(
+                    "ERR resulting score is not a number (NaN)",
+                ));
+            }
             if gt && old_score.is_some() && new_score <= base {
                 incr_result = Some(base);
                 continue;

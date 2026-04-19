@@ -1,6 +1,17 @@
 import pytest
 from valkey import ResponseError
+from valkeytestframework.valkey_test_case import ValkeyAction
 from valkey_flash_test_case import ValkeyFlashTestCase
+
+
+def _enable_aof(client):
+    client.config_set("appendonly", "yes")
+
+
+def _bgrewriteaof_and_restart(server):
+    server.client.bgrewriteaof()
+    server.wait_for_action_done(ValkeyAction.AOF_REWRITE)
+    server.restart()
 
 
 class TestFlashZAdd(ValkeyFlashTestCase):
@@ -369,3 +380,35 @@ class TestFlashZScan(ValkeyFlashTestCase):
         cursor, items = result[0], result[1]
         assert cursor == b"0"
         assert items == []
+
+
+# ── NaN guard tests ───────────────────────────────────────────────────────────
+
+class TestFlashZSetNaN(ValkeyFlashTestCase):
+
+    def test_zincrby_nan_returns_error(self):
+        self.client.execute_command("FLASH.ZADD", "znan1", "+inf", "a")
+        with pytest.raises(ResponseError, match="NaN"):
+            self.client.execute_command("FLASH.ZINCRBY", "znan1", "-inf", "a")
+
+    def test_zadd_incr_nan_returns_error(self):
+        self.client.execute_command("FLASH.ZADD", "znan2", "+inf", "a")
+        with pytest.raises(ResponseError, match="NaN"):
+            self.client.execute_command("FLASH.ZADD", "znan2", "INCR", "-inf", "a")
+
+
+# ── Cold-tier AOF persistence ─────────────────────────────────────────────────
+
+class TestFlashZSetAof(ValkeyFlashTestCase):
+
+    def test_cold_zset_survives_aof(self):
+        _enable_aof(self.client)
+        self.client.execute_command(
+            "FLASH.ZADD", "zaof_cold", "1.0", "a", "2.0", "b", "3.0", "c"
+        )
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "zaof_cold")
+        _bgrewriteaof_and_restart(self.server)
+        result = self.client.execute_command(
+            "FLASH.ZRANGE", "zaof_cold", "0", "-1", "WITHSCORES"
+        )
+        assert result == [b"a", b"1", b"b", b"2", b"c", b"3"]

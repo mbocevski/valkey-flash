@@ -248,6 +248,11 @@ pub fn flash_zincrby_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
 
     let old_score = inner.get_score(&member).unwrap_or(0.0);
     let new_score = old_score + delta;
+    if new_score.is_nan() {
+        return Err(ValkeyError::Str(
+            "ERR resulting score is not a number (NaN)",
+        ));
+    }
     inner.insert(member.clone(), new_score);
 
     key_handle

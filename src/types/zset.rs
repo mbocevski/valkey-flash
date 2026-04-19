@@ -374,13 +374,30 @@ pub unsafe extern "C" fn aof_rewrite(
     value: *mut c_void,
 ) {
     let obj = &*value.cast::<FlashZSetObject>();
-    let inner = match &obj.tier {
-        Tier::Hot(inner) => inner,
-        Tier::Cold { .. } => {
-            logging::log_warning(
-                "flash: aof_rewrite Tier::Cold zset — cannot fetch from NVMe; skipping key",
-            );
-            return;
+    let cold_inner: ZSetInner;
+    let inner: &ZSetInner = match &obj.tier {
+        Tier::Hot(z) => z,
+        Tier::Cold {
+            backend_offset,
+            value_len,
+            ..
+        } => {
+            match crate::STORAGE
+                .get()
+                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                .and_then(|b| zset_deserialize(&b))
+            {
+                Some(z) => {
+                    cold_inner = z;
+                    &cold_inner
+                }
+                None => {
+                    logging::log_warning(
+                        "flash: aof_rewrite Tier::Cold zset: NVMe read failed; skipping key",
+                    );
+                    return;
+                }
+            }
         }
     };
 
