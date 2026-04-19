@@ -65,11 +65,7 @@ pub static FLASH_IO_THREADS: AtomicI64 = AtomicI64::new(FLASH_IO_THREADS_DEFAULT
 /// - In unit tests (no server, no `initialize()`), 0 maps to `num_cpus::get()`.
 pub fn flash_io_threads() -> usize {
     let v = FLASH_IO_THREADS.load(Ordering::Relaxed);
-    if v == 0 {
-        num_cpus::get()
-    } else {
-        v as usize
-    }
+    if v == 0 { num_cpus::get() } else { v as usize }
 }
 
 // ── flash.io-uring-entries ────────────────────────────────────────────────────

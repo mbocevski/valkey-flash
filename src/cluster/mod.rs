@@ -3,7 +3,7 @@ pub mod throttle;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
-use valkey_module::{logging, raw, Context};
+use valkey_module::{Context, logging, raw};
 
 /// `true` when this instance is running in Valkey cluster mode.
 ///
@@ -61,10 +61,10 @@ pub struct ValkeyModuleSlotRange {
 
 #[repr(C)]
 pub struct ValkeyModuleAtomicSlotMigrationInfoV1 {
-    pub version: u64,                           // uint64_t in valkeymodule.h:843
+    pub version: u64, // uint64_t in valkeymodule.h:843
     pub job_name: [::std::os::raw::c_char; 41],
     pub slot_ranges: *const ValkeyModuleSlotRange,
-    pub num_slot_ranges: u32,                   // uint32_t in valkeymodule.h:847
+    pub num_slot_ranges: u32, // uint32_t in valkeymodule.h:847
 }
 
 // ── Cluster slot computation ──────────────────────────────────────────────────
@@ -123,12 +123,13 @@ pub fn key_slot(key: &[u8]) -> u16 {
 
 fn extract_hash_tag(key: &[u8]) -> &[u8] {
     if let Some(open) = key.iter().position(|&b| b == b'{')
-        && let Some(rel_close) = key[open + 1..].iter().position(|&b| b == b'}') {
-            let tag = &key[open + 1..open + 1 + rel_close];
-            if !tag.is_empty() {
-                return tag;
-            }
+        && let Some(rel_close) = key[open + 1..].iter().position(|&b| b == b'}')
+    {
+        let tag = &key[open + 1..open + 1 + rel_close];
+        if !tag.is_empty() {
+            return tag;
         }
+    }
     key
 }
 
@@ -181,10 +182,11 @@ extern "C" fn on_slot_migration(
         SLOT_MIGRATION_EXPORT_COMPLETED => {
             MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
             if let Ok(guard) = MIGRATION_EXPORT_START.lock()
-                && let Some(start) = *guard {
-                    MIGRATION_LAST_DURATION_MS
-                        .store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
-                }
+                && let Some(start) = *guard
+            {
+                MIGRATION_LAST_DURATION_MS
+                    .store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
             logging::log_notice("flash: cluster: slot migration export completed");
         }
         SLOT_MIGRATION_IMPORT_STARTED => {
@@ -469,7 +471,7 @@ fn promote_flash_string(
     storage: &crate::storage::file_io_uring::FileIoUringBackend,
     cache: &crate::storage::cache::FlashCache,
 ) -> Option<u32> {
-    use crate::types::{string::FlashStringObject, Tier};
+    use crate::types::{Tier, string::FlashStringObject};
     let obj = key_handle
         .get_value::<FlashStringObject>(&crate::types::string::FLASH_STRING_TYPE)
         .ok()??;
@@ -493,7 +495,7 @@ fn promote_flash_hash(
     storage: &crate::storage::file_io_uring::FileIoUringBackend,
     cache: &crate::storage::cache::FlashCache,
 ) -> Option<u32> {
-    use crate::types::{hash::FlashHashObject, Tier};
+    use crate::types::{Tier, hash::FlashHashObject};
     let obj = key_handle
         .get_value::<FlashHashObject>(&crate::types::hash::FLASH_HASH_TYPE)
         .ok()??;

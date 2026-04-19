@@ -103,7 +103,10 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
             "flash_migration_slots_in_progress",
             migration_slots.to_string(),
         )?
-        .field("flash_migration_bytes_sent", migration_bytes_sent.to_string())?
+        .field(
+            "flash_migration_bytes_sent",
+            migration_bytes_sent.to_string(),
+        )?
         .field(
             "flash_migration_bytes_received",
             migration_bytes_received.to_string(),

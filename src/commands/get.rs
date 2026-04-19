@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::types::Tier;
+use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 
 pub static GET_HITS: AtomicU64 = AtomicU64::new(0);
 pub static GET_MISSES: AtomicU64 = AtomicU64::new(0);

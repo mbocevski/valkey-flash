@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
-use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
+use valkey_module::{RedisModuleDefragCtx, RedisModuleString, logging, raw};
 
 use super::Tier;
 
@@ -123,89 +123,95 @@ pub static FLASH_LIST_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashListObject {...})).
-    let obj = Box::from_raw(value.cast::<FlashListObject>());
-    if let Tier::Cold {
-        key_hash,
-        backend_offset,
-        num_blocks,
-        ..
-    } = obj.tier
-    {
-        if let Some(storage) = crate::STORAGE.get() {
-            storage.release_cold_blocks(backend_offset, num_blocks);
-        }
-        if let Some(wal) = crate::WAL.get() {
-            let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
-        }
-        if let Ok(mut map) = crate::TIERING_MAP.lock() {
-            map.remove(&key_hash);
+pub unsafe extern "C" fn free(value: *mut c_void) {
+    unsafe {
+        // SAFETY: value was allocated by Box::into_raw(Box::new(FlashListObject {...})).
+        let obj = Box::from_raw(value.cast::<FlashListObject>());
+        if let Tier::Cold {
+            key_hash,
+            backend_offset,
+            num_blocks,
+            ..
+        } = obj.tier
+        {
+            if let Some(storage) = crate::STORAGE.get() {
+                storage.release_cold_blocks(backend_offset, num_blocks);
+            }
+            if let Some(wal) = crate::WAL.get() {
+                let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
+            }
+            if let Ok(mut map) = crate::TIERING_MAP.lock() {
+                map.remove(&key_hash);
+            }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize { unsafe {
-    let obj = &*value.cast::<FlashListObject>();
-    match &obj.tier {
-        Tier::Hot(items) => {
-            let items_bytes: usize = items.iter().map(|e| e.len()).sum();
-            std::mem::size_of::<FlashListObject>() + items_bytes
+) -> usize {
+    unsafe {
+        let obj = &*value.cast::<FlashListObject>();
+        match &obj.tier {
+            Tier::Hot(items) => {
+                let items_bytes: usize = items.iter().map(|e| e.len()).sum();
+                std::mem::size_of::<FlashListObject>() + items_bytes
+            }
+            Tier::Cold { .. } => std::mem::size_of::<FlashListObject>(),
         }
-        Tier::Cold { .. } => std::mem::size_of::<FlashListObject>(),
     }
-}}
+}
 
 /// # Safety
 ///
 /// RDB format (v1): `[u64 encoding_version=1][u64 shape_tag=0x03][i64 ttl_ms]`
 ///                  `[u64 count][save_slice(elem)×count]`
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
-    let obj = &*value.cast::<FlashListObject>();
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+    unsafe {
+        let obj = &*value.cast::<FlashListObject>();
 
-    raw::save_unsigned(io, ENCODING_VERSION as u64);
-    raw::save_unsigned(io, SHAPE_TAG_LIST);
-    raw::save_signed(io, obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL));
+        raw::save_unsigned(io, ENCODING_VERSION as u64);
+        raw::save_unsigned(io, SHAPE_TAG_LIST);
+        raw::save_signed(io, obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL));
 
-    match &obj.tier {
-        Tier::Hot(items) => {
-            raw::save_unsigned(io, items.len() as u64);
-            for elem in items {
-                raw::save_slice(io, elem);
-            }
-        }
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            match crate::STORAGE
-                .get()
-                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-                .and_then(|b| list_deserialize(&b))
-            {
-                Some(items) => {
-                    raw::save_unsigned(io, items.len() as u64);
-                    for elem in &items {
-                        raw::save_slice(io, elem);
-                    }
+        match &obj.tier {
+            Tier::Hot(items) => {
+                raw::save_unsigned(io, items.len() as u64);
+                for elem in items {
+                    raw::save_slice(io, elem);
                 }
-                None => {
-                    logging::log_warning(
-                        "flash: rdb_save on Tier::Cold list: NVMe read/deserialize failed; \
+            }
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                match crate::STORAGE
+                    .get()
+                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|b| list_deserialize(&b))
+                {
+                    Some(items) => {
+                        raw::save_unsigned(io, items.len() as u64);
+                        for elem in &items {
+                            raw::save_slice(io, elem);
+                        }
+                    }
+                    None => {
+                        logging::log_warning(
+                            "flash: rdb_save on Tier::Cold list: NVMe read/deserialize failed; \
                          writing empty list",
-                    );
-                    raw::save_unsigned(io, 0u64);
+                        );
+                        raw::save_unsigned(io, 0u64);
+                    }
                 }
             }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
@@ -268,10 +274,8 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
     };
     if count > MAX_LIST_ELEMENTS {
         logging::log_warning(
-            format!(
-                "flash: rdb_load list: element count {count} exceeds cap {MAX_LIST_ELEMENTS}"
-            )
-            .as_str(),
+            format!("flash: rdb_load list: element count {count} exceeds cap {MAX_LIST_ELEMENTS}")
+                .as_str(),
         );
         return null_mut();
     }
@@ -326,139 +330,141 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) { unsafe {
-    let obj = &*value.cast::<FlashListObject>();
+) {
+    unsafe {
+        let obj = &*value.cast::<FlashListObject>();
 
-    let cold_buf: std::collections::VecDeque<Vec<u8>>;
-    let items: &std::collections::VecDeque<Vec<u8>> = match &obj.tier {
-        Tier::Hot(l) => l,
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            match crate::STORAGE
-                .get()
-                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-                .and_then(|b| list_deserialize(&b))
-            {
-                Some(items) => {
-                    cold_buf = items;
-                    &cold_buf
-                }
-                None => {
-                    logging::log_warning(
-                        "flash: aof_rewrite on Tier::Cold list: NVMe read/deserialize failed; \
+        let cold_buf: std::collections::VecDeque<Vec<u8>>;
+        let items: &std::collections::VecDeque<Vec<u8>> = match &obj.tier {
+            Tier::Hot(l) => l,
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                match crate::STORAGE
+                    .get()
+                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|b| list_deserialize(&b))
+                {
+                    Some(items) => {
+                        cold_buf = items;
+                        &cold_buf
+                    }
+                    None => {
+                        logging::log_warning(
+                            "flash: aof_rewrite on Tier::Cold list: NVMe read/deserialize failed; \
                          skipping key",
-                    );
-                    return;
+                        );
+                        return;
+                    }
                 }
             }
-        }
-    };
+        };
 
-    if items.is_empty() {
-        return;
-    }
-
-    let emit = match raw::RedisModule_EmitAOF {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite list: RedisModule_EmitAOF is null");
+        if items.is_empty() {
             return;
         }
-    };
-    let get_ctx_fn = match raw::RedisModule_GetContextFromIO {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite list: GetContextFromIO is null");
-            return;
-        }
-    };
-    let create_str_fn = match raw::RedisModule_CreateString {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite list: CreateString is null");
-            return;
-        }
-    };
-    let free_str_fn = match raw::RedisModule_FreeString {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite list: FreeString is null");
-            return;
-        }
-    };
 
-    let ctx = get_ctx_fn(aof);
-    let rpush_cmd = match CString::new("FLASH.RPUSH") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    // 's' = RedisModuleString* (the key), 'v' = (RedisModuleString**, size_t) array
-    let fmt_sv = match CString::new("sv") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    const CHUNK_SIZE: usize = 128;
-    let items_vec: Vec<&Vec<u8>> = items.iter().collect();
-    for chunk in items_vec.chunks(CHUNK_SIZE) {
-        // Allocate one RedisModuleString* per element in this chunk.
-        let mut strs: Vec<*mut raw::RedisModuleString> = Vec::with_capacity(chunk.len());
-        let mut alloc_ok = true;
-        for &elem in chunk {
-            let s = create_str_fn(ctx, elem.as_ptr().cast::<c_char>(), elem.len());
-            if s.is_null() {
-                alloc_ok = false;
-                break;
+        let emit = match raw::RedisModule_EmitAOF {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite list: RedisModule_EmitAOF is null");
+                return;
             }
-            strs.push(s);
-        }
-        if !alloc_ok {
+        };
+        let get_ctx_fn = match raw::RedisModule_GetContextFromIO {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite list: GetContextFromIO is null");
+                return;
+            }
+        };
+        let create_str_fn = match raw::RedisModule_CreateString {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite list: CreateString is null");
+                return;
+            }
+        };
+        let free_str_fn = match raw::RedisModule_FreeString {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite list: FreeString is null");
+                return;
+            }
+        };
+
+        let ctx = get_ctx_fn(aof);
+        let rpush_cmd = match CString::new("FLASH.RPUSH") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        // 's' = RedisModuleString* (the key), 'v' = (RedisModuleString**, size_t) array
+        let fmt_sv = match CString::new("sv") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        const CHUNK_SIZE: usize = 128;
+        let items_vec: Vec<&Vec<u8>> = items.iter().collect();
+        for chunk in items_vec.chunks(CHUNK_SIZE) {
+            // Allocate one RedisModuleString* per element in this chunk.
+            let mut strs: Vec<*mut raw::RedisModuleString> = Vec::with_capacity(chunk.len());
+            let mut alloc_ok = true;
+            for &elem in chunk {
+                let s = create_str_fn(ctx, elem.as_ptr().cast::<c_char>(), elem.len());
+                if s.is_null() {
+                    alloc_ok = false;
+                    break;
+                }
+                strs.push(s);
+            }
+            if !alloc_ok {
+                for &s in &strs {
+                    free_str_fn(ctx, s);
+                }
+                logging::log_warning(
+                    "flash: aof_rewrite list: CreateString returned null; aborting",
+                );
+                return;
+            }
+
+            // EmitAOF: FLASH.RPUSH key e1 … eN  (N ≤ 128)
+            // 'v' consumes (robj**, size_t) — equivalent to (*mut RedisModuleString*, usize).
+            emit(
+                aof,
+                rpush_cmd.as_ptr(),
+                fmt_sv.as_ptr(),
+                key,
+                strs.as_ptr(),
+                strs.len(),
+            );
+
             for &s in &strs {
                 free_str_fn(ctx, s);
             }
-            logging::log_warning(
-                "flash: aof_rewrite list: CreateString returned null; aborting",
+        }
+
+        if let Some(ttl) = obj.ttl_ms {
+            let pexpireat_cmd = match CString::new("PEXPIREAT") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let fmt_sl = match CString::new("sl") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            emit(
+                aof,
+                pexpireat_cmd.as_ptr(),
+                fmt_sl.as_ptr(),
+                key,
+                ttl as std::os::raw::c_longlong,
             );
-            return;
-        }
-
-        // EmitAOF: FLASH.RPUSH key e1 … eN  (N ≤ 128)
-        // 'v' consumes (robj**, size_t) — equivalent to (*mut RedisModuleString*, usize).
-        emit(
-            aof,
-            rpush_cmd.as_ptr(),
-            fmt_sv.as_ptr(),
-            key,
-            strs.as_ptr(),
-            strs.len(),
-        );
-
-        for &s in &strs {
-            free_str_fn(ctx, s);
         }
     }
-
-    if let Some(ttl) = obj.ttl_ms {
-        let pexpireat_cmd = match CString::new("PEXPIREAT") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let fmt_sl = match CString::new("sl") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        emit(
-            aof,
-            pexpireat_cmd.as_ptr(),
-            fmt_sl.as_ptr(),
-            key,
-            ttl as std::os::raw::c_longlong,
-        );
-    }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -470,85 +476,89 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void { unsafe {
-    let src = &*value.cast::<FlashListObject>();
-    match &src.tier {
-        Tier::Hot(items) => {
-            let new_obj = Box::new(FlashListObject {
-                tier: Tier::Hot(items.clone()),
-                ttl_ms: src.ttl_ms,
-            });
-            Box::into_raw(new_obj).cast::<c_void>()
-        }
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            #[cfg(not(test))]
-            {
-                let storage = match crate::STORAGE.get() {
-                    Some(s) => s,
-                    None => return null_mut(),
-                };
-                match storage.read_at_offset(*backend_offset, *value_len) {
-                    Ok(bytes) => match list_deserialize(&bytes) {
-                        Some(items) => {
-                            let new_obj = Box::new(FlashListObject {
-                                tier: Tier::Hot(items),
-                                ttl_ms: src.ttl_ms,
-                            });
-                            Box::into_raw(new_obj).cast::<c_void>()
-                        }
-                        None => null_mut(),
-                    },
-                    Err(_) => null_mut(),
-                }
+) -> *mut c_void {
+    unsafe {
+        let src = &*value.cast::<FlashListObject>();
+        match &src.tier {
+            Tier::Hot(items) => {
+                let new_obj = Box::new(FlashListObject {
+                    tier: Tier::Hot(items.clone()),
+                    ttl_ms: src.ttl_ms,
+                });
+                Box::into_raw(new_obj).cast::<c_void>()
             }
-            #[cfg(test)]
-            {
-                let _ = (backend_offset, value_len);
-                null_mut()
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                #[cfg(not(test))]
+                {
+                    let storage = match crate::STORAGE.get() {
+                        Some(s) => s,
+                        None => return null_mut(),
+                    };
+                    match storage.read_at_offset(*backend_offset, *value_len) {
+                        Ok(bytes) => match list_deserialize(&bytes) {
+                            Some(items) => {
+                                let new_obj = Box::new(FlashListObject {
+                                    tier: Tier::Hot(items),
+                                    ttl_ms: src.ttl_ms,
+                                });
+                                Box::into_raw(new_obj).cast::<c_void>()
+                            }
+                            None => null_mut(),
+                        },
+                        Err(_) => null_mut(),
+                    }
+                }
+                #[cfg(test)]
+                {
+                    let _ = (backend_offset, value_len);
+                    null_mut()
+                }
             }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 { unsafe {
-    use std::mem;
-    use valkey_module::defrag::Defrag;
+) -> i32 {
+    unsafe {
+        use std::mem;
+        use valkey_module::defrag::Defrag;
 
-    let dfg = Defrag::new(ctx);
+        let dfg = Defrag::new(ctx);
 
-    let new_struct = dfg.alloc(*value);
-    if !new_struct.is_null() {
-        *value = new_struct;
-    }
+        let new_struct = dfg.alloc(*value);
+        if !new_struct.is_null() {
+            *value = new_struct;
+        }
 
-    let obj: &mut FlashListObject = &mut *(*value).cast::<FlashListObject>();
-    if let Tier::Hot(ref mut items) = obj.tier {
-        for elem in items.iter_mut() {
-            if elem.capacity() > 0 {
-                let new_buf = dfg.alloc(elem.as_mut_ptr().cast::<c_void>());
-                if !new_buf.is_null() {
-                    let (old_len, old_cap) = (elem.len(), elem.capacity());
-                    let old = mem::replace(
-                        elem,
-                        Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
-                    );
-                    mem::forget(old);
+        let obj: &mut FlashListObject = &mut *(*value).cast::<FlashListObject>();
+        if let Tier::Hot(ref mut items) = obj.tier {
+            for elem in items.iter_mut() {
+                if elem.capacity() > 0 {
+                    let new_buf = dfg.alloc(elem.as_mut_ptr().cast::<c_void>());
+                    if !new_buf.is_null() {
+                        let (old_len, old_cap) = (elem.len(), elem.capacity());
+                        let old = mem::replace(
+                            elem,
+                            Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
+                        );
+                        mem::forget(old);
+                    }
                 }
             }
         }
-    }
 
-    0
-}}
+        0
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

@@ -1,9 +1,9 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::resolve_range;
-use crate::types::list::{list_deserialize, list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::resolve_range;
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_deserialize, list_serialize};
 
 // ── LRangeCompletionHandle ────────────────────────────────────────────────────
 
@@ -151,7 +151,10 @@ mod tests {
         items.push_back(b"b".to_vec());
         items.push_back(b"c".to_vec());
         let (s, e) = resolve_range(0, -1, items.len());
-        assert_eq!(&items.range(s..e).cloned().collect::<Vec<_>>(), &[b"a", b"b", b"c"]);
+        assert_eq!(
+            &items.range(s..e).cloned().collect::<Vec<_>>(),
+            &[b"a", b"b", b"c"]
+        );
     }
 
     #[test]

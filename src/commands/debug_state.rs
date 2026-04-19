@@ -1,7 +1,7 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::recovery::ModuleState;
 use crate::MODULE_STATE;
+use crate::recovery::ModuleState;
 
 /// FLASH.DEBUG.STATE — return the current module lifecycle state.
 ///

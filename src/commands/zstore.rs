@@ -1,12 +1,12 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::zset_common::{
-    apply_limit, finish_zset_write, lex_range_entries, parse_lex_bound, parse_score,
-    parse_score_bound, promote_cold_zset, score_range_entries, ZSetReply,
-};
-use crate::types::zset::{zset_serialize, FlashZSetObject, ScoreF64, ZSetInner, FLASH_ZSET_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::zset_common::{
+    ZSetReply, apply_limit, finish_zset_write, lex_range_entries, parse_lex_bound, parse_score,
+    parse_score_bound, promote_cold_zset, score_range_entries,
+};
+use crate::types::Tier;
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, ScoreF64, ZSetInner, zset_serialize};
 
 // ── Aggregate mode ────────────────────────────────────────────────────────────
 
@@ -27,17 +27,12 @@ fn parse_numkeys(args: &[ValkeyString], pos: usize) -> Result<usize, ValkeyError
             "ERR value is not an integer or out of range",
         ))?;
     if n < 1 {
-        return Err(ValkeyError::Str(
-            "ERR at least 1 input key is needed",
-        ));
+        return Err(ValkeyError::Str("ERR at least 1 input key is needed"));
     }
     Ok(n as usize)
 }
 
-fn open_source_zset(
-    ctx: &Context,
-    key: &ValkeyString,
-) -> Result<Option<ZSetInner>, ValkeyError> {
+fn open_source_zset(ctx: &Context, key: &ValkeyString) -> Result<Option<ZSetInner>, ValkeyError> {
     let handle = ctx.open_key(key);
     match handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
         Err(_) => Err(ValkeyError::WrongType),
@@ -367,11 +362,7 @@ pub fn flash_zrangestore_command(ctx: &Context, args: Vec<ValkeyString>) -> Valk
         if rev {
             entries.reverse();
         }
-        apply_limit(
-            entries,
-            limit.map_or(0, |l| l.0),
-            limit.map_or(-1, |l| l.1),
-        )
+        apply_limit(entries, limit.map_or(0, |l| l.0), limit.map_or(-1, |l| l.1))
     } else if by_lex {
         let (eff_min, eff_max) = if rev {
             (stop_arg, start_arg)
@@ -387,11 +378,7 @@ pub fn flash_zrangestore_command(ctx: &Context, args: Vec<ValkeyString>) -> Valk
         if rev {
             entries.reverse();
         }
-        apply_limit(
-            entries,
-            limit.map_or(0, |l| l.0),
-            limit.map_or(-1, |l| l.1),
-        )
+        apply_limit(entries, limit.map_or(0, |l| l.0), limit.map_or(-1, |l| l.1))
     } else {
         let start_idx: i64 = std::str::from_utf8(start_arg)
             .ok()

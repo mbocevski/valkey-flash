@@ -6,10 +6,10 @@ use {
     valkey_module::raw,
 };
 
-use crate::commands::zset_common::promote_cold_zset;
-use crate::types::zset::{format_score, zset_serialize, FlashZSetObject, FLASH_ZSET_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::zset_common::promote_cold_zset;
+use crate::types::Tier;
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, format_score, zset_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -68,14 +68,13 @@ impl crate::async_io::CompletionHandle for BzPopFastPathHandle {
 // ── C callbacks ───────────────────────────────────────────────────────────────
 
 #[cfg(not(test))]
-unsafe extern "C" fn bzpop_free_privdata(
-    _ctx: *mut raw::RedisModuleCtx,
-    data: *mut c_void,
-) { unsafe {
-    if !data.is_null() {
-        drop(Box::from_raw(data as *mut BzPopPrivdata));
+unsafe extern "C" fn bzpop_free_privdata(_ctx: *mut raw::RedisModuleCtx, data: *mut c_void) {
+    unsafe {
+        if !data.is_null() {
+            drop(Box::from_raw(data as *mut BzPopPrivdata));
+        }
     }
-}}
+}
 
 /// Fires on timeout — replies with null array.
 #[cfg(not(test))]
@@ -83,10 +82,12 @@ unsafe extern "C" fn bzpop_timeout(
     ctx: *mut raw::RedisModuleCtx,
     _argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int { unsafe {
-    raw::RedisModule_ReplyWithNullArray.unwrap()(ctx);
-    raw::REDISMODULE_OK as c_int
-}}
+) -> c_int {
+    unsafe {
+        raw::RedisModule_ReplyWithNullArray.unwrap()(ctx);
+        raw::REDISMODULE_OK as c_int
+    }
+}
 
 /// Fires when a watched key signals ready.
 ///
@@ -97,33 +98,43 @@ unsafe extern "C" fn bzpop_reply(
     ctx: *mut raw::RedisModuleCtx,
     argv: *mut *mut raw::RedisModuleString,
     argc: c_int,
-) -> c_int { unsafe {
-    let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
-    let from_min = if privdata_ptr.is_null() {
-        true
-    } else {
-        (*(privdata_ptr as *const BzPopPrivdata)).from_min
-    };
+) -> c_int {
+    unsafe {
+        let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
+        let from_min = if privdata_ptr.is_null() {
+            true
+        } else {
+            (*(privdata_ptr as *const BzPopPrivdata)).from_min
+        };
 
-    let context = Context::new(ctx);
+        let context = Context::new(ctx);
 
-    // argc layout: [cmd, key1, key2, ..., timeout]  → keys at [1, argc-2].
-    let num_keys = (argc as usize).saturating_sub(2);
-    for i in 1..=num_keys {
-        let key_ptr = *argv.add(i);
-        let key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, key_ptr));
+        // argc layout: [cmd, key1, key2, ..., timeout]  → keys at [1, argc-2].
+        let num_keys = (argc as usize).saturating_sub(2);
+        for i in 1..=num_keys {
+            let key_ptr = *argv.add(i);
+            let key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, key_ptr));
 
-        if let Some((member, score, serialized_opt)) = pop_one_zset(&context, &key, from_min) {
-            let pop_cmd = if from_min { "FLASH.ZPOPMIN" } else { "FLASH.ZPOPMAX" };
-            context.replicate(pop_cmd, &[&*key]);
-            context.notify_keyspace_event(
-                NotifyEvent::ZSET,
-                if from_min { "flash.zpopmin" } else { "flash.zpopmax" },
-                &key,
-            );
+            if let Some((member, score, serialized_opt)) = pop_one_zset(&context, &key, from_min) {
+                let pop_cmd = if from_min {
+                    "FLASH.ZPOPMIN"
+                } else {
+                    "FLASH.ZPOPMAX"
+                };
+                context.replicate(pop_cmd, &[&*key]);
+                context.notify_keyspace_event(
+                    NotifyEvent::ZSET,
+                    if from_min {
+                        "flash.zpopmin"
+                    } else {
+                        "flash.zpopmax"
+                    },
+                    &key,
+                );
 
-            if !crate::replication::is_replica()
-                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+                if !crate::replication::is_replica()
+                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+                {
                     use crate::storage::backend::StorageBackend;
                     let key_bytes = key.as_slice().to_vec();
                     match serialized_opt {
@@ -151,19 +162,20 @@ unsafe extern "C" fn bzpop_reply(
                     }
                 }
 
-            let score_bytes = format_score(score).into_bytes();
-            raw::reply_with_array(ctx, 3);
-            raw::reply_with_string(ctx, key_ptr);
-            raw::reply_with_string_buffer(ctx, member.as_ptr().cast(), member.len());
-            raw::reply_with_string_buffer(ctx, score_bytes.as_ptr().cast(), score_bytes.len());
+                let score_bytes = format_score(score).into_bytes();
+                raw::reply_with_array(ctx, 3);
+                raw::reply_with_string(ctx, key_ptr);
+                raw::reply_with_string_buffer(ctx, member.as_ptr().cast(), member.len());
+                raw::reply_with_string_buffer(ctx, score_bytes.as_ptr().cast(), score_bytes.len());
 
-            return raw::REDISMODULE_OK as c_int;
+                return raw::REDISMODULE_OK as c_int;
+            }
         }
-    }
 
-    // No key had elements — stay blocked.
-    raw::REDISMODULE_ERR as c_int
-}}
+        // No key had elements — stay blocked.
+        raw::REDISMODULE_ERR as c_int
+    }
+}
 
 // ── Pop helper ────────────────────────────────────────────────────────────────
 
@@ -197,10 +209,10 @@ fn pop_one_zset(
 
     let (member, score) = if from_min {
         let k = inner.scores.keys().next()?.clone();
-        (k.1.clone(), k.0 .0)
+        (k.1.clone(), k.0.0)
     } else {
         let k = inner.scores.keys().next_back()?.clone();
-        (k.1.clone(), k.0 .0)
+        (k.1.clone(), k.0.0)
     };
     inner.remove(&member);
 
@@ -268,54 +280,63 @@ fn do_bzpop(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRes
         if has_data {
             #[allow(unused_variables)]
             if let Some((member, score, serialized_opt)) = pop_one_zset(ctx, key, from_min) {
-                let pop_cmd = if from_min { "FLASH.ZPOPMIN" } else { "FLASH.ZPOPMAX" };
+                let pop_cmd = if from_min {
+                    "FLASH.ZPOPMIN"
+                } else {
+                    "FLASH.ZPOPMAX"
+                };
                 ctx.replicate(pop_cmd, &[key]);
                 ctx.notify_keyspace_event(
                     NotifyEvent::ZSET,
-                    if from_min { "flash.zpopmin" } else { "flash.zpopmax" },
+                    if from_min {
+                        "flash.zpopmin"
+                    } else {
+                        "flash.zpopmax"
+                    },
                     key,
                 );
 
                 #[cfg(not(test))]
                 if !crate::replication::is_replica()
-                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
-                        use crate::storage::backend::StorageBackend;
-                        let key_bytes = key.as_slice().to_vec();
-                        let score_str = format_score(score).into_bytes();
-                        let member_clone = member.clone();
-                        let key_bytes_owned = key_bytes.clone();
-                        let bc = ctx.block_client();
-                        let handle = Box::new(BzPopFastPathHandle {
-                            tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
-                            key_bytes: key_bytes_owned,
-                            member: member_clone,
-                            score_str,
-                        });
-                        match serialized_opt {
-                            None => {
-                                pool.submit_or_complete(handle, move || {
-                                    storage.delete(&key_bytes).ok();
-                                    Ok(vec![])
-                                });
-                            }
-                            Some(serialized) => {
-                                pool.submit_or_complete(handle, move || {
-                                    let offset = storage.put(&key_bytes, &serialized)?;
-                                    if let Some(wal) = WAL.get() {
-                                        let kh = crate::util::key_hash(&key_bytes);
-                                        let vh = crate::util::value_hash(&serialized);
-                                        let _ = wal.append(crate::storage::wal::WalOp::Put {
-                                            key_hash: kh,
-                                            offset,
-                                            value_hash: vh,
-                                        });
-                                    }
-                                    Ok(vec![])
-                                });
-                            }
+                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+                {
+                    use crate::storage::backend::StorageBackend;
+                    let key_bytes = key.as_slice().to_vec();
+                    let score_str = format_score(score).into_bytes();
+                    let member_clone = member.clone();
+                    let key_bytes_owned = key_bytes.clone();
+                    let bc = ctx.block_client();
+                    let handle = Box::new(BzPopFastPathHandle {
+                        tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
+                        key_bytes: key_bytes_owned,
+                        member: member_clone,
+                        score_str,
+                    });
+                    match serialized_opt {
+                        None => {
+                            pool.submit_or_complete(handle, move || {
+                                storage.delete(&key_bytes).ok();
+                                Ok(vec![])
+                            });
                         }
-                        return Ok(ValkeyValue::NoReply);
+                        Some(serialized) => {
+                            pool.submit_or_complete(handle, move || {
+                                let offset = storage.put(&key_bytes, &serialized)?;
+                                if let Some(wal) = WAL.get() {
+                                    let kh = crate::util::key_hash(&key_bytes);
+                                    let vh = crate::util::value_hash(&serialized);
+                                    let _ = wal.append(crate::storage::wal::WalOp::Put {
+                                        key_hash: kh,
+                                        offset,
+                                        value_hash: vh,
+                                    });
+                                }
+                                Ok(vec![])
+                            });
+                        }
                     }
+                    return Ok(ValkeyValue::NoReply);
+                }
 
                 return Ok(ValkeyValue::Array(vec![
                     ValkeyValue::StringBuffer(key.as_slice().to_vec()),
@@ -329,10 +350,8 @@ fn do_bzpop(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRes
     // Slow path: block on watched keys.
     #[cfg(not(test))]
     {
-        let privdata =
-            Box::into_raw(Box::new(BzPopPrivdata { from_min })) as *mut c_void;
-        let mut key_ptrs: Vec<*mut raw::RedisModuleString> =
-            keys.iter().map(|k| k.inner).collect();
+        let privdata = Box::into_raw(Box::new(BzPopPrivdata { from_min })) as *mut c_void;
+        let mut key_ptrs: Vec<*mut raw::RedisModuleString> = keys.iter().map(|k| k.inner).collect();
         unsafe {
             raw::RedisModule_BlockClientOnKeys.unwrap()(
                 ctx.ctx,
@@ -374,7 +393,7 @@ pub fn flash_bzpopmax_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyR
 
 #[cfg(test)]
 mod tests {
-    use crate::types::zset::{ZSetInner, ScoreF64};
+    use crate::types::zset::{ScoreF64, ZSetInner};
 
     #[test]
     fn timeout_zero_is_valid() {
@@ -403,7 +422,7 @@ mod tests {
         z.insert(b"b".to_vec(), 1.0);
         z.insert(b"c".to_vec(), 2.0);
         let k = z.scores.keys().next().cloned().unwrap();
-        assert_eq!(k.0 .0, 1.0);
+        assert_eq!(k.0.0, 1.0);
         assert_eq!(k.1, b"b");
     }
 
@@ -414,7 +433,7 @@ mod tests {
         z.insert(b"b".to_vec(), 1.0);
         z.insert(b"c".to_vec(), 2.0);
         let k = z.scores.keys().next_back().cloned().unwrap();
-        assert_eq!(k.0 .0, 3.0);
+        assert_eq!(k.0.0, 3.0);
         assert_eq!(k.1, b"a");
     }
 

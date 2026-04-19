@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use valkey_module::{ValkeyError, ValkeyString};
 
-use crate::types::list::list_deserialize_or_warn;
 use crate::STORAGE;
+use crate::types::list::list_deserialize_or_warn;
 
 pub fn current_time_ms() -> i64 {
     SystemTime::now()
@@ -56,9 +56,9 @@ pub fn parse_ttl_options_raw(
                     return Err(ValkeyError::Str("ERR syntax error"));
                 }
                 let secs = parse_positive_bytes(args[i], cmd)?;
-                let rel_ms = secs
-                    .checked_mul(1000)
-                    .ok_or_else(|| ValkeyError::String(format!("ERR invalid expire time in {cmd}")))?;
+                let rel_ms = secs.checked_mul(1000).ok_or_else(|| {
+                    ValkeyError::String(format!("ERR invalid expire time in {cmd}"))
+                })?;
                 ttl_abs_ms = Some(current_time_ms() + rel_ms);
             }
             b"PX" => {
@@ -75,9 +75,9 @@ pub fn parse_ttl_options_raw(
                     return Err(ValkeyError::Str("ERR syntax error"));
                 }
                 let secs = parse_positive_bytes(args[i], cmd)?;
-                let abs_ms = secs
-                    .checked_mul(1000)
-                    .ok_or_else(|| ValkeyError::String(format!("ERR invalid expire time in {cmd}")))?;
+                let abs_ms = secs.checked_mul(1000).ok_or_else(|| {
+                    ValkeyError::String(format!("ERR invalid expire time in {cmd}"))
+                })?;
                 ttl_abs_ms = Some(abs_ms);
             }
             b"PXAT" => {
@@ -155,7 +155,11 @@ pub fn resolve_range(start: i64, stop: i64, len: usize) -> (usize, usize) {
         return (0, 0);
     }
     let len_i = len as i64;
-    let s = if start >= 0 { start } else { (len_i + start).max(0) } as usize;
+    let s = if start >= 0 {
+        start
+    } else {
+        (len_i + start).max(0)
+    } as usize;
     let e = if stop >= 0 {
         stop.min(len_i - 1)
     } else {

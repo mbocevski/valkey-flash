@@ -1,7 +1,7 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::CACHE;
+use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 
 // ── DelCompletionHandle ───────────────────────────────────────────────────────
 
@@ -127,11 +127,11 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
                 let kh = crate::util::key_hash(key);
                 if let Some(wal) = crate::WAL.get()
                     && let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash: kh })
-                    {
-                        valkey_module::logging::log_warning(
-                            format!("flash: DEL WAL append failed: {e}").as_str(),
-                        );
-                    }
+                {
+                    valkey_module::logging::log_warning(
+                        format!("flash: DEL WAL append failed: {e}").as_str(),
+                    );
+                }
                 if let Err(e) = storage.delete(key) {
                     // Space reclaim is best-effort — log and continue.
                     valkey_module::logging::log_warning(

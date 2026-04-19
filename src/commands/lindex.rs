@@ -1,9 +1,9 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::resolve_index;
-use crate::types::list::{list_deserialize, list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::resolve_index;
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_deserialize, list_serialize};
 
 // ── LIndexCompletionHandle ────────────────────────────────────────────────────
 
@@ -58,9 +58,8 @@ pub fn flash_lindex_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
         .ok_or(ValkeyError::Str("ERR flash module not initialized"))?;
 
     if let Some(cached_bytes) = cache.get(key.as_slice()) {
-        let val = list_deserialize(&cached_bytes).and_then(|l| {
-            resolve_index(index, l.len()).and_then(|i| l.get(i).cloned())
-        });
+        let val = list_deserialize(&cached_bytes)
+            .and_then(|l| resolve_index(index, l.len()).and_then(|i| l.get(i).cloned()));
         return Ok(match val {
             Some(v) => ValkeyValue::StringBuffer(v),
             None => ValkeyValue::Null,

@@ -196,42 +196,35 @@ pub unsafe extern "C" fn aux_load(
     if when == AUX_BEFORE_RDB {
         // Try current (v2) shape first; fall back to v1 (no nvme_next_block /
         // free_blocks) for RDB files written by an older module build.
-        let payload: AuxBeforePayload =
-            match bincode::serde::decode_from_slice(bytes, cfg()) {
-                Ok((p, _)) => p,
-                Err(_) => {
-                    match bincode::serde::decode_from_slice::<AuxBeforePayloadV1, _>(
-                        bytes,
-                        cfg(),
-                    ) {
-                        Ok((v1, _)) => {
-                            logging::log_notice(
-                                "flash: aux_load BEFORE: v1 aux detected, promoting (free_blocks=empty)",
-                            );
-                            AuxBeforePayload {
-                                magic: v1.magic,
-                                version: v1.version,
-                                entries: v1.entries,
-                                path: v1.path,
-                                capacity_bytes: v1.capacity_bytes,
-                                io_uring_entries: v1.io_uring_entries,
-                                wal_cursor: v1.wal_cursor,
-                                nvme_next_block: 0,
-                                free_blocks: Vec::new(),
-                            }
-                        }
-                        Err(e) => {
-                            logging::log_warning(
-                                format!(
-                                    "flash: aux_load BEFORE: deserialization error: {e}"
-                                )
-                                .as_str(),
-                            );
-                            return raw::Status::Err as c_int;
+        let payload: AuxBeforePayload = match bincode::serde::decode_from_slice(bytes, cfg()) {
+            Ok((p, _)) => p,
+            Err(_) => {
+                match bincode::serde::decode_from_slice::<AuxBeforePayloadV1, _>(bytes, cfg()) {
+                    Ok((v1, _)) => {
+                        logging::log_notice(
+                            "flash: aux_load BEFORE: v1 aux detected, promoting (free_blocks=empty)",
+                        );
+                        AuxBeforePayload {
+                            magic: v1.magic,
+                            version: v1.version,
+                            entries: v1.entries,
+                            path: v1.path,
+                            capacity_bytes: v1.capacity_bytes,
+                            io_uring_entries: v1.io_uring_entries,
+                            wal_cursor: v1.wal_cursor,
+                            nvme_next_block: 0,
+                            free_blocks: Vec::new(),
                         }
                     }
+                    Err(e) => {
+                        logging::log_warning(
+                            format!("flash: aux_load BEFORE: deserialization error: {e}").as_str(),
+                        );
+                        return raw::Status::Err as c_int;
+                    }
                 }
-            };
+            }
+        };
 
         if payload.magic != AUX_MAGIC {
             logging::log_warning(
@@ -276,16 +269,15 @@ pub unsafe extern "C" fn aux_load(
             state.before = payload;
         }
     } else if when == AUX_AFTER_RDB {
-        let payload: AuxAfterPayload =
-            match bincode::serde::decode_from_slice(bytes, cfg()) {
-                Ok((p, _)) => p,
-                Err(e) => {
-                    logging::log_warning(
-                        format!("flash: aux_load AFTER: deserialization error: {e}").as_str(),
-                    );
-                    return raw::Status::Err as c_int;
-                }
-            };
+        let payload: AuxAfterPayload = match bincode::serde::decode_from_slice(bytes, cfg()) {
+            Ok((p, _)) => p,
+            Err(e) => {
+                logging::log_warning(
+                    format!("flash: aux_load AFTER: deserialization error: {e}").as_str(),
+                );
+                return raw::Status::Err as c_int;
+            }
+        };
 
         if payload.magic != AUX_MAGIC {
             logging::log_warning(
@@ -317,9 +309,10 @@ pub unsafe extern "C" fn aux_load(
         );
 
         if let Ok(mut guard) = LOADED_AUX_STATE.lock()
-            && let Some(state) = guard.as_mut() {
-                state.after = Some(payload);
-            }
+            && let Some(state) = guard.as_mut()
+        {
+            state.after = Some(payload);
+        }
     }
 
     raw::Status::Ok as c_int
@@ -384,8 +377,7 @@ mod tests {
     #[test]
     fn before_roundtrip_empty_entries() {
         let bytes = make_before(0, AUX_ENCODING_VERSION, AUX_MAGIC);
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_eq!(decoded.magic, AUX_MAGIC);
         assert_eq!(decoded.version, AUX_ENCODING_VERSION);
         assert!(decoded.entries.is_empty());
@@ -395,8 +387,7 @@ mod tests {
     #[test]
     fn before_roundtrip_with_entries() {
         let bytes = make_before(10, AUX_ENCODING_VERSION, AUX_MAGIC);
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_eq!(decoded.entries.len(), 10);
         for (i, entry) in decoded.entries.iter().enumerate() {
             assert_eq!(entry.key_hash, i as u64);
@@ -408,8 +399,7 @@ mod tests {
     #[test]
     fn after_roundtrip() {
         let bytes = make_after(AUX_ENCODING_VERSION, AUX_MAGIC);
-        let decoded: AuxAfterPayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxAfterPayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_eq!(decoded.magic, AUX_MAGIC);
         assert_eq!(decoded.version, AUX_ENCODING_VERSION);
         assert_eq!(decoded.saved_at_unix_ms, 1_700_000_000_000);
@@ -418,32 +408,28 @@ mod tests {
     #[test]
     fn bad_magic_detected_before() {
         let bytes = make_before(0, AUX_ENCODING_VERSION, 0xDEADBEEF);
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_ne!(decoded.magic, AUX_MAGIC);
     }
 
     #[test]
     fn bad_magic_detected_after() {
         let bytes = make_after(AUX_ENCODING_VERSION, 0xDEADBEEF);
-        let decoded: AuxAfterPayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxAfterPayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_ne!(decoded.magic, AUX_MAGIC);
     }
 
     #[test]
     fn future_version_detected_before() {
         let bytes = make_before(0, 99, AUX_MAGIC);
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert!(decoded.version > AUX_ENCODING_VERSION);
     }
 
     #[test]
     fn future_version_detected_after() {
         let bytes = make_after(99, AUX_MAGIC);
-        let decoded: AuxAfterPayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxAfterPayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert!(decoded.version > AUX_ENCODING_VERSION);
     }
 
@@ -493,8 +479,7 @@ mod tests {
             free_blocks: free.clone(),
         };
         let bytes = bincode::serde::encode_to_vec(&payload, cfg()).unwrap();
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&bytes, cfg()).unwrap().0;
         assert_eq!(decoded.nvme_next_block, 20);
         assert_eq!(decoded.free_blocks, free);
     }
@@ -508,8 +493,9 @@ mod tests {
             bincode::serde::decode_from_slice::<AuxBeforePayload, _>(&v1_bytes, cfg()).is_err()
         );
         // Must decode as v1 successfully.
-        let v1: AuxBeforePayloadV1 =
-            bincode::serde::decode_from_slice(&v1_bytes, cfg()).unwrap().0;
+        let v1: AuxBeforePayloadV1 = bincode::serde::decode_from_slice(&v1_bytes, cfg())
+            .unwrap()
+            .0;
         assert_eq!(v1.entries.len(), 3);
         assert_eq!(v1.wal_cursor, 99);
     }
@@ -517,8 +503,9 @@ mod tests {
     #[test]
     fn v2_bytes_deserialize_correctly() {
         let v2_bytes = make_before(2, AUX_ENCODING_VERSION, AUX_MAGIC);
-        let decoded: AuxBeforePayload =
-            bincode::serde::decode_from_slice(&v2_bytes, cfg()).unwrap().0;
+        let decoded: AuxBeforePayload = bincode::serde::decode_from_slice(&v2_bytes, cfg())
+            .unwrap()
+            .0;
         assert_eq!(decoded.entries.len(), 2);
         assert_eq!(decoded.nvme_next_block, 0);
         assert!(decoded.free_blocks.is_empty());
@@ -553,8 +540,9 @@ mod tests {
             "bincode 2 legacy config must produce bincode 1.x-identical bytes"
         );
         // Round-trip decode of the fixture bytes.
-        let decoded: AuxAfterPayload =
-            bincode::serde::decode_from_slice(expected, cfg()).unwrap().0;
+        let decoded: AuxAfterPayload = bincode::serde::decode_from_slice(expected, cfg())
+            .unwrap()
+            .0;
         assert_eq!(decoded.magic, AUX_MAGIC);
         assert_eq!(decoded.saved_at_unix_ms, 1_700_000_000_000);
         assert_eq!(decoded.rdb_crc, 0);

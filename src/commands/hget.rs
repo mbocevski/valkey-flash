@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{hash_deserialize, hash_serialize, FlashHashObject, FLASH_HASH_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::types::Tier;
+use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_deserialize, hash_serialize};
 
 pub static HGET_HITS: AtomicU64 = AtomicU64::new(0);
 pub static HGET_MISSES: AtomicU64 = AtomicU64::new(0);

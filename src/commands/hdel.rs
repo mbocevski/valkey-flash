@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{
-    hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
-};
 use crate::types::Tier;
+use crate::types::hash::{
+    FLASH_HASH_TYPE, FlashHashObject, hash_deserialize_or_warn, hash_serialize,
+};
 use crate::{CACHE, STORAGE};
 #[cfg(not(test))]
 use crate::{POOL, WAL};
@@ -132,11 +132,12 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
             let handle = Box::new(HDelCompletionHandle::new(bc, deleted));
             pool.submit_or_complete(handle, move || {
                 if let Some(wal) = WAL.get()
-                    && let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash }) {
-                        valkey_module::logging::log_warning(
-                            format!("flash: HDEL WAL Delete failed: {e}").as_str(),
-                        );
-                    }
+                    && let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash })
+                {
+                    valkey_module::logging::log_warning(
+                        format!("flash: HDEL WAL Delete failed: {e}").as_str(),
+                    );
+                }
                 Ok(vec![])
             });
             return Ok(ValkeyValue::NoReply);

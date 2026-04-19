@@ -2,9 +2,9 @@ use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyStrin
 
 use crate::storage::backend::StorageBackend;
 use crate::storage::file_io_uring::FileIoUringBackend;
-use crate::types::hash::{hash_serialize, FlashHashObject, FLASH_HASH_TYPE};
-use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
 use crate::types::Tier;
+use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_serialize};
+use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
 
 /// `FLASH.DEBUG.DEMOTE key`

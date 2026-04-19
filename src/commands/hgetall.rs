@@ -1,10 +1,10 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{
-    hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
-};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::types::Tier;
+use crate::types::hash::{
+    FLASH_HASH_TYPE, FlashHashObject, hash_deserialize_or_warn, hash_serialize,
+};
 
 // ── HGetAllCompletionHandle ───────────────────────────────────────────────────
 
@@ -111,9 +111,10 @@ pub fn flash_hgetall_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
     if let Some(reply) = hot_reply {
         let key_handle = ctx.open_key(key);
         if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE)
-            && let Tier::Hot(fields) = &obj.tier {
-                cache.put(key.as_slice(), hash_serialize(fields));
-            }
+            && let Tier::Hot(fields) = &obj.tier
+        {
+            cache.put(key.as_slice(), hash_serialize(fields));
+        }
         return Ok(reply);
     }
 

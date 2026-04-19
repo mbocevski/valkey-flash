@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex, RwLock,
+    atomic::{AtomicU64, Ordering},
 };
 
-use quick_cache::{sync::Cache, Weighter};
+use quick_cache::{Weighter, sync::Cache};
 
 type InnerCache = Cache<Vec<u8>, Vec<u8>, BytesWeighter>;
 
@@ -116,9 +116,10 @@ impl FlashCache {
         if old_weight == 0 {
             // New key: enqueue as a potential demotion candidate.
             if let Ok(mut q) = self.candidates.lock()
-                && q.len() < MAX_CANDIDATES {
-                    q.push_back(key.to_vec());
-                }
+                && q.len() < MAX_CANDIDATES
+            {
+                q.push_back(key.to_vec());
+            }
         }
         cache.insert(key.to_vec(), value);
         self.approx_bytes.fetch_add(new_weight, Ordering::Relaxed);

@@ -1,12 +1,12 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::zset_common::{
-    apply_limit, build_range_reply, lex_range_entries, parse_lex_bound,
-    parse_score_bound, promote_cold_zset, score_range_entries,
-};
 use crate::commands::list_common::resolve_range;
-use crate::types::zset::{FlashZSetObject, ScoreF64, ZSetInner, FLASH_ZSET_TYPE};
+use crate::commands::zset_common::{
+    apply_limit, build_range_reply, lex_range_entries, parse_lex_bound, parse_score_bound,
+    promote_cold_zset, score_range_entries,
+};
 use crate::types::Tier;
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, ScoreF64, ZSetInner};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -31,10 +31,7 @@ fn parse_limit(args: &[ValkeyString], pos: &mut usize) -> Result<Option<(i64, i6
     Ok(Some((offset, count)))
 }
 
-fn open_zset_read(
-    ctx: &Context,
-    key: &ValkeyString,
-) -> Result<Option<ZSetInner>, ValkeyError> {
+fn open_zset_read(ctx: &Context, key: &ValkeyString) -> Result<Option<ZSetInner>, ValkeyError> {
     let key_handle = ctx.open_key(key);
     match key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
         Err(_) => Err(ValkeyError::WrongType),
@@ -133,7 +130,11 @@ pub fn flash_zrange_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
 
     let pairs: Vec<(&Vec<u8>, f64)> = if by_score {
         // For BYSCORE+REV, arguments are swapped: max first, min second.
-        let (effective_min, effective_max) = if rev { (max_arg, min_arg) } else { (min_arg, max_arg) };
+        let (effective_min, effective_max) = if rev {
+            (max_arg, min_arg)
+        } else {
+            (min_arg, max_arg)
+        };
         let min_bound = parse_score_bound(effective_min)?;
         let max_bound = parse_score_bound(effective_max)?;
         let mut entries = score_range_entries(&inner, min_bound, max_bound);
@@ -146,7 +147,11 @@ pub fn flash_zrange_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
         entries
     } else if by_lex {
         // For BYLEX+REV, arguments are swapped: max first, min second.
-        let (effective_min, effective_max) = if rev { (max_arg, min_arg) } else { (min_arg, max_arg) };
+        let (effective_min, effective_max) = if rev {
+            (max_arg, min_arg)
+        } else {
+            (min_arg, max_arg)
+        };
         let min_bound = parse_lex_bound(effective_min)?;
         let max_bound = parse_lex_bound(effective_max)?;
         let mut entries = lex_range_entries(&inner, &min_bound, &max_bound);
@@ -299,9 +304,7 @@ pub fn flash_zrevrangebylex_command(ctx: &Context, args: Vec<ValkeyString>) -> V
 // ── Option parsers ────────────────────────────────────────────────────────────
 
 /// Parse optional `[WITHSCORES] [LIMIT offset count]` for ZRANGEBYSCORE/ZREVRANGEBYSCORE.
-fn parse_range_opts(
-    args: &[ValkeyString],
-) -> Result<(bool, Option<(i64, i64)>), ValkeyError> {
+fn parse_range_opts(args: &[ValkeyString]) -> Result<(bool, Option<(i64, i64)>), ValkeyError> {
     let mut with_scores = false;
     let mut limit: Option<(i64, i64)> = None;
     let mut i = 0usize;
@@ -363,10 +366,10 @@ fn parse_limit_only(args: &[ValkeyString]) -> Result<Option<(i64, i64)>, ValkeyE
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Bound;
     use super::*;
     use crate::commands::zset_common::LexBound;
     use crate::types::zset::ZSetInner;
+    use std::ops::Bound;
 
     fn zset_with(entries: &[(&[u8], f64)]) -> ZSetInner {
         let mut z = ZSetInner::new();
@@ -413,11 +416,7 @@ mod tests {
     #[test]
     fn lex_range_exclusive() {
         let z = zset_with(&[(b"a", 0.0), (b"b", 0.0), (b"c", 0.0)]);
-        let r = lex_range_entries(
-            &z,
-            &LexBound::Excluded(b"a".to_vec()),
-            &LexBound::Max,
-        );
+        let r = lex_range_entries(&z, &LexBound::Excluded(b"a".to_vec()), &LexBound::Max);
         assert_eq!(r.len(), 2); // b and c
     }
 

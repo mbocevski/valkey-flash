@@ -1,9 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::types::Tier;
+use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 
 // ── SetCompletionHandle ───────────────────────────────────────────────────────
 

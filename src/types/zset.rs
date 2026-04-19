@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
-use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
+use valkey_module::{RedisModuleDefragCtx, RedisModuleString, logging, raw};
 
 use super::Tier;
 
@@ -213,88 +213,94 @@ pub static FLASH_ZSET_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
-    let obj = Box::from_raw(value.cast::<FlashZSetObject>());
-    if let Tier::Cold {
-        key_hash,
-        backend_offset,
-        num_blocks,
-        ..
-    } = obj.tier
-    {
-        if let Some(storage) = crate::STORAGE.get() {
-            storage.release_cold_blocks(backend_offset, num_blocks);
-        }
-        if let Some(wal) = crate::WAL.get() {
-            let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
-        }
-        if let Ok(mut map) = crate::TIERING_MAP.lock() {
-            map.remove(&key_hash);
+pub unsafe extern "C" fn free(value: *mut c_void) {
+    unsafe {
+        let obj = Box::from_raw(value.cast::<FlashZSetObject>());
+        if let Tier::Cold {
+            key_hash,
+            backend_offset,
+            num_blocks,
+            ..
+        } = obj.tier
+        {
+            if let Some(storage) = crate::STORAGE.get() {
+                storage.release_cold_blocks(backend_offset, num_blocks);
+            }
+            if let Some(wal) = crate::WAL.get() {
+                let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
+            }
+            if let Ok(mut map) = crate::TIERING_MAP.lock() {
+                map.remove(&key_hash);
+            }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize { unsafe {
-    let obj = &*value.cast::<FlashZSetObject>();
-    match &obj.tier {
-        Tier::Hot(inner) => {
-            let data_bytes: usize = inner.members.keys().map(|k| k.len() + 8).sum();
-            std::mem::size_of::<FlashZSetObject>() + data_bytes
+) -> usize {
+    unsafe {
+        let obj = &*value.cast::<FlashZSetObject>();
+        match &obj.tier {
+            Tier::Hot(inner) => {
+                let data_bytes: usize = inner.members.keys().map(|k| k.len() + 8).sum();
+                std::mem::size_of::<FlashZSetObject>() + data_bytes
+            }
+            Tier::Cold { .. } => std::mem::size_of::<FlashZSetObject>(),
         }
-        Tier::Cold { .. } => std::mem::size_of::<FlashZSetObject>(),
     }
-}}
+}
 
 /// # Safety
 ///
 /// RDB format (v1):
 ///   `[u64 encoding_version=1][u64 shape_tag=0x04][i64 ttl_ms]`
 ///   `[u64 count][for each member in BTreeMap order: save_double(score) + save_slice(member)]`
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
-    let obj = &*value.cast::<FlashZSetObject>();
-    raw::save_unsigned(io, ENCODING_VERSION as u64);
-    raw::save_unsigned(io, SHAPE_TAG_ZSET);
-    raw::save_signed(io, obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL));
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+    unsafe {
+        let obj = &*value.cast::<FlashZSetObject>();
+        raw::save_unsigned(io, ENCODING_VERSION as u64);
+        raw::save_unsigned(io, SHAPE_TAG_ZSET);
+        raw::save_signed(io, obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL));
 
-    let cold_inner: ZSetInner;
-    let inner: &ZSetInner = match &obj.tier {
-        Tier::Hot(z) => z,
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            match crate::STORAGE
-                .get()
-                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-                .and_then(|b| zset_deserialize(&b))
-            {
-                Some(z) => {
-                    cold_inner = z;
-                    &cold_inner
-                }
-                None => {
-                    logging::log_warning(
-                        "flash: rdb_save Tier::Cold zset: NVMe read failed; writing empty zset",
-                    );
-                    cold_inner = ZSetInner::new();
-                    &cold_inner
+        let cold_inner: ZSetInner;
+        let inner: &ZSetInner = match &obj.tier {
+            Tier::Hot(z) => z,
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                match crate::STORAGE
+                    .get()
+                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|b| zset_deserialize(&b))
+                {
+                    Some(z) => {
+                        cold_inner = z;
+                        &cold_inner
+                    }
+                    None => {
+                        logging::log_warning(
+                            "flash: rdb_save Tier::Cold zset: NVMe read failed; writing empty zset",
+                        );
+                        cold_inner = ZSetInner::new();
+                        &cold_inner
+                    }
                 }
             }
-        }
-    };
+        };
 
-    raw::save_unsigned(io, inner.scores.len() as u64);
-    for ((ScoreF64(score), member), ()) in &inner.scores {
-        raw::save_double(io, *score);
-        raw::save_slice(io, member);
+        raw::save_unsigned(io, inner.scores.len() as u64);
+        for ((ScoreF64(score), member), ()) in &inner.scores {
+            raw::save_double(io, *score);
+            raw::save_slice(io, member);
+        }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
@@ -357,10 +363,8 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
     };
     if count > MAX_ZSET_MEMBERS {
         logging::log_warning(
-            format!(
-                "flash: rdb_load zset: member count {count} exceeds cap {MAX_ZSET_MEMBERS}"
-            )
-            .as_str(),
+            format!("flash: rdb_load zset: member count {count} exceeds cap {MAX_ZSET_MEMBERS}")
+                .as_str(),
         );
         return null_mut();
     }
@@ -402,9 +406,7 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         total_member_bytes = match total_member_bytes.checked_add(member_buf.as_ref().len()) {
             Some(t) => t,
             None => {
-                logging::log_warning(
-                    "flash: rdb_load zset: total member bytes overflow",
-                );
+                logging::log_warning("flash: rdb_load zset: total member bytes overflow");
                 return null_mut();
             }
         };
@@ -464,136 +466,140 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) { unsafe {
-    let obj = &*value.cast::<FlashZSetObject>();
-    let cold_inner: ZSetInner;
-    let inner: &ZSetInner = match &obj.tier {
-        Tier::Hot(z) => z,
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            match crate::STORAGE
-                .get()
-                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-                .and_then(|b| zset_deserialize(&b))
-            {
-                Some(z) => {
-                    cold_inner = z;
-                    &cold_inner
-                }
-                None => {
-                    logging::log_warning(
-                        "flash: aof_rewrite Tier::Cold zset: NVMe read failed; skipping key",
-                    );
-                    return;
+) {
+    unsafe {
+        let obj = &*value.cast::<FlashZSetObject>();
+        let cold_inner: ZSetInner;
+        let inner: &ZSetInner = match &obj.tier {
+            Tier::Hot(z) => z,
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                match crate::STORAGE
+                    .get()
+                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|b| zset_deserialize(&b))
+                {
+                    Some(z) => {
+                        cold_inner = z;
+                        &cold_inner
+                    }
+                    None => {
+                        logging::log_warning(
+                            "flash: aof_rewrite Tier::Cold zset: NVMe read failed; skipping key",
+                        );
+                        return;
+                    }
                 }
             }
-        }
-    };
+        };
 
-    if inner.is_empty() {
-        return;
-    }
-
-    let emit = match raw::RedisModule_EmitAOF {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite zset: RedisModule_EmitAOF is null");
+        if inner.is_empty() {
             return;
         }
-    };
-    let get_ctx_fn = match raw::RedisModule_GetContextFromIO {
-        Some(f) => f,
-        None => return,
-    };
-    let create_str_fn = match raw::RedisModule_CreateString {
-        Some(f) => f,
-        None => return,
-    };
-    let free_str_fn = match raw::RedisModule_FreeString {
-        Some(f) => f,
-        None => return,
-    };
 
-    let ctx = get_ctx_fn(aof);
-    let zadd_cmd = match CString::new("FLASH.ZADD") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    // 's' = key (RedisModuleString*), 'v' = (RedisModuleString**, size_t)
-    let fmt_sv = match CString::new("sv") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    const CHUNK_PAIRS: usize = 64;
-    let entries: Vec<(f64, &Vec<u8>)> = inner
-        .scores
-        .iter()
-        .map(|((ScoreF64(s), m), ())| (*s, m))
-        .collect();
-
-    for chunk in entries.chunks(CHUNK_PAIRS) {
-        // Each pair emits two strings: score and member.
-        let mut strs: Vec<*mut raw::RedisModuleString> = Vec::with_capacity(chunk.len() * 2);
-        let mut alloc_ok = true;
-        for (score, member) in chunk {
-            let score_s = format_score(*score);
-            let ss = create_str_fn(ctx, score_s.as_ptr().cast::<c_char>(), score_s.len());
-            if ss.is_null() {
-                alloc_ok = false;
-                break;
+        let emit = match raw::RedisModule_EmitAOF {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite zset: RedisModule_EmitAOF is null");
+                return;
             }
-            strs.push(ss);
-            let ms = create_str_fn(ctx, member.as_ptr().cast::<c_char>(), member.len());
-            if ms.is_null() {
-                alloc_ok = false;
-                break;
+        };
+        let get_ctx_fn = match raw::RedisModule_GetContextFromIO {
+            Some(f) => f,
+            None => return,
+        };
+        let create_str_fn = match raw::RedisModule_CreateString {
+            Some(f) => f,
+            None => return,
+        };
+        let free_str_fn = match raw::RedisModule_FreeString {
+            Some(f) => f,
+            None => return,
+        };
+
+        let ctx = get_ctx_fn(aof);
+        let zadd_cmd = match CString::new("FLASH.ZADD") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        // 's' = key (RedisModuleString*), 'v' = (RedisModuleString**, size_t)
+        let fmt_sv = match CString::new("sv") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        const CHUNK_PAIRS: usize = 64;
+        let entries: Vec<(f64, &Vec<u8>)> = inner
+            .scores
+            .iter()
+            .map(|((ScoreF64(s), m), ())| (*s, m))
+            .collect();
+
+        for chunk in entries.chunks(CHUNK_PAIRS) {
+            // Each pair emits two strings: score and member.
+            let mut strs: Vec<*mut raw::RedisModuleString> = Vec::with_capacity(chunk.len() * 2);
+            let mut alloc_ok = true;
+            for (score, member) in chunk {
+                let score_s = format_score(*score);
+                let ss = create_str_fn(ctx, score_s.as_ptr().cast::<c_char>(), score_s.len());
+                if ss.is_null() {
+                    alloc_ok = false;
+                    break;
+                }
+                strs.push(ss);
+                let ms = create_str_fn(ctx, member.as_ptr().cast::<c_char>(), member.len());
+                if ms.is_null() {
+                    alloc_ok = false;
+                    break;
+                }
+                strs.push(ms);
             }
-            strs.push(ms);
-        }
-        if !alloc_ok {
+            if !alloc_ok {
+                for &s in &strs {
+                    free_str_fn(ctx, s);
+                }
+                logging::log_warning(
+                    "flash: aof_rewrite zset: CreateString returned null; aborting",
+                );
+                return;
+            }
+
+            emit(
+                aof,
+                zadd_cmd.as_ptr(),
+                fmt_sv.as_ptr(),
+                key,
+                strs.as_ptr(),
+                strs.len(),
+            );
+
             for &s in &strs {
                 free_str_fn(ctx, s);
             }
-            logging::log_warning("flash: aof_rewrite zset: CreateString returned null; aborting");
-            return;
         }
 
-        emit(
-            aof,
-            zadd_cmd.as_ptr(),
-            fmt_sv.as_ptr(),
-            key,
-            strs.as_ptr(),
-            strs.len(),
-        );
-
-        for &s in &strs {
-            free_str_fn(ctx, s);
+        if let Some(ttl) = obj.ttl_ms {
+            let pexpireat_cmd = match CString::new("PEXPIREAT") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let fmt_sl = match CString::new("sl") {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            emit(
+                aof,
+                pexpireat_cmd.as_ptr(),
+                fmt_sl.as_ptr(),
+                key,
+                ttl as std::os::raw::c_longlong,
+            );
         }
     }
-
-    if let Some(ttl) = obj.ttl_ms {
-        let pexpireat_cmd = match CString::new("PEXPIREAT") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let fmt_sl = match CString::new("sl") {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        emit(
-            aof,
-            pexpireat_cmd.as_ptr(),
-            fmt_sl.as_ptr(),
-            key,
-            ttl as std::os::raw::c_longlong,
-        );
-    }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -605,102 +611,106 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void { unsafe {
-    let src = &*value.cast::<FlashZSetObject>();
-    match &src.tier {
-        Tier::Hot(inner) => Box::into_raw(Box::new(FlashZSetObject {
-            tier: Tier::Hot(inner.clone()),
-            ttl_ms: src.ttl_ms,
-        }))
-        .cast::<c_void>(),
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            #[cfg(not(test))]
-            {
-                match crate::STORAGE
-                    .get()
-                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-                    .and_then(|b| zset_deserialize(&b))
+) -> *mut c_void {
+    unsafe {
+        let src = &*value.cast::<FlashZSetObject>();
+        match &src.tier {
+            Tier::Hot(inner) => Box::into_raw(Box::new(FlashZSetObject {
+                tier: Tier::Hot(inner.clone()),
+                ttl_ms: src.ttl_ms,
+            }))
+            .cast::<c_void>(),
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                #[cfg(not(test))]
                 {
-                    Some(inner) => Box::into_raw(Box::new(FlashZSetObject {
-                        tier: Tier::Hot(inner),
-                        ttl_ms: src.ttl_ms,
-                    }))
-                    .cast::<c_void>(),
-                    None => null_mut(),
+                    match crate::STORAGE
+                        .get()
+                        .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                        .and_then(|b| zset_deserialize(&b))
+                    {
+                        Some(inner) => Box::into_raw(Box::new(FlashZSetObject {
+                            tier: Tier::Hot(inner),
+                            ttl_ms: src.ttl_ms,
+                        }))
+                        .cast::<c_void>(),
+                        None => null_mut(),
+                    }
                 }
-            }
-            #[cfg(test)]
-            {
-                let _ = (backend_offset, value_len);
-                null_mut()
+                #[cfg(test)]
+                {
+                    let _ = (backend_offset, value_len);
+                    null_mut()
+                }
             }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 { unsafe {
-    use std::mem;
-    use valkey_module::defrag::Defrag;
+) -> i32 {
+    unsafe {
+        use std::mem;
+        use valkey_module::defrag::Defrag;
 
-    let dfg = Defrag::new(ctx);
+        let dfg = Defrag::new(ctx);
 
-    // Step 1: relocate the FlashZSetObject struct itself.
-    let new_struct = dfg.alloc(*value);
-    if !new_struct.is_null() {
-        *value = new_struct;
-    }
-
-    // Step 2: for Hot tier, relocate each member Vec's backing buffer in both
-    // the scores BTreeMap and the members HashMap (they are separate allocations).
-    let obj: &mut FlashZSetObject = &mut *(*value).cast::<FlashZSetObject>();
-    if let Tier::Hot(ref mut inner) = obj.tier {
-        let score_entries: Vec<((ScoreF64, Vec<u8>), ())> =
-            mem::take(&mut inner.scores).into_iter().collect();
-        for ((score, mut member), ()) in score_entries {
-            if member.capacity() > 0 {
-                let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
-                if !new_buf.is_null() {
-                    let (len, cap) = (member.len(), member.capacity());
-                    let old = mem::replace(
-                        &mut member,
-                        Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
-                    );
-                    mem::forget(old);
-                }
-            }
-            inner.scores.insert((score, member), ());
+        // Step 1: relocate the FlashZSetObject struct itself.
+        let new_struct = dfg.alloc(*value);
+        if !new_struct.is_null() {
+            *value = new_struct;
         }
 
-        let member_entries: Vec<(Vec<u8>, f64)> =
-            mem::take(&mut inner.members).into_iter().collect();
-        for (mut member, score) in member_entries {
-            if member.capacity() > 0 {
-                let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
-                if !new_buf.is_null() {
-                    let (len, cap) = (member.len(), member.capacity());
-                    let old = mem::replace(
-                        &mut member,
-                        Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
-                    );
-                    mem::forget(old);
+        // Step 2: for Hot tier, relocate each member Vec's backing buffer in both
+        // the scores BTreeMap and the members HashMap (they are separate allocations).
+        let obj: &mut FlashZSetObject = &mut *(*value).cast::<FlashZSetObject>();
+        if let Tier::Hot(ref mut inner) = obj.tier {
+            let score_entries: Vec<((ScoreF64, Vec<u8>), ())> =
+                mem::take(&mut inner.scores).into_iter().collect();
+            for ((score, mut member), ()) in score_entries {
+                if member.capacity() > 0 {
+                    let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
+                    if !new_buf.is_null() {
+                        let (len, cap) = (member.len(), member.capacity());
+                        let old = mem::replace(
+                            &mut member,
+                            Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
+                        );
+                        mem::forget(old);
+                    }
                 }
+                inner.scores.insert((score, member), ());
             }
-            inner.members.insert(member, score);
-        }
-    }
-    // Cold tier: only primitive scalars — nothing to relocate.
 
-    0
-}}
+            let member_entries: Vec<(Vec<u8>, f64)> =
+                mem::take(&mut inner.members).into_iter().collect();
+            for (mut member, score) in member_entries {
+                if member.capacity() > 0 {
+                    let new_buf = dfg.alloc(member.as_mut_ptr().cast::<c_void>());
+                    if !new_buf.is_null() {
+                        let (len, cap) = (member.len(), member.capacity());
+                        let old = mem::replace(
+                            &mut member,
+                            Vec::from_raw_parts(new_buf.cast::<u8>(), len, cap),
+                        );
+                        mem::forget(old);
+                    }
+                }
+                inner.members.insert(member, score);
+            }
+        }
+        // Cold tier: only primitive scalars — nothing to relocate.
+
+        0
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -831,7 +841,10 @@ mod tests {
                 break;
             }
         }
-        assert!(hit_cap, "cumulative cap must trigger before 600K × 1 KiB members");
+        assert!(
+            hit_cap,
+            "cumulative cap must trigger before 600K × 1 KiB members"
+        );
         assert!(total > MAX_MEMBER_BYTES);
     }
 

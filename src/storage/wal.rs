@@ -229,22 +229,25 @@ fn spawn_flusher(
 ) -> WalResult<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("wal-flusher".into())
-        .spawn(move || loop {
-            let (mu, cvar) = &*signal;
-            let guard = mu.lock().unwrap_or_else(|e| e.into_inner());
-            // Sleep up to 1 s; wakes immediately when shutdown is signalled.
-            let _ = cvar.wait_timeout_while(guard, Duration::from_secs(1), |_| {
-                !shutdown.load(Ordering::Relaxed)
-            });
-            if shutdown.load(Ordering::Relaxed) {
-                break;
-            }
-            if WalSyncMode::from_u8(sync_mode.load(Ordering::Relaxed)) == WalSyncMode::Everysec {
-                let guard = match inner.lock() {
-                    Ok(g) => g,
-                    Err(_) => break,
-                };
-                let _ = guard.file.sync_data();
+        .spawn(move || {
+            loop {
+                let (mu, cvar) = &*signal;
+                let guard = mu.lock().unwrap_or_else(|e| e.into_inner());
+                // Sleep up to 1 s; wakes immediately when shutdown is signalled.
+                let _ = cvar.wait_timeout_while(guard, Duration::from_secs(1), |_| {
+                    !shutdown.load(Ordering::Relaxed)
+                });
+                if shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                if WalSyncMode::from_u8(sync_mode.load(Ordering::Relaxed)) == WalSyncMode::Everysec
+                {
+                    let guard = match inner.lock() {
+                        Ok(g) => g,
+                        Err(_) => break,
+                    };
+                    let _ = guard.file.sync_data();
+                }
             }
         })
         .map_err(WalError::Io)

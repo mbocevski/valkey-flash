@@ -1,4 +1,4 @@
-use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 use crate::storage::backend::{StorageError, StorageResult};
 
@@ -222,7 +222,7 @@ mod tests {
     fn pool_saturation_all_tasks_complete() {
         let n_workers = 2;
         let n_tasks = n_workers * 5; // 10 tasks
-                                     // Queue must be large enough to hold all tasks; workers drain concurrently.
+        // Queue must be large enough to hold all tasks; workers drain concurrently.
         let pool = AsyncThreadPool::with_queue_size(n_workers, n_tasks);
         let (done_tx, done_rx) = mpsc::sync_channel::<StorageResult<Vec<u8>>>(n_tasks);
         for i in 0..n_tasks as u8 {
@@ -329,11 +329,13 @@ mod loom_tests {
             let results = Arc::new(Mutex::new(Vec::<u8>::new()));
 
             let make_worker = |q: Arc<Mutex<Vec<u8>>>, r: Arc<Mutex<Vec<u8>>>| {
-                thread::spawn(move || loop {
-                    let task = q.lock().unwrap().pop();
-                    match task {
-                        Some(t) => r.lock().unwrap().push(t),
-                        None => break,
+                thread::spawn(move || {
+                    loop {
+                        let task = q.lock().unwrap().pop();
+                        match task {
+                            Some(t) => r.lock().unwrap().push(t),
+                            None => break,
+                        }
                     }
                 })
             };

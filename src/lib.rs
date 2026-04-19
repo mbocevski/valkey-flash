@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use valkey_module::{
+    Context, ContextFlags, InfoContext, Status, ValkeyResult, ValkeyString,
     configuration::{ConfigurationContext, ConfigurationFlags},
-    logging, raw, valkey_module, Context, ContextFlags, InfoContext, Status, ValkeyResult,
-    ValkeyString,
+    logging, raw, valkey_module,
 };
 use valkey_module_macros::info_command_handler;
 
@@ -24,10 +24,10 @@ pub mod util;
 use crate::async_io::AsyncThreadPool;
 use crate::config::SyncMode;
 use crate::config::{
-    flash_io_threads, FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT,
-    FLASH_CACHE_SIZE_BYTES_MAX, FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CAPACITY_BYTES,
-    FLASH_CAPACITY_BYTES_DEFAULT, FLASH_CAPACITY_BYTES_MAX, FLASH_CAPACITY_BYTES_MIN,
-    FLASH_CLUSTER_MODE_ENABLED, FLASH_CLUSTER_MODE_ENABLED_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC,
+    FLASH_CACHE_SIZE_BYTES, FLASH_CACHE_SIZE_BYTES_DEFAULT, FLASH_CACHE_SIZE_BYTES_MAX,
+    FLASH_CACHE_SIZE_BYTES_MIN, FLASH_CAPACITY_BYTES, FLASH_CAPACITY_BYTES_DEFAULT,
+    FLASH_CAPACITY_BYTES_MAX, FLASH_CAPACITY_BYTES_MIN, FLASH_CLUSTER_MODE_ENABLED,
+    FLASH_CLUSTER_MODE_ENABLED_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC,
     FLASH_COMPACTION_INTERVAL_SEC_DEFAULT, FLASH_COMPACTION_INTERVAL_SEC_MAX,
     FLASH_COMPACTION_INTERVAL_SEC_MIN, FLASH_IO_THREADS, FLASH_IO_THREADS_DEFAULT,
     FLASH_IO_THREADS_MAX, FLASH_IO_THREADS_MIN, FLASH_IO_URING_ENTRIES,
@@ -40,7 +40,7 @@ use crate::config::{
     FLASH_MIGRATION_MAX_KEY_BYTES_MAX, FLASH_MIGRATION_MAX_KEY_BYTES_MIN,
     FLASH_MIGRATION_PROBE_CACHE_SEC, FLASH_MIGRATION_PROBE_CACHE_SEC_DEFAULT,
     FLASH_MIGRATION_PROBE_CACHE_SEC_MAX, FLASH_MIGRATION_PROBE_CACHE_SEC_MIN, FLASH_PATH,
-    FLASH_PATH_DEFAULT, FLASH_REPLICA_TIER_ENABLED, FLASH_SYNC,
+    FLASH_PATH_DEFAULT, FLASH_REPLICA_TIER_ENABLED, FLASH_SYNC, flash_io_threads,
 };
 use crate::recovery::{ModuleState, TierEntry};
 use crate::storage::cache::FlashCache;
@@ -51,11 +51,11 @@ use crate::types::list::FLASH_LIST_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
 use crate::types::zset::FLASH_ZSET_TYPE;
 
+use crate::commands::aux_info::flash_aux_info_command;
 use crate::commands::blmove::flash_blmove_command;
 use crate::commands::blpop::flash_blpop_command;
 use crate::commands::blpop::flash_brpop_command;
-use crate::commands::bzpop::{flash_bzpopmin_command, flash_bzpopmax_command};
-use crate::commands::aux_info::flash_aux_info_command;
+use crate::commands::bzpop::{flash_bzpopmax_command, flash_bzpopmin_command};
 use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
 };
@@ -88,19 +88,19 @@ use crate::commands::migrate_probe::flash_migrate_probe_command;
 use crate::commands::set::flash_set_command;
 use crate::commands::zadd::flash_zadd_command;
 use crate::commands::zpop::{
-    flash_zpopmax_command, flash_zpopmin_command, flash_zrem_command, flash_zincrby_command,
+    flash_zincrby_command, flash_zpopmax_command, flash_zpopmin_command, flash_zrem_command,
 };
 use crate::commands::zrange::{
-    flash_zrange_command, flash_zrangebyscore_command, flash_zrevrangebyscore_command,
-    flash_zrangebylex_command, flash_zrevrangebylex_command,
+    flash_zrange_command, flash_zrangebylex_command, flash_zrangebyscore_command,
+    flash_zrevrangebylex_command, flash_zrevrangebyscore_command,
 };
 use crate::commands::zread::{
-    flash_zscore_command, flash_zrank_command, flash_zrevrank_command, flash_zcard_command,
-    flash_zcount_command, flash_zlexcount_command, flash_zscan_command,
+    flash_zcard_command, flash_zcount_command, flash_zlexcount_command, flash_zrank_command,
+    flash_zrevrank_command, flash_zscan_command, flash_zscore_command,
 };
 use crate::commands::zstore::{
-    flash_zunionstore_command, flash_zinterstore_command,
-    flash_zdiffstore_command, flash_zrangestore_command,
+    flash_zdiffstore_command, flash_zinterstore_command, flash_zrangestore_command,
+    flash_zunionstore_command,
 };
 
 pub const MODULE_NAME: &str = "flash";
@@ -315,16 +315,17 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 
     // Restore NVMe allocator state from aux so freed blocks survive restarts.
     if let Some(ref state) = aux_state
-        && let Some(storage) = STORAGE.get() {
-            let nb = state.before.nvme_next_block;
-            let free = state.before.free_blocks.clone();
-            let n_ranges = free.len();
-            storage.restore_state(nb, free);
-            logging::log_notice(
-                format!("flash: restored NVMe allocator: next_block={nb}, free_ranges={n_ranges}")
-                    .as_str(),
-            );
-        }
+        && let Some(storage) = STORAGE.get()
+    {
+        let nb = state.before.nvme_next_block;
+        let free = state.before.free_blocks.clone();
+        let n_ranges = free.len();
+        storage.restore_state(nb, free);
+        logging::log_notice(
+            format!("flash: restored NVMe allocator: next_block={nb}, free_ranges={n_ranges}")
+                .as_str(),
+        );
+    }
 
     // ── Open operational WAL ──────────────────────────────────────────────────
 

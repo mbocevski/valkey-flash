@@ -4,8 +4,8 @@ use crate::commands::zset_common::{
     glob_match, lex_range_entries, parse_lex_bound, parse_score_bound, promote_cold_zset,
     score_range_entries,
 };
-use crate::types::zset::{format_score, FlashZSetObject, ScoreF64, ZSetInner, FLASH_ZSET_TYPE};
 use crate::types::Tier;
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, ScoreF64, ZSetInner, format_score};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -213,12 +213,7 @@ pub fn flash_zscan_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     // Apply pattern filter to get matching entries.
     let filtered: Vec<(&Vec<u8>, f64)> = all_entries
         .iter()
-        .filter(|(m, _)| {
-            pattern
-                .as_deref()
-                .map(|p| glob_match(p, m))
-                .unwrap_or(true)
-        })
+        .filter(|(m, _)| pattern.as_deref().map(|p| glob_match(p, m)).unwrap_or(true))
         .copied()
         .collect();
 
@@ -245,9 +240,9 @@ pub fn flash_zscan_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Bound;
     use super::*;
     use crate::types::zset::ZSetInner;
+    use std::ops::Bound;
 
     fn zset_with(entries: &[(&[u8], f64)]) -> ZSetInner {
         let mut z = ZSetInner::new();
@@ -327,7 +322,11 @@ mod tests {
         for (m, s) in &entries {
             z.insert(m.to_vec(), *s);
         }
-        let all: Vec<_> = z.scores.iter().map(|((ScoreF64(s), m), ())| (m, *s)).collect();
+        let all: Vec<_> = z
+            .scores
+            .iter()
+            .map(|((ScoreF64(s), m), ())| (m, *s))
+            .collect();
         let page = &all[0..3];
         let next = 3u64;
         assert_eq!(page.len(), 3);
@@ -337,7 +336,11 @@ mod tests {
     #[test]
     fn zscan_done_when_cursor_at_end() {
         let z = zset_with(&[(b"a", 1.0), (b"b", 2.0)]);
-        let all: Vec<_> = z.scores.iter().map(|((ScoreF64(s), m), ())| (m, *s)).collect();
+        let all: Vec<_> = z
+            .scores
+            .iter()
+            .map(|((ScoreF64(s), m), ())| (m, *s))
+            .collect();
         let total = all.len();
         let cursor = total;
         let end = (cursor + 10).min(total);

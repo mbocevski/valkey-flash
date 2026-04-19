@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use io_uring::{opcode, types, IoUring};
+use io_uring::{IoUring, opcode, types};
 use libc::{c_void, fallocate, ftruncate64, posix_memalign};
 
-use super::backend::{KvPair, StorageBackend, StorageError, StorageResult};
 use super::BlockRange;
+use super::backend::{KvPair, StorageBackend, StorageError, StorageResult};
 
 // ── Compaction metrics ────────────────────────────────────────────────────────
 

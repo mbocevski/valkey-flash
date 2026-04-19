@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::ptr::null_mut;
 use valkey_module::native_types::ValkeyType;
-use valkey_module::{logging, raw, RedisModuleDefragCtx, RedisModuleString};
+use valkey_module::{RedisModuleDefragCtx, RedisModuleString, logging, raw};
 
 use super::Tier;
 use crate::persistence::aux;
@@ -56,49 +56,53 @@ pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
-    // in a command handler. Valkey calls this callback exactly once per key
-    // deletion / eviction — never while the key is still accessible.
-    let obj = Box::from_raw(value.cast::<FlashStringObject>());
-    if let Tier::Cold {
-        key_hash,
-        backend_offset,
-        num_blocks,
-        ..
-    } = obj.tier
-    {
-        // Reclaim NVMe blocks so the space can be reused.
-        if let Some(storage) = crate::STORAGE.get() {
-            storage.release_cold_blocks(backend_offset, num_blocks);
+pub unsafe extern "C" fn free(value: *mut c_void) {
+    unsafe {
+        // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
+        // in a command handler. Valkey calls this callback exactly once per key
+        // deletion / eviction — never while the key is still accessible.
+        let obj = Box::from_raw(value.cast::<FlashStringObject>());
+        if let Tier::Cold {
+            key_hash,
+            backend_offset,
+            num_blocks,
+            ..
+        } = obj.tier
+        {
+            // Reclaim NVMe blocks so the space can be reused.
+            if let Some(storage) = crate::STORAGE.get() {
+                storage.release_cold_blocks(backend_offset, num_blocks);
+            }
+            // WAL tombstone: prevents recovery from re-promoting this key after a crash.
+            if let Some(wal) = crate::WAL.get() {
+                let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
+            }
+            // Remove from TIERING_MAP so recovery is not confused by a stale entry.
+            if let Ok(mut map) = crate::TIERING_MAP.lock() {
+                map.remove(&key_hash);
+            }
         }
-        // WAL tombstone: prevents recovery from re-promoting this key after a crash.
-        if let Some(wal) = crate::WAL.get() {
-            let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
-        }
-        // Remove from TIERING_MAP so recovery is not confused by a stale entry.
-        if let Ok(mut map) = crate::TIERING_MAP.lock() {
-            map.remove(&key_hash);
-        }
+        // obj (and any Hot payload) drops here
     }
-    // obj (and any Hot payload) drops here
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize { unsafe {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
-    // and remains valid for the duration of this call (Valkey holds a read lock on
-    // the key). Cast to shared reference is safe; no mutation occurs.
-    let obj = &*value.cast::<FlashStringObject>();
-    match &obj.tier {
-        Tier::Hot(v) => std::mem::size_of::<FlashStringObject>() + v.len(),
-        Tier::Cold { .. } => std::mem::size_of::<FlashStringObject>(),
+) -> usize {
+    unsafe {
+        // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
+        // and remains valid for the duration of this call (Valkey holds a read lock on
+        // the key). Cast to shared reference is safe; no mutation occurs.
+        let obj = &*value.cast::<FlashStringObject>();
+        match &obj.tier {
+            Tier::Hot(v) => std::mem::size_of::<FlashStringObject>() + v.len(),
+            Tier::Cold { .. } => std::mem::size_of::<FlashStringObject>(),
+        }
     }
-}}
+}
 
 /// # Safety
 ///
@@ -111,42 +115,44 @@ pub unsafe extern "C" fn mem_usage2(
 /// receive the key. No code currently transitions keys to `Tier::Cold`, so this
 /// branch is unreachable today. If reached, an empty value is written with a
 /// warning — future work (demotion) must store the key in `Tier::Cold`.
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
-    // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
-    // and remains valid for the duration of this call (Valkey holds a read lock).
-    let obj = &*value.cast::<FlashStringObject>();
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+    unsafe {
+        // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
+        // and remains valid for the duration of this call (Valkey holds a read lock).
+        let obj = &*value.cast::<FlashStringObject>();
 
-    raw::save_unsigned(io, ENCODING_VERSION as u64);
-    raw::save_unsigned(io, SHAPE_TAG_STRING);
+        raw::save_unsigned(io, ENCODING_VERSION as u64);
+        raw::save_unsigned(io, SHAPE_TAG_STRING);
 
-    let ttl = obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL);
-    raw::save_signed(io, ttl);
+        let ttl = obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL);
+        raw::save_signed(io, ttl);
 
-    match &obj.tier {
-        Tier::Hot(v) => {
-            raw::save_slice(io, v);
-        }
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            // Fetch the value from NVMe using the offset stored in the Cold variant.
-            match crate::STORAGE
-                .get()
-                .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
-            {
-                Some(bytes) => raw::save_slice(io, &bytes),
-                None => {
-                    logging::log_warning(
-                        "flash: rdb_save on Tier::Cold: NVMe read failed; writing empty bytes",
-                    );
-                    raw::save_slice(io, &[]);
+        match &obj.tier {
+            Tier::Hot(v) => {
+                raw::save_slice(io, v);
+            }
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                // Fetch the value from NVMe using the offset stored in the Cold variant.
+                match crate::STORAGE
+                    .get()
+                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                {
+                    Some(bytes) => raw::save_slice(io, &bytes),
+                    None => {
+                        logging::log_warning(
+                            "flash: rdb_save on Tier::Cold: NVMe read failed; writing empty bytes",
+                        );
+                        raw::save_slice(io, &[]);
+                    }
                 }
             }
         }
     }
-}}
+}
 
 // ── Pure-Rust RDB payload parser ──────────────────────────────────────────────
 //
@@ -344,72 +350,74 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) { unsafe {
-    let obj = &*value.cast::<FlashStringObject>();
+) {
+    unsafe {
+        let obj = &*value.cast::<FlashStringObject>();
 
-    let bytes = match &obj.tier {
-        Tier::Hot(v) => v.as_slice(),
-        Tier::Cold { .. } => {
-            logging::log_warning(
-                "flash: aof_rewrite on Tier::Cold object — cannot fetch from NVMe without key; \
+        let bytes = match &obj.tier {
+            Tier::Hot(v) => v.as_slice(),
+            Tier::Cold { .. } => {
+                logging::log_warning(
+                    "flash: aof_rewrite on Tier::Cold object — cannot fetch from NVMe without key; \
                  skipping key (task #57)",
-            );
-            return;
-        }
-    };
+                );
+                return;
+            }
+        };
 
-    let cmd = match CString::new("FLASH.SET") {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+        let cmd = match CString::new("FLASH.SET") {
+            Ok(s) => s,
+            Err(_) => return,
+        };
 
-    let emit = match raw::RedisModule_EmitAOF {
-        Some(f) => f,
-        None => {
-            logging::log_warning("flash: aof_rewrite: RedisModule_EmitAOF is null");
-            return;
-        }
-    };
+        let emit = match raw::RedisModule_EmitAOF {
+            Some(f) => f,
+            None => {
+                logging::log_warning("flash: aof_rewrite: RedisModule_EmitAOF is null");
+                return;
+            }
+        };
 
-    match obj.ttl_ms {
-        None => {
-            // FLASH.SET key value
-            let fmt = match CString::new("sb") {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            emit(
-                aof,
-                cmd.as_ptr(),
-                fmt.as_ptr(),
-                key,
-                bytes.as_ptr().cast::<c_char>(),
-                bytes.len(),
-            );
-        }
-        Some(ttl) => {
-            // FLASH.SET key value PXAT <absolute-ms>
-            let fmt = match CString::new("sbcl") {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            let pxat = match CString::new("PXAT") {
-                Ok(s) => s,
-                Err(_) => return,
-            };
-            emit(
-                aof,
-                cmd.as_ptr(),
-                fmt.as_ptr(),
-                key,
-                bytes.as_ptr().cast::<c_char>(),
-                bytes.len(),
-                pxat.as_ptr(),
-                ttl as std::os::raw::c_longlong,
-            );
+        match obj.ttl_ms {
+            None => {
+                // FLASH.SET key value
+                let fmt = match CString::new("sb") {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                emit(
+                    aof,
+                    cmd.as_ptr(),
+                    fmt.as_ptr(),
+                    key,
+                    bytes.as_ptr().cast::<c_char>(),
+                    bytes.len(),
+                );
+            }
+            Some(ttl) => {
+                // FLASH.SET key value PXAT <absolute-ms>
+                let fmt = match CString::new("sbcl") {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let pxat = match CString::new("PXAT") {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                emit(
+                    aof,
+                    cmd.as_ptr(),
+                    fmt.as_ptr(),
+                    key,
+                    bytes.as_ptr().cast::<c_char>(),
+                    bytes.len(),
+                    pxat.as_ptr(),
+                    ttl as std::os::raw::c_longlong,
+                );
+            }
         }
     }
-}}
+}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -439,48 +447,50 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void { unsafe {
-    let src: &FlashStringObject = &*value.cast::<FlashStringObject>();
-    match &src.tier {
-        Tier::Hot(v) => {
-            let new_obj = Box::new(FlashStringObject {
-                tier: Tier::Hot(v.clone()),
-                ttl_ms: src.ttl_ms,
-            });
-            Box::into_raw(new_obj).cast::<c_void>()
-        }
-        Tier::Cold {
-            backend_offset,
-            value_len,
-            ..
-        } => {
-            // Materialise cold value via synchronous NVMe read → return Hot copy.
-            // Null return signals COPY failure to Valkey core; source is untouched.
-            #[cfg(not(test))]
-            {
-                let storage = match crate::STORAGE.get() {
-                    Some(s) => s,
-                    None => return null_mut(),
-                };
-                match storage.read_at_offset(*backend_offset, *value_len) {
-                    Ok(bytes) => {
-                        let new_obj = Box::new(FlashStringObject {
-                            tier: Tier::Hot(bytes),
-                            ttl_ms: src.ttl_ms,
-                        });
-                        Box::into_raw(new_obj).cast::<c_void>()
-                    }
-                    Err(_) => null_mut(),
-                }
+) -> *mut c_void {
+    unsafe {
+        let src: &FlashStringObject = &*value.cast::<FlashStringObject>();
+        match &src.tier {
+            Tier::Hot(v) => {
+                let new_obj = Box::new(FlashStringObject {
+                    tier: Tier::Hot(v.clone()),
+                    ttl_ms: src.ttl_ms,
+                });
+                Box::into_raw(new_obj).cast::<c_void>()
             }
-            #[cfg(test)]
-            {
-                let _ = (backend_offset, value_len);
-                null_mut()
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => {
+                // Materialise cold value via synchronous NVMe read → return Hot copy.
+                // Null return signals COPY failure to Valkey core; source is untouched.
+                #[cfg(not(test))]
+                {
+                    let storage = match crate::STORAGE.get() {
+                        Some(s) => s,
+                        None => return null_mut(),
+                    };
+                    match storage.read_at_offset(*backend_offset, *value_len) {
+                        Ok(bytes) => {
+                            let new_obj = Box::new(FlashStringObject {
+                                tier: Tier::Hot(bytes),
+                                ttl_ms: src.ttl_ms,
+                            });
+                            Box::into_raw(new_obj).cast::<c_void>()
+                        }
+                        Err(_) => null_mut(),
+                    }
+                }
+                #[cfg(test)]
+                {
+                    let _ = (backend_offset, value_len);
+                    null_mut()
+                }
             }
         }
     }
-}}
+}
 
 /// # Safety
 ///
@@ -511,27 +521,29 @@ pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 { unsafe {
-    use std::mem;
-    use valkey_module::defrag::Defrag;
+) -> i32 {
+    unsafe {
+        use std::mem;
+        use valkey_module::defrag::Defrag;
 
-    let dfg = Defrag::new(ctx);
+        let dfg = Defrag::new(ctx);
 
-    // ── Step 1: relocate the FlashStringObject struct itself ──────────────────
-    // If alloc() returns non-null, the struct was moved; old *value is freed.
-    // Writing *value here redirects Valkey's internal key→object pointer.
-    let new_struct = dfg.alloc(*value);
-    if !new_struct.is_null() {
-        *value = new_struct;
-    }
+        // ── Step 1: relocate the FlashStringObject struct itself ──────────────────
+        // If alloc() returns non-null, the struct was moved; old *value is freed.
+        // Writing *value here redirects Valkey's internal key→object pointer.
+        let new_struct = dfg.alloc(*value);
+        if !new_struct.is_null() {
+            *value = new_struct;
+        }
 
-    // ── Step 2: for Hot tier, relocate the Vec<u8> backing buffer ─────────────
-    // Cold tier holds only primitive scalars (key_hash, offset, counts) — no
-    // heap pointer to defrag. A Vec with capacity 0 uses a dangling sentinel
-    // pointer that is not a real heap allocation; skip it.
-    let obj: &mut FlashStringObject = &mut *(*value).cast::<FlashStringObject>();
-    if let Tier::Hot(ref mut vec) = obj.tier
-        && vec.capacity() > 0 {
+        // ── Step 2: for Hot tier, relocate the Vec<u8> backing buffer ─────────────
+        // Cold tier holds only primitive scalars (key_hash, offset, counts) — no
+        // heap pointer to defrag. A Vec with capacity 0 uses a dangling sentinel
+        // pointer that is not a real heap allocation; skip it.
+        let obj: &mut FlashStringObject = &mut *(*value).cast::<FlashStringObject>();
+        if let Tier::Hot(ref mut vec) = obj.tier
+            && vec.capacity() > 0
+        {
             let new_buf = dfg.alloc(vec.as_mut_ptr().cast::<c_void>());
             if !new_buf.is_null() {
                 // The buffer was relocated. Rebuild the Vec at the new address.
@@ -547,8 +559,9 @@ pub unsafe extern "C" fn defrag(
             }
         }
 
-    0 // defrag complete — single-allocation types never need cursor resumption
-}}
+        0 // defrag complete — single-allocation types never need cursor resumption
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

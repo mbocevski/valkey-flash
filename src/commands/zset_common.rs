@@ -9,8 +9,7 @@ use crate::types::zset::{ZSetInner, zset_deserialize_or_warn};
 /// Parse a score from bytes. Accepts "-inf", "+inf", "inf", and decimal floats.
 /// Rejects NaN.
 pub fn parse_score(bytes: &[u8]) -> Result<f64, ValkeyError> {
-    let s = std::str::from_utf8(bytes)
-        .map_err(|_| ValkeyError::Str("ERR not a valid float"))?;
+    let s = std::str::from_utf8(bytes).map_err(|_| ValkeyError::Str("ERR not a valid float"))?;
     match s.to_lowercase().as_str() {
         "+inf" | "inf" => return Ok(f64::INFINITY),
         "-inf" => return Ok(f64::NEG_INFINITY),
@@ -56,10 +55,10 @@ pub fn parse_score_bound(bytes: &[u8]) -> Result<Bound<f64>, ValkeyError> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LexBound {
-    Min,                // `-`
-    Max,                // `+`
-    Included(Vec<u8>),  // `[member`
-    Excluded(Vec<u8>),  // `(member`
+    Min,               // `-`
+    Max,               // `+`
+    Included(Vec<u8>), // `[member`
+    Excluded(Vec<u8>), // `(member`
 }
 
 pub fn parse_lex_bound(bytes: &[u8]) -> Result<LexBound, ValkeyError> {
@@ -159,10 +158,7 @@ pub fn apply_limit<T: Clone>(entries: Vec<T>, offset: i64, count: i64) -> Vec<T>
 
 /// Build a reply array from (member, score) pairs.
 /// If `with_scores` is true, interleaves [member, score_str, ...].
-pub fn build_range_reply(
-    pairs: &[(&Vec<u8>, f64)],
-    with_scores: bool,
-) -> Vec<ValkeyValue> {
+pub fn build_range_reply(pairs: &[(&Vec<u8>, f64)], with_scores: bool) -> Vec<ValkeyValue> {
     let mut out = Vec::with_capacity(if with_scores {
         pairs.len() * 2
     } else {

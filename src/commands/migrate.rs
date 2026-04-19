@@ -1,11 +1,11 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString};
 
 use crate::commands::migrate_probe::remote_probe;
-use crate::types::hash::{FlashHashObject, FLASH_HASH_TYPE};
-use crate::types::list::{FlashListObject, FLASH_LIST_TYPE};
-use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
-use crate::types::zset::{FlashZSetObject, FLASH_ZSET_TYPE};
 use crate::types::Tier;
+use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject};
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject};
+use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject};
 
 /// Estimate serialised NVMe bytes for a FLASH key on this node.
 ///
@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn hot_hash_size_matches_serialize_format() {
         let mut map = HashMap::new();
-        map.insert(b"k1".to_vec(), b"v1".to_vec());  // 4+2+4+2 = 12 bytes
-        map.insert(b"k2".to_vec(), b"v2".to_vec());  // 4+2+4+2 = 12 bytes
+        map.insert(b"k1".to_vec(), b"v1".to_vec()); // 4+2+4+2 = 12 bytes
+        map.insert(b"k2".to_vec(), b"v2".to_vec()); // 4+2+4+2 = 12 bytes
         // 4 (count) + 12 + 12 = 28
         let tier = Tier::Hot(map);
         let size = match &tier {
@@ -201,12 +201,8 @@ mod tests {
     fn hot_list_size_matches_serialize_format() {
         // list_serialize: [u32 count] + per-elem [u32 len][bytes]
         // 3 elems: "a"(1), "bb"(2), "ccc"(3) → 4 + (4+1) + (4+2) + (4+3) = 22
-        let items: std::collections::VecDeque<Vec<u8>> = [
-            b"a".to_vec(),
-            b"bb".to_vec(),
-            b"ccc".to_vec(),
-        ]
-        .into();
+        let items: std::collections::VecDeque<Vec<u8>> =
+            [b"a".to_vec(), b"bb".to_vec(), b"ccc".to_vec()].into();
         let tier = Tier::Hot(items);
         let size = match &tier {
             Tier::Hot(v) => 4 + v.iter().map(|e| 4 + e.len()).sum::<usize>(),

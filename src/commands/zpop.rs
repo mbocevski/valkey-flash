@@ -1,10 +1,12 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::current_time_ms;
-use crate::commands::zset_common::{finish_zset_write, parse_score, promote_cold_zset, ZSetReply};
-use crate::types::zset::{format_score, zset_serialize, FlashZSetObject, ZSetInner, FLASH_ZSET_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::current_time_ms;
+use crate::commands::zset_common::{ZSetReply, finish_zset_write, parse_score, promote_cold_zset};
+use crate::types::Tier;
+use crate::types::zset::{
+    FLASH_ZSET_TYPE, FlashZSetObject, ZSetInner, format_score, zset_serialize,
+};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +85,11 @@ fn commit_zset(
 // ── FLASH.ZPOPMIN / FLASH.ZPOPMAX ─────────────────────────────────────────────
 
 fn zpop_impl(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyResult {
-    let cmd = if from_min { "FLASH.ZPOPMIN" } else { "FLASH.ZPOPMAX" };
+    let cmd = if from_min {
+        "FLASH.ZPOPMIN"
+    } else {
+        "FLASH.ZPOPMAX"
+    };
     if args.len() < 2 || args.len() > 3 {
         return Err(ValkeyError::WrongArity);
     }
@@ -92,9 +98,13 @@ fn zpop_impl(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRe
         let n: i64 = std::str::from_utf8(args[2].as_slice())
             .ok()
             .and_then(|s| s.parse().ok())
-            .ok_or(ValkeyError::Str("ERR value is not an integer or out of range"))?;
+            .ok_or(ValkeyError::Str(
+                "ERR value is not an integer or out of range",
+            ))?;
         if n < 0 {
-            return Err(ValkeyError::Str("ERR value is out of range, must be positive"));
+            return Err(ValkeyError::Str(
+                "ERR value is out of range, must be positive",
+            ));
         }
         Some(n as usize)
     } else {
@@ -127,7 +137,7 @@ fn zpop_impl(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRe
         if from_min {
             // Pop the entry with the lowest (score, member)
             if let Some(key_ref) = inner.scores.keys().next().cloned() {
-                let score = key_ref.0 .0;
+                let score = key_ref.0.0;
                 let member = key_ref.1.clone();
                 inner.remove(&member);
                 popped.push((member, score));
@@ -135,7 +145,7 @@ fn zpop_impl(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRe
         } else {
             // Pop the entry with the highest (score, member)
             if let Some(key_ref) = inner.scores.keys().next_back().cloned() {
-                let score = key_ref.0 .0;
+                let score = key_ref.0.0;
                 let member = key_ref.1.clone();
                 inner.remove(&member);
                 popped.push((member, score));
@@ -154,7 +164,11 @@ fn zpop_impl(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRe
     let serialized = commit_zset(ctx, key, key_handle, inner, old_ttl, cache)?;
 
     ctx.replicate_verbatim();
-    let event = if from_min { "flash.zpopmin" } else { "flash.zpopmax" };
+    let event = if from_min {
+        "flash.zpopmin"
+    } else {
+        "flash.zpopmax"
+    };
     ctx.notify_keyspace_event(NotifyEvent::ZSET, event, key);
 
     let _ = cmd;
@@ -300,7 +314,7 @@ mod tests {
         z.insert(b"b".to_vec(), 2.0);
         z.insert(b"a".to_vec(), 1.0);
         let first = z.scores.keys().next().cloned().unwrap();
-        assert_eq!(first.0 .0, 1.0);
+        assert_eq!(first.0.0, 1.0);
         assert_eq!(first.1, b"a");
     }
 
@@ -310,7 +324,7 @@ mod tests {
         z.insert(b"b".to_vec(), 2.0);
         z.insert(b"a".to_vec(), 1.0);
         let last = z.scores.keys().next_back().cloned().unwrap();
-        assert_eq!(last.0 .0, 2.0);
+        assert_eq!(last.0.0, 2.0);
         assert_eq!(last.1, b"b");
     }
 

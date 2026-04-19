@@ -3,10 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::hash::{
-    hash_deserialize_or_warn, hash_serialize, FlashHashObject, FLASH_HASH_TYPE,
-};
 use crate::types::Tier;
+use crate::types::hash::{
+    FLASH_HASH_TYPE, FlashHashObject, hash_deserialize_or_warn, hash_serialize,
+};
 use crate::{CACHE, STORAGE};
 #[cfg(not(test))]
 use crate::{POOL, WAL};

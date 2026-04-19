@@ -1,8 +1,8 @@
 use valkey_module::{Context, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::types::list::{list_deserialize, list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_deserialize, list_serialize};
 
 // ── LLenCompletionHandle ──────────────────────────────────────────────────────
 
