@@ -1,7 +1,7 @@
 [package]
 name = "valkey-flash"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "BSD-3-Clause"
 repository = "https://github.com/valkey-io/valkey-flash"
 description = "A Valkey module that tiers key/value data to NVMe storage"

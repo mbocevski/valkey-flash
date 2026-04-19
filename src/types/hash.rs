@@ -139,7 +139,7 @@ pub static FLASH_HASH_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) {
+pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
     // in a command handler. Valkey calls this callback exactly once per key
     // deletion / eviction — never while the key is still accessible.
@@ -161,14 +161,14 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
             map.remove(&key_hash);
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize {
+) -> usize { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashHashObject {...}))
     // and remains valid for the duration of this call (Valkey holds a read lock on
     // the key). Cast to shared reference is safe; no mutation occurs.
@@ -180,7 +180,7 @@ pub unsafe extern "C" fn mem_usage2(
         }
         Tier::Cold { .. } => std::mem::size_of::<FlashHashObject>(),
     }
-}
+}}
 
 /// # Safety
 ///
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn mem_usage2(
 ///
 /// `hash_bytes` is the `hash_serialize` encoding (same format used for NVMe/cache).
 /// For Cold objects, the bytes are fetched from NVMe via `read_at_offset`.
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
     let obj = &*value.cast::<FlashHashObject>();
 
     raw::save_unsigned(io, ENCODING_VERSION as u64);
@@ -224,7 +224,7 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             }
         }
     }
-}
+}}
 
 // ── Pure-Rust RDB payload parser ──────────────────────────────────────────────
 //
@@ -420,7 +420,7 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) {
+) { unsafe {
     let obj = &*value.cast::<FlashHashObject>();
 
     let fields = match &obj.tier {
@@ -489,7 +489,7 @@ pub unsafe extern "C" fn aof_rewrite(
             ttl as std::os::raw::c_longlong,
         );
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -514,7 +514,7 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void {
+) -> *mut c_void { unsafe {
     let src: &FlashHashObject = &*value.cast::<FlashHashObject>();
     match &src.tier {
         Tier::Hot(map) => {
@@ -557,14 +557,14 @@ pub unsafe extern "C" fn copy(
             }
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 {
+) -> i32 { unsafe {
     use std::mem;
     use valkey_module::defrag::Defrag;
 
@@ -611,7 +611,7 @@ pub unsafe extern "C" fn defrag(
     // Cold tier: only primitive scalars — nothing to relocate.
 
     0
-}
+}}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

@@ -56,7 +56,7 @@ pub static FLASH_STRING_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) {
+pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
     // in a command handler. Valkey calls this callback exactly once per key
     // deletion / eviction — never while the key is still accessible.
@@ -82,14 +82,14 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
         }
     }
     // obj (and any Hot payload) drops here
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize {
+) -> usize { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
     // and remains valid for the duration of this call (Valkey holds a read lock on
     // the key). Cast to shared reference is safe; no mutation occurs.
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn mem_usage2(
         Tier::Hot(v) => std::mem::size_of::<FlashStringObject>() + v.len(),
         Tier::Cold { .. } => std::mem::size_of::<FlashStringObject>(),
     }
-}
+}}
 
 /// # Safety
 ///
@@ -111,7 +111,7 @@ pub unsafe extern "C" fn mem_usage2(
 /// receive the key. No code currently transitions keys to `Tier::Cold`, so this
 /// branch is unreachable today. If reached, an empty value is written with a
 /// warning — future work (demotion) must store the key in `Tier::Cold`.
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
     // and remains valid for the duration of this call (Valkey holds a read lock).
     let obj = &*value.cast::<FlashStringObject>();
@@ -146,7 +146,7 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             }
         }
     }
-}
+}}
 
 // ── Pure-Rust RDB payload parser ──────────────────────────────────────────────
 //
@@ -344,7 +344,7 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) {
+) { unsafe {
     let obj = &*value.cast::<FlashStringObject>();
 
     let bytes = match &obj.tier {
@@ -409,7 +409,7 @@ pub unsafe extern "C" fn aof_rewrite(
             );
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -439,7 +439,7 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void {
+) -> *mut c_void { unsafe {
     let src: &FlashStringObject = &*value.cast::<FlashStringObject>();
     match &src.tier {
         Tier::Hot(v) => {
@@ -480,7 +480,7 @@ pub unsafe extern "C" fn copy(
             }
         }
     }
-}
+}}
 
 /// # Safety
 ///
@@ -511,7 +511,7 @@ pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 {
+) -> i32 { unsafe {
     use std::mem;
     use valkey_module::defrag::Defrag;
 
@@ -530,8 +530,8 @@ pub unsafe extern "C" fn defrag(
     // heap pointer to defrag. A Vec with capacity 0 uses a dangling sentinel
     // pointer that is not a real heap allocation; skip it.
     let obj: &mut FlashStringObject = &mut *(*value).cast::<FlashStringObject>();
-    if let Tier::Hot(ref mut vec) = obj.tier {
-        if vec.capacity() > 0 {
+    if let Tier::Hot(ref mut vec) = obj.tier
+        && vec.capacity() > 0 {
             let new_buf = dfg.alloc(vec.as_mut_ptr().cast::<c_void>());
             if !new_buf.is_null() {
                 // The buffer was relocated. Rebuild the Vec at the new address.
@@ -546,10 +546,9 @@ pub unsafe extern "C" fn defrag(
                 mem::forget(old);
             }
         }
-    }
 
     0 // defrag complete — single-allocation types never need cursor resumption
-}
+}}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

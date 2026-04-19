@@ -314,8 +314,8 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     }
 
     // Restore NVMe allocator state from aux so freed blocks survive restarts.
-    if let Some(ref state) = aux_state {
-        if let Some(storage) = STORAGE.get() {
+    if let Some(ref state) = aux_state
+        && let Some(storage) = STORAGE.get() {
             let nb = state.before.nvme_next_block;
             let free = state.before.free_blocks.clone();
             let n_ranges = free.len();
@@ -325,7 +325,6 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
                     .as_str(),
             );
         }
-    }
 
     // ── Open operational WAL ──────────────────────────────────────────────────
 

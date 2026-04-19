@@ -49,11 +49,11 @@ impl crate::async_io::CompletionHandle for BlMoveNvmeHandle {
 unsafe extern "C" fn blmove_free_privdata(
     _ctx: *mut raw::RedisModuleCtx,
     data: *mut c_void,
-) {
+) { unsafe {
     if !data.is_null() {
         drop(Box::from_raw(data as *mut BlMovePrivdata));
     }
-}
+}}
 
 /// Timeout: return nil.
 #[cfg(not(test))]
@@ -61,10 +61,10 @@ unsafe extern "C" fn blmove_timeout(
     ctx: *mut raw::RedisModuleCtx,
     _argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int {
+) -> c_int { unsafe {
     raw::RedisModule_ReplyWithNull.unwrap()(ctx);
     raw::REDISMODULE_OK as c_int
-}
+}}
 
 /// Reply callback for BLMOVE: atomically pops from src and pushes to dst.
 /// Returns `REDISMODULE_ERR` (stay blocked) if src is empty (race condition).
@@ -73,7 +73,7 @@ unsafe extern "C" fn blmove_reply(
     ctx: *mut raw::RedisModuleCtx,
     argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int {
+) -> c_int { unsafe {
     let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
     if privdata_ptr.is_null() {
         raw::RedisModule_ReplyWithNull.unwrap()(ctx);
@@ -112,8 +112,8 @@ unsafe extern "C" fn blmove_reply(
 
     // Async NVMe writes (fire-and-forget).
     #[cfg(not(test))]
-    if !crate::replication::is_replica() {
-        if let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+    if !crate::replication::is_replica()
+        && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
             use crate::storage::backend::StorageBackend;
             let src_bytes = src_key.as_slice().to_vec();
             let dst_bytes = dst_key_bytes.clone();
@@ -126,8 +126,8 @@ unsafe extern "C" fn blmove_reply(
                         storage.delete(&src_bytes).ok();
                     }
                     Some(ref s) => {
-                        if let Ok(offset) = storage.put(&src_bytes, s) {
-                            if let Some(wal) = WAL.get() {
+                        if let Ok(offset) = storage.put(&src_bytes, s)
+                            && let Some(wal) = WAL.get() {
                                 let kh = crate::util::key_hash(&src_bytes);
                                 let vh = crate::util::value_hash(s);
                                 let _ = wal.append(crate::storage::wal::WalOp::Put {
@@ -136,12 +136,11 @@ unsafe extern "C" fn blmove_reply(
                                     value_hash: vh,
                                 });
                             }
-                        }
                     }
                 }
                 // Persist dst.
-                if let Ok(offset) = storage.put(&dst_bytes, &dst_ser) {
-                    if let Some(wal) = WAL.get() {
+                if let Ok(offset) = storage.put(&dst_bytes, &dst_ser)
+                    && let Some(wal) = WAL.get() {
                         let kh = crate::util::key_hash(&dst_bytes);
                         let vh = crate::util::value_hash(&dst_ser);
                         let _ = wal.append(crate::storage::wal::WalOp::Put {
@@ -150,15 +149,13 @@ unsafe extern "C" fn blmove_reply(
                             value_hash: vh,
                         });
                     }
-                }
                 Ok(vec![])
             });
         }
-    }
 
     raw::reply_with_string_buffer(ctx, elem.as_ptr() as *const _, elem.len());
     raw::REDISMODULE_OK as c_int
-}
+}}
 
 // ── In-memory helpers ─────────────────────────────────────────────────────────
 
@@ -351,8 +348,8 @@ pub fn flash_blmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
             }
 
             #[cfg(not(test))]
-            if !crate::replication::is_replica() {
-                if let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+            if !crate::replication::is_replica()
+                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
                     use crate::storage::backend::StorageBackend;
                     let src_bytes = src_key.as_slice().to_vec();
                     let dst_bytes = dst_key_bytes.clone();
@@ -367,31 +364,28 @@ pub fn flash_blmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
                         match src_ser {
                             None => { storage.delete(&src_bytes).ok(); }
                             Some(ref s) => {
-                                if let Ok(offset) = storage.put(&src_bytes, s) {
-                                    if let Some(wal) = WAL.get() {
+                                if let Ok(offset) = storage.put(&src_bytes, s)
+                                    && let Some(wal) = WAL.get() {
                                         let kh = crate::util::key_hash(&src_bytes);
                                         let vh = crate::util::value_hash(s);
                                         let _ = wal.append(crate::storage::wal::WalOp::Put {
                                             key_hash: kh, offset, value_hash: vh,
                                         });
                                     }
-                                }
                             }
                         }
-                        if let Ok(offset) = storage.put(&dst_bytes, &dst_ser) {
-                            if let Some(wal) = WAL.get() {
+                        if let Ok(offset) = storage.put(&dst_bytes, &dst_ser)
+                            && let Some(wal) = WAL.get() {
                                 let kh = crate::util::key_hash(&dst_bytes);
                                 let vh = crate::util::value_hash(&dst_ser);
                                 let _ = wal.append(crate::storage::wal::WalOp::Put {
                                     key_hash: kh, offset, value_hash: vh,
                                 });
                             }
-                        }
                         Ok(vec![])
                     });
                     return Ok(ValkeyValue::NoReply);
                 }
-            }
 
             return Ok(ValkeyValue::StringBuffer(elem));
         }

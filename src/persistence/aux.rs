@@ -316,11 +316,10 @@ pub unsafe extern "C" fn aux_load(
             .as_str(),
         );
 
-        if let Ok(mut guard) = LOADED_AUX_STATE.lock() {
-            if let Some(state) = guard.as_mut() {
+        if let Ok(mut guard) = LOADED_AUX_STATE.lock()
+            && let Some(state) = guard.as_mut() {
                 state.after = Some(payload);
             }
-        }
     }
 
     raw::Status::Ok as c_int

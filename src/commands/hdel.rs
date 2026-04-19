@@ -131,13 +131,12 @@ pub fn flash_hdel_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
             let bc = ctx.block_client();
             let handle = Box::new(HDelCompletionHandle::new(bc, deleted));
             pool.submit_or_complete(handle, move || {
-                if let Some(wal) = WAL.get() {
-                    if let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash }) {
+                if let Some(wal) = WAL.get()
+                    && let Err(e) = wal.append(crate::storage::wal::WalOp::Delete { key_hash }) {
                         valkey_module::logging::log_warning(
                             format!("flash: HDEL WAL Delete failed: {e}").as_str(),
                         );
                     }
-                }
                 Ok(vec![])
             });
             return Ok(ValkeyValue::NoReply);

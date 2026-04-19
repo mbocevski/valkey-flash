@@ -115,11 +115,10 @@ impl FlashCache {
             .unwrap_or(0);
         if old_weight == 0 {
             // New key: enqueue as a potential demotion candidate.
-            if let Ok(mut q) = self.candidates.lock() {
-                if q.len() < MAX_CANDIDATES {
+            if let Ok(mut q) = self.candidates.lock()
+                && q.len() < MAX_CANDIDATES {
                     q.push_back(key.to_vec());
                 }
-            }
         }
         cache.insert(key.to_vec(), value);
         self.approx_bytes.fetch_add(new_weight, Ordering::Relaxed);

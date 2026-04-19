@@ -123,7 +123,7 @@ pub static FLASH_LIST_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) {
+pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
     // SAFETY: value was allocated by Box::into_raw(Box::new(FlashListObject {...})).
     let obj = Box::from_raw(value.cast::<FlashListObject>());
     if let Tier::Cold {
@@ -143,14 +143,14 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
             map.remove(&key_hash);
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize {
+) -> usize { unsafe {
     let obj = &*value.cast::<FlashListObject>();
     match &obj.tier {
         Tier::Hot(items) => {
@@ -159,13 +159,13 @@ pub unsafe extern "C" fn mem_usage2(
         }
         Tier::Cold { .. } => std::mem::size_of::<FlashListObject>(),
     }
-}
+}}
 
 /// # Safety
 ///
 /// RDB format (v1): `[u64 encoding_version=1][u64 shape_tag=0x03][i64 ttl_ms]`
 ///                  `[u64 count][save_slice(elem)×count]`
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
     let obj = &*value.cast::<FlashListObject>();
 
     raw::save_unsigned(io, ENCODING_VERSION as u64);
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             }
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
@@ -326,7 +326,7 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) {
+) { unsafe {
     let obj = &*value.cast::<FlashListObject>();
 
     let cold_buf: std::collections::VecDeque<Vec<u8>>;
@@ -458,7 +458,7 @@ pub unsafe extern "C" fn aof_rewrite(
             ttl as std::os::raw::c_longlong,
         );
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void {
+) -> *mut c_void { unsafe {
     let src = &*value.cast::<FlashListObject>();
     match &src.tier {
         Tier::Hot(items) => {
@@ -512,14 +512,14 @@ pub unsafe extern "C" fn copy(
             }
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 {
+) -> i32 { unsafe {
     use std::mem;
     use valkey_module::defrag::Defrag;
 
@@ -548,7 +548,7 @@ pub unsafe extern "C" fn defrag(
     }
 
     0
-}
+}}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

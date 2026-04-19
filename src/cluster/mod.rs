@@ -122,14 +122,13 @@ pub fn key_slot(key: &[u8]) -> u16 {
 }
 
 fn extract_hash_tag(key: &[u8]) -> &[u8] {
-    if let Some(open) = key.iter().position(|&b| b == b'{') {
-        if let Some(rel_close) = key[open + 1..].iter().position(|&b| b == b'}') {
+    if let Some(open) = key.iter().position(|&b| b == b'{')
+        && let Some(rel_close) = key[open + 1..].iter().position(|&b| b == b'}') {
             let tag = &key[open + 1..open + 1 + rel_close];
             if !tag.is_empty() {
                 return tag;
             }
         }
-    }
     key
 }
 
@@ -181,12 +180,11 @@ extern "C" fn on_slot_migration(
         }
         SLOT_MIGRATION_EXPORT_COMPLETED => {
             MIGRATION_SLOTS_IN_PROGRESS.fetch_add(-1, Ordering::Relaxed);
-            if let Ok(guard) = MIGRATION_EXPORT_START.lock() {
-                if let Some(start) = *guard {
+            if let Ok(guard) = MIGRATION_EXPORT_START.lock()
+                && let Some(start) = *guard {
                     MIGRATION_LAST_DURATION_MS
                         .store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
                 }
-            }
             logging::log_notice("flash: cluster: slot migration export completed");
         }
         SLOT_MIGRATION_IMPORT_STARTED => {

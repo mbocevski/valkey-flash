@@ -213,7 +213,7 @@ pub static FLASH_ZSET_TYPE: ValkeyType = ValkeyType::new(
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 /// # Safety
-pub unsafe extern "C" fn free(value: *mut c_void) {
+pub unsafe extern "C" fn free(value: *mut c_void) { unsafe {
     let obj = Box::from_raw(value.cast::<FlashZSetObject>());
     if let Tier::Cold {
         key_hash,
@@ -232,14 +232,14 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
             map.remove(&key_hash);
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn mem_usage2(
     _ctx: *mut raw::RedisModuleKeyOptCtx,
     value: *const c_void,
     _sample_size: usize,
-) -> usize {
+) -> usize { unsafe {
     let obj = &*value.cast::<FlashZSetObject>();
     match &obj.tier {
         Tier::Hot(inner) => {
@@ -248,14 +248,14 @@ pub unsafe extern "C" fn mem_usage2(
         }
         Tier::Cold { .. } => std::mem::size_of::<FlashZSetObject>(),
     }
-}
+}}
 
 /// # Safety
 ///
 /// RDB format (v1):
 ///   `[u64 encoding_version=1][u64 shape_tag=0x04][i64 ttl_ms]`
 ///   `[u64 count][for each member in BTreeMap order: save_double(score) + save_slice(member)]`
-pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
+pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) { unsafe {
     let obj = &*value.cast::<FlashZSetObject>();
     raw::save_unsigned(io, ENCODING_VERSION as u64);
     raw::save_unsigned(io, SHAPE_TAG_ZSET);
@@ -294,7 +294,7 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
         raw::save_double(io, *score);
         raw::save_slice(io, member);
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
@@ -437,12 +437,14 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
     // wake up. Relevant for DEBUG RELOAD / live in-process RDB round-trips.
     // Only signal non-empty sets — empty sets can't unblock a pop.
     #[cfg(not(test))]
-    if count > 0 {
-        if let (Some(get_key_fn), Some(get_ctx_fn), Some(signal_fn)) = (
-            raw::RedisModule_GetKeyNameFromIO,
-            raw::RedisModule_GetContextFromIO,
-            raw::RedisModule_SignalKeyAsReady,
-        ) {
+    unsafe {
+        if count > 0
+            && let (Some(get_key_fn), Some(get_ctx_fn), Some(signal_fn)) = (
+                raw::RedisModule_GetKeyNameFromIO,
+                raw::RedisModule_GetContextFromIO,
+                raw::RedisModule_SignalKeyAsReady,
+            )
+        {
             let ctx = get_ctx_fn(io);
             let key_name = get_key_fn(io);
             if !ctx.is_null() && !key_name.is_null() {
@@ -462,7 +464,7 @@ pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
     value: *mut c_void,
-) {
+) { unsafe {
     let obj = &*value.cast::<FlashZSetObject>();
     let cold_inner: ZSetInner;
     let inner: &ZSetInner = match &obj.tier {
@@ -591,7 +593,7 @@ pub unsafe extern "C" fn aof_rewrite(
             ttl as std::os::raw::c_longlong,
         );
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c_void) {
@@ -603,7 +605,7 @@ pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
     _to_key: *mut RedisModuleString,
     value: *const c_void,
-) -> *mut c_void {
+) -> *mut c_void { unsafe {
     let src = &*value.cast::<FlashZSetObject>();
     match &src.tier {
         Tier::Hot(inner) => Box::into_raw(Box::new(FlashZSetObject {
@@ -638,14 +640,14 @@ pub unsafe extern "C" fn copy(
             }
         }
     }
-}
+}}
 
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
     _key: *mut RedisModuleString,
     value: *mut *mut c_void,
-) -> i32 {
+) -> i32 { unsafe {
     use std::mem;
     use valkey_module::defrag::Defrag;
 
@@ -698,7 +700,7 @@ pub unsafe extern "C" fn defrag(
     // Cold tier: only primitive scalars — nothing to relocate.
 
     0
-}
+}}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

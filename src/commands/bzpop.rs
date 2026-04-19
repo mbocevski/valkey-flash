@@ -71,11 +71,11 @@ impl crate::async_io::CompletionHandle for BzPopFastPathHandle {
 unsafe extern "C" fn bzpop_free_privdata(
     _ctx: *mut raw::RedisModuleCtx,
     data: *mut c_void,
-) {
+) { unsafe {
     if !data.is_null() {
         drop(Box::from_raw(data as *mut BzPopPrivdata));
     }
-}
+}}
 
 /// Fires on timeout — replies with null array.
 #[cfg(not(test))]
@@ -83,10 +83,10 @@ unsafe extern "C" fn bzpop_timeout(
     ctx: *mut raw::RedisModuleCtx,
     _argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int {
+) -> c_int { unsafe {
     raw::RedisModule_ReplyWithNullArray.unwrap()(ctx);
     raw::REDISMODULE_OK as c_int
-}
+}}
 
 /// Fires when a watched key signals ready.
 ///
@@ -97,7 +97,7 @@ unsafe extern "C" fn bzpop_reply(
     ctx: *mut raw::RedisModuleCtx,
     argv: *mut *mut raw::RedisModuleString,
     argc: c_int,
-) -> c_int {
+) -> c_int { unsafe {
     let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
     let from_min = if privdata_ptr.is_null() {
         true
@@ -122,8 +122,8 @@ unsafe extern "C" fn bzpop_reply(
                 &key,
             );
 
-            if !crate::replication::is_replica() {
-                if let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+            if !crate::replication::is_replica()
+                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
                     use crate::storage::backend::StorageBackend;
                     let key_bytes = key.as_slice().to_vec();
                     match serialized_opt {
@@ -150,7 +150,6 @@ unsafe extern "C" fn bzpop_reply(
                         }
                     }
                 }
-            }
 
             let score_bytes = format_score(score).into_bytes();
             raw::reply_with_array(ctx, 3);
@@ -164,7 +163,7 @@ unsafe extern "C" fn bzpop_reply(
 
     // No key had elements — stay blocked.
     raw::REDISMODULE_ERR as c_int
-}
+}}
 
 // ── Pop helper ────────────────────────────────────────────────────────────────
 
@@ -278,8 +277,8 @@ fn do_bzpop(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRes
                 );
 
                 #[cfg(not(test))]
-                if !crate::replication::is_replica() {
-                    if let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+                if !crate::replication::is_replica()
+                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
                         use crate::storage::backend::StorageBackend;
                         let key_bytes = key.as_slice().to_vec();
                         let score_str = format_score(score).into_bytes();
@@ -317,7 +316,6 @@ fn do_bzpop(ctx: &Context, args: Vec<ValkeyString>, from_min: bool) -> ValkeyRes
                         }
                         return Ok(ValkeyValue::NoReply);
                     }
-                }
 
                 return Ok(ValkeyValue::Array(vec![
                     ValkeyValue::StringBuffer(key.as_slice().to_vec()),

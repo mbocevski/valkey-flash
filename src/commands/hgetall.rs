@@ -110,11 +110,10 @@ pub fn flash_hgetall_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
 
     if let Some(reply) = hot_reply {
         let key_handle = ctx.open_key(key);
-        if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
-            if let Tier::Hot(fields) = &obj.tier {
+        if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE)
+            && let Tier::Hot(fields) = &obj.tier {
                 cache.put(key.as_slice(), hash_serialize(fields));
             }
-        }
         return Ok(reply);
     }
 
