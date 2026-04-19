@@ -4,6 +4,12 @@ import pytest
 from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 
+def _flash_loadmodule_arg(flash_path):
+    return (
+        f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
+    )
+
+
 class TestFlashReplication(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
@@ -14,13 +20,36 @@ class TestFlashReplication(ReplicationTestCase):
         server_path = os.path.join(binaries_dir, "valkey-server")
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
+        import shutil
+        import tempfile
+        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_", dir=self.testdir)
+        flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",
-            "loadmodule": os.getenv("MODULE_PATH"),
+            "loadmodule": _flash_loadmodule_arg(flash_path),
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=server_path, args=self.args
         )
+        yield
+        shutil.rmtree(self._flash_dir, ignore_errors=True)
+
+    def setup_replication(self, num_replicas=1):
+        """Override so each replica gets its own flash.bin path."""
+        self.num_replicas = num_replicas
+        self.replicas = []
+        self.skip_teardown = False
+        self.create_replicas(num_replicas)
+        for i, replica in enumerate(self.replicas):
+            replica_path = os.path.join(self._flash_dir, f"replica{i}.bin")
+            replica.args["loadmodule"] = _flash_loadmodule_arg(replica_path)
+        self.start_replicas()
+        self.wait_for_replicas(self.num_replicas)
+        self.wait_for_primary_link_up_all_replicas()
+        self.wait_for_all_replicas_online(self.num_replicas)
+        for i in range(len(self.replicas)):
+            self.waitForReplicaToSyncUp(self.replicas[i])
+        return self.replicas
 
     def test_string_key_replicates_to_replica(self):
         self.setup_replication(num_replicas=1)

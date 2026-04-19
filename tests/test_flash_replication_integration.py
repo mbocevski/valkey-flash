@@ -53,17 +53,46 @@ def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAI
     wait_for_true(_synced, timeout=timeout)
 
 
+def _flash_loadmodule_arg(flash_path):
+    return (
+        f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
+    )
+
+
 class TestFlashReplicationIntegration(ReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _setup_ld_path()
+        import shutil
+        import tempfile
+        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_int_", dir=self.testdir)
+        flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",
-            "loadmodule": os.getenv("MODULE_PATH"),
+            "loadmodule": _flash_loadmodule_arg(flash_path),
         }
         self.server, self.client = self.create_server(
             testdir=self.testdir, server_path=_server_path(), args=self.args
         )
+        yield
+        shutil.rmtree(self._flash_dir, ignore_errors=True)
+
+    def setup_replication(self, num_replicas=1):
+        """Override so each replica gets its own flash.bin path."""
+        self.num_replicas = num_replicas
+        self.replicas = []
+        self.skip_teardown = False
+        self.create_replicas(num_replicas)
+        for i, replica in enumerate(self.replicas):
+            replica_path = os.path.join(self._flash_dir, f"replica{i}.bin")
+            replica.args["loadmodule"] = _flash_loadmodule_arg(replica_path)
+        self.start_replicas()
+        self.wait_for_replicas(self.num_replicas)
+        self.wait_for_primary_link_up_all_replicas()
+        self.wait_for_all_replicas_online(self.num_replicas)
+        for i in range(len(self.replicas)):
+            self.waitForReplicaToSyncUp(self.replicas[i])
+        return self.replicas
 
     # -------------------------------------------------------------------------
     # Scenario 1 — basic propagation (SET / DEL / HSET / HDEL)
@@ -160,13 +189,25 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         self.waitForReplicaToSyncUp(r)
 
         # Kill the replica connection from the primary side to trigger PSYNC on reconnect.
+        # valkey-py returns CLIENT LIST as a list of dicts; older versions returned
+        # bytes/str. Normalise both shapes to (id, flags) pairs.
         raw = self.client.execute_command("CLIENT LIST")
-        text = raw.decode() if isinstance(raw, bytes) else raw
-        for line in text.splitlines():
-            parts = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
-            if "S" in parts.get("flags", ""):
+        if isinstance(raw, list):
+            pairs = [(str(c.get(b"id") or c.get("id")),
+                      (c.get(b"flags") or c.get("flags") or b"").decode()
+                      if isinstance(c.get(b"flags") or c.get("flags"), (bytes, bytearray))
+                      else str(c.get(b"flags") or c.get("flags") or ""))
+                     for c in raw]
+        else:
+            text = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
+            pairs = []
+            for line in text.splitlines():
+                parts = dict(tok.split("=", 1) for tok in line.split() if "=" in tok)
+                pairs.append((parts.get("id", ""), parts.get("flags", "")))
+        for client_id, flags in pairs:
+            if "S" in flags:
                 with suppress(Exception):
-                    self.client.execute_command("CLIENT KILL", "ID", parts["id"])
+                    self.client.execute_command("CLIENT KILL", "ID", client_id)
                 break
 
         # Batch 2 — written while replica is reconnecting.
