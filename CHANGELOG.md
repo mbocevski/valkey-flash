@@ -64,6 +64,7 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 
 ### Fixed
 
+- Module would not load into any Valkey server: `RedisModule_CreateCommand` rejected the `no-multi` and `slow` command flags (used for native commands but not in the module-API whitelist), failing the entire module init. Removed both flags from `FLASH.BLPOP`, `BRPOP`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX`, `ZUNIONSTORE`, `ZINTERSTORE`, `ZDIFFSTORE`, `ZRANGESTORE`. The equivalent `@slow` ACL category remains on these commands' ACL-category string, which is where it belongs.
 - `aof_rewrite` for Cold-tier `FlashList` and `FlashZSet` keys previously returned early instead of materializing from NVMe, causing silent data loss on AOF-only restart. Both now read from NVMe and emit the full value.
 - `FLASH.ZINCRBY` and `FLASH.ZADD INCR` now return `ERR resulting score is not a number (NaN)` when arithmetic produces NaN (e.g. `+inf + -inf`) instead of inserting a NaN score (matches Redis core).
 - `FLASH.ZRANGESTORE` with `LIMIT` and neither `BYSCORE` nor `BYLEX` now returns `ERR syntax error` instead of silently storing the full range.
