@@ -52,7 +52,9 @@ _HASH_KEY = "{gamma}:hash"
 
 def _cluster_client():
     """Return a ValkeyCluster client seeded at port 7001."""
-    return ValkeyCluster(host="localhost", port=_SEED_PORT, socket_timeout=10)
+    from docker_fixtures import flash_cluster_client
+
+    return flash_cluster_client(port=_SEED_PORT)
 
 
 def _direct_client(port):

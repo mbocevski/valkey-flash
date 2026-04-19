@@ -44,13 +44,126 @@ def _all_healthy(docker: DockerClient, services: list, timeout: float = 90) -> N
     raise RuntimeError(f"Services {services} did not become healthy within {timeout}s.\n{logs}")
 
 
-def _connect_cluster_with_retry(host: str, port: int, timeout: float = 30) -> ValkeyCluster:
-    deadline = time.monotonic() + timeout
+def flash_cluster_client(
+    port: int = 7001, compose_project: str = "vf-cluster", **kwargs
+) -> ValkeyCluster:
+    """Construct a ValkeyCluster pointing at a docker-compose cluster, with
+    the address-remap that lets the host reach nodes via `localhost:<host-port>`
+    instead of the internal docker-bridge IPs/hostnames advertised by
+    `CLUSTER SLOTS`. Extra kwargs are forwarded to `ValkeyCluster`."""
+    kwargs.setdefault("socket_timeout", 10)
+    return ValkeyCluster(
+        host="localhost",
+        port=port,
+        address_remap=_build_address_remap(port, compose_project),
+        **kwargs,
+    )
+
+
+def _build_address_remap(base_port: int, compose_project: str):
+    """Return an `address_remap` callable that rewrites the cluster-internal
+    addresses advertised by CLUSTER SLOTS back to `localhost:<host-port>`.
+
+    `compose.cluster.yml` sets `--cluster-announce-hostname flash-primary-N`;
+    the nodes advertise both that hostname AND their docker-bridge IP
+    (172.18.x.x). Neither is reachable from the test process on the host —
+    clients must talk to `localhost:700N`. Build a map of both shapes:
+      - hostname → host-port (static, from compose layout)
+      - container IP → host-port (discovered via `docker inspect`)"""
+    import subprocess
+    import json
+
+    name_to_port = {
+        "flash-primary-1": base_port,
+        "flash-primary-2": base_port + 1,
+        "flash-primary-3": base_port + 2,
+        "flash-replica-1": base_port + 3,
+        "flash-replica-2": base_port + 4,
+        "flash-replica-3": base_port + 5,
+    }
+
+    ip_to_port: dict[str, int] = {}
+    try:
+        container_names = subprocess.check_output(
+            [
+                "docker", "ps",
+                "--filter", f"label=com.docker.compose.project={compose_project}",
+                "--format", "{{.Names}}",
+            ],
+            timeout=5,
+        ).decode().split()
+        for cname in container_names:
+            service = next((s for s in name_to_port if s in cname), None)
+            if service is None:
+                continue
+            ip_json = subprocess.check_output(
+                ["docker", "inspect", "-f",
+                 "{{json .NetworkSettings.Networks}}", cname],
+                timeout=5,
+            ).decode().strip()
+            for net_info in json.loads(ip_json).values():
+                ip = net_info.get("IPAddress")
+                if ip:
+                    ip_to_port[ip] = name_to_port[service]
+                    break
+    except Exception:
+        # Discovery failure degrades to hostname-only remap.
+        pass
+
+    def remap(addr):
+        host, _ = addr
+        if host in name_to_port:
+            return ("localhost", name_to_port[host])
+        if host in ip_to_port:
+            return ("localhost", ip_to_port[host])
+        return addr
+
+    return remap
+
+
+def _connect_cluster_with_retry(
+    host: str, port: int, compose_project: str, timeout: float = 60
+) -> ValkeyCluster:
+    """Wait for the cluster to report `cluster_state:ok` on every node, then
+    build a ValkeyCluster client with address remapping. Retries until all
+    primaries and replicas have converged (gossip settles a few seconds after
+    cluster-init exits)."""
+    # Wait for cluster-state=ok on the entry node first via a plain client.
+    plain_deadline = time.monotonic() + timeout
     last_exc: Exception = RuntimeError("timeout before first attempt")
-    while time.monotonic() < deadline:
+    while time.monotonic() < plain_deadline:
         try:
-            client = ValkeyCluster(host=host, port=port, socket_timeout=10)
+            plain = valkey.Valkey(host=host, port=port, socket_timeout=5)
+            info = plain.execute_command("CLUSTER INFO")
+            state = info.get("cluster_state") if isinstance(info, dict) else None
+            if state == "ok":
+                break
+            last_exc = RuntimeError(f"cluster_state={state}")
+        except Exception as exc:
+            last_exc = exc
+        time.sleep(1)
+    else:
+        raise RuntimeError(
+            f"Cluster at {host}:{port} not ok after {timeout}s: {last_exc}"
+        )
+
+    # Build the discovery map *after* the cluster is up so every container is
+    # running and has a stable IP.
+    remap = _build_address_remap(port, compose_project)
+    cluster_deadline = time.monotonic() + timeout
+    while time.monotonic() < cluster_deadline:
+        try:
+            client = ValkeyCluster(
+                host=host,
+                port=port,
+                socket_timeout=10,
+                address_remap=remap,
+            )
             client.ping()
+            # Force a round-trip that hits every shard so cluster-side
+            # discovery completes before the test's first write.
+            client.execute_command("FLASH.SET", "{_boot_probe}", "1")
+            client.execute_command("FLASH.DEL", "{_boot_probe}")
             return client
         except Exception as exc:
             last_exc = exc
@@ -100,7 +213,7 @@ def docker_cluster():
     try:
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
-        client = _connect_cluster_with_retry("localhost", 7001)
+        client = _connect_cluster_with_retry("localhost", 7001, "vf-cluster")
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)
@@ -127,7 +240,7 @@ def docker_cluster_replica_tier():
     try:
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
-        client = _connect_cluster_with_retry("localhost", 7011)
+        client = _connect_cluster_with_retry("localhost", 7011, "vf-cluster-rt")
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)

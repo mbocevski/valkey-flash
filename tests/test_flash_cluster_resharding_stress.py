@@ -31,6 +31,7 @@ import pytest
 import valkey
 import valkey.exceptions
 from valkey.cluster import ValkeyCluster
+from docker_fixtures import flash_cluster_client
 
 # ── Topology helpers ──────────────────────────────────────────────────────────
 
@@ -225,7 +226,7 @@ def _run_mixed_traffic(
     transparently by ValkeyCluster; other errors are counted but ignored.
     """
     try:
-        client = ValkeyCluster(host="localhost", port=7001, socket_timeout=5)
+        client = flash_cluster_client(port=7001, socket_timeout=5)
     except Exception:
         return
 
@@ -284,7 +285,7 @@ def _assert_zero_loss(tracker: AckTracker, desc: str, seed_port: int = 7001) -> 
     if not acks:
         pytest.skip(f"{desc}: no acks recorded — check that traffic threads ran")
 
-    client = ValkeyCluster(host="localhost", port=seed_port, socket_timeout=10)
+    client = flash_cluster_client(port=seed_port, socket_timeout=10)
     try:
         losses = []
         mismatches = []
@@ -355,7 +356,7 @@ def test_single_slot_migration_under_load(docker_cluster):
     string_keys = [f"{{{TAG}}}{i}" for i in range(n_keys)]
     hash_keys = [f"h:{{{TAG}}}{i}" for i in range(n_keys)]
 
-    seed = ValkeyCluster(host="localhost", port=7001, socket_timeout=10)
+    seed = flash_cluster_client(port=7001, socket_timeout=10)
     try:
         for k in string_keys:
             seed.execute_command("FLASH.SET", k, f"init:{k}")
@@ -449,7 +450,7 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
     # -- preload keys in each migrating slot --
     # Use the slot number as hash tag — CLUSTER KEYSLOT confirms which slot it maps to.
     # Pre-seed at least one key per slot so the migration exercises rdb_save.
-    cluster_seed = ValkeyCluster(host="localhost", port=7001, socket_timeout=10)
+    cluster_seed = flash_cluster_client(port=7001, socket_timeout=10)
     try:
         for slot in slots_to_migrate:
             # Create a key that hashes to this exact slot by finding a matching tag.
@@ -486,7 +487,7 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
 
     all_traffic_keys = traffic_keys + migrating_traffic_keys
 
-    init_client = ValkeyCluster(host="localhost", port=7001, socket_timeout=10)
+    init_client = flash_cluster_client(port=7001, socket_timeout=10)
     try:
         for k in all_traffic_keys:
             init_client.execute_command("FLASH.SET", k, f"init:{k}")

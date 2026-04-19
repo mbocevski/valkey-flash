@@ -145,10 +145,13 @@ def _wait_for_cluster_stable(seed_port: int, timeout: float = 30.0) -> bool:
 
 def _new_cluster_client(seed_port: int) -> ValkeyCluster:
     """Create a fresh ValkeyCluster client (fetches current topology)."""
+    from docker_fixtures import flash_cluster_client
+
+    project = "vf-cluster-rt" if seed_port >= 7011 else "vf-cluster"
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
-            c = ValkeyCluster(host="localhost", port=seed_port, socket_timeout=10)
+            c = flash_cluster_client(port=seed_port, compose_project=project)
             c.ping()
             return c
         except Exception:

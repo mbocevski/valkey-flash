@@ -44,12 +44,9 @@ def _node(port: int) -> valkey.Valkey:
 
 def _cluster_rw(seed_port: int = 7001) -> ValkeyCluster:
     """Write-to-primary, read-from-replica cluster client."""
-    return ValkeyCluster(
-        host="localhost",
-        port=seed_port,
-        read_from_replicas=True,
-        socket_timeout=10,
-    )
+    from docker_fixtures import flash_cluster_client
+
+    return flash_cluster_client(port=seed_port, read_from_replicas=True)
 
 
 def _cleanup(client: ValkeyCluster, *keys: str) -> None:
