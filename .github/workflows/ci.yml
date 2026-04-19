@@ -95,6 +95,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Set module path
@@ -188,6 +191,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Set module path
@@ -268,6 +274,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Set paths
@@ -342,6 +351,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Set paths
@@ -394,6 +406,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Smoke-test custom seccomp profile
@@ -523,6 +538,9 @@ jobs:
         python-version: '3.11'
     - name: Install uv
       uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
+      with:
+        enable-cache: true
+        cache-dependency-glob: 'uv.lock'
     - name: Install test dependencies
       run: uv sync --frozen
     - name: Run unit tests under llvm-cov
