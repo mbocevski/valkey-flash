@@ -39,7 +39,6 @@ class TestFlashCopyString(ValkeyFlashTestCase):
         # Original dst value must be preserved.
         assert client.execute_command("FLASH.GET", "dst_exist") == b"b"
 
-    @pytest.mark.xfail(reason="COPY REPLACE does not overwrite module-typed destination — tracked in backlog")
     def test_copy_to_existing_dst_with_replace_overwrites(self):
         client = self.client
         client.execute_command("FLASH.SET", "src_repl", "new_val")
@@ -106,7 +105,6 @@ class TestFlashCopyHash(ValkeyFlashTestCase):
         assert result == 0
         assert client.execute_command("FLASH.HGET", "dst_hex", "f") == b"old"
 
-    @pytest.mark.xfail(reason="COPY REPLACE does not overwrite module-typed destination — tracked in backlog")
     def test_copy_hash_with_replace(self):
         client = self.client
         client.execute_command("FLASH.HSET", "src_hrep", "field", "new_val")
@@ -149,7 +147,6 @@ class TestFlashCopyList(ValkeyFlashTestCase):
         assert result == 0
         assert client.execute_command("FLASH.LLEN", "dst_lex") == 1
 
-    @pytest.mark.xfail(reason="COPY REPLACE does not overwrite module-typed destination — tracked in backlog")
     def test_copy_list_with_replace(self):
         client = self.client
         client.execute_command("FLASH.RPUSH", "src_lrep", "new")

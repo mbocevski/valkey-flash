@@ -1,3 +1,28 @@
+// ── Key bytes helper ──────────────────────────────────────────────────────────
+
+/// Read the byte slice behind a raw `RedisModuleString` pointer into an owned
+/// `Vec<u8>`. Used from type callbacks (copy/free/aof_rewrite) that receive a
+/// raw module-string for a key and need its bytes to drive the hot cache.
+///
+/// # Safety
+///
+/// `s` must be a valid, non-null `RedisModuleString*` owned by the caller for
+/// the duration of the call. The returned `Vec<u8>` is an independent copy.
+#[allow(dead_code)]
+pub unsafe fn module_string_bytes(s: *mut valkey_module::raw::RedisModuleString) -> Vec<u8> {
+    if s.is_null() {
+        return Vec::new();
+    }
+    let mut len: usize = 0;
+    let ptr = unsafe {
+        valkey_module::raw::RedisModule_StringPtrLen.unwrap()(s, &mut len)
+    };
+    if ptr.is_null() || len == 0 {
+        return Vec::new();
+    }
+    unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len).to_vec() }
+}
+
 // ── Key hash ──────────────────────────────────────────────────────────────────
 
 /// FNV-1a 64-bit hash of `key`. Deterministic across process restarts — safe

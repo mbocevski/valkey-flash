@@ -445,10 +445,19 @@ pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c
 /// expiry separately (objectGetExpire/setExpire in copyCommand).
 pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
-    _to_key: *mut RedisModuleString,
+    to_key: *mut RedisModuleString,
     value: *const c_void,
 ) -> *mut c_void {
     unsafe {
+        // COPY REPLACE: Valkey deletes the destination after this callback returns
+        // a new object. The module's in-memory cache is keyed by raw bytes and is
+        // not otherwise invalidated, so a subsequent FLASH.GET would serve the
+        // pre-REPLACE destination value. Drop the cache entry for `to_key` here
+        // so the new object's value is authoritative.
+        if let Some(cache) = crate::CACHE.get() {
+            let to_key_bytes = crate::util::module_string_bytes(to_key);
+            cache.delete(&to_key_bytes);
+        }
         let src: &FlashStringObject = &*value.cast::<FlashStringObject>();
         match &src.tier {
             Tier::Hot(v) => {

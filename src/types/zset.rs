@@ -609,10 +609,14 @@ pub unsafe extern "C" fn digest(_md: *mut raw::RedisModuleDigest, _value: *mut c
 /// # Safety
 pub unsafe extern "C" fn copy(
     _from_key: *mut RedisModuleString,
-    _to_key: *mut RedisModuleString,
+    to_key: *mut RedisModuleString,
     value: *const c_void,
 ) -> *mut c_void {
     unsafe {
+        if let Some(cache) = crate::CACHE.get() {
+            let to_key_bytes = crate::util::module_string_bytes(to_key);
+            cache.delete(&to_key_bytes);
+        }
         let src = &*value.cast::<FlashZSetObject>();
         match &src.tier {
             Tier::Hot(inner) => Box::into_raw(Box::new(FlashZSetObject {
