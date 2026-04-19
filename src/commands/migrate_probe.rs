@@ -113,8 +113,8 @@ pub(crate) fn remote_probe(host: &str, port: u16) -> Result<ProbeResult, String>
         .map_err(|e| format!("ERR FLASH-MIGRATE target {addr} socket error: {e}"))?;
 
     let mut stream = stream;
-    // RESP2 command: FLASH.MIGRATE.PROBE (no key argument)
-    let cmd = b"*1\r\n$18\r\nFLASH.MIGRATE.PROBE\r\n";
+    // RESP2 command: FLASH.MIGRATE.PROBE (no key argument) — 19 chars, not 18.
+    let cmd = b"*1\r\n$19\r\nFLASH.MIGRATE.PROBE\r\n";
     stream
         .write_all(cmd)
         .map_err(|e| format!("ERR FLASH-MIGRATE target {addr} write error: {e}"))?;
