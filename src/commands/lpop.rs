@@ -2,10 +2,10 @@ use std::collections::VecDeque;
 
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::promote_cold_list;
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::promote_cold_list;
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -26,9 +26,7 @@ impl crate::async_io::CompletionHandle for PopCompletionHandle {
         }
         let reply = match self.popped {
             None => Ok(ValkeyValue::Null),
-            Some(ref elems) if elems.len() == 1 => {
-                Ok(ValkeyValue::StringBuffer(elems[0].clone()))
-            }
+            Some(ref elems) if elems.len() == 1 => Ok(ValkeyValue::StringBuffer(elems[0].clone())),
             Some(elems) => Ok(ValkeyValue::Array(
                 elems.into_iter().map(ValkeyValue::StringBuffer).collect(),
             )),
@@ -41,12 +39,7 @@ impl crate::async_io::CompletionHandle for PopCompletionHandle {
 
 // ── Shared pop logic ──────────────────────────────────────────────────────────
 
-fn do_pop(
-    ctx: &Context,
-    args: Vec<ValkeyString>,
-    pop_left: bool,
-    _cmd_name: &str,
-) -> ValkeyResult {
+fn do_pop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool, _cmd_name: &str) -> ValkeyResult {
     if args.len() < 2 || args.len() > 3 {
         return Err(ValkeyError::WrongArity);
     }
@@ -118,7 +111,11 @@ fn do_pop(
         cache.delete(key.as_slice());
 
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.pop", key);
+        ctx.notify_keyspace_event(
+            NotifyEvent::LIST,
+            if pop_left { "flash.lpop" } else { "flash.rpop" },
+            key,
+        );
 
         let reply = build_pop_reply(count, popped.clone());
 
@@ -177,7 +174,11 @@ fn do_pop(
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.pop", key);
+    ctx.notify_keyspace_event(
+        NotifyEvent::LIST,
+        if pop_left { "flash.lpop" } else { "flash.rpop" },
+        key,
+    );
 
     let reply = build_pop_reply(count, popped.clone());
 
@@ -229,7 +230,10 @@ fn build_pop_reply(count: Option<usize>, popped: Vec<Vec<u8>>) -> ValkeyValue {
     match count {
         None => {
             // Single-element mode (no count arg).
-            popped.into_iter().next().map_or(ValkeyValue::Null, ValkeyValue::StringBuffer)
+            popped
+                .into_iter()
+                .next()
+                .map_or(ValkeyValue::Null, ValkeyValue::StringBuffer)
         }
         Some(_) => {
             // Array mode (count arg present).

@@ -1,9 +1,9 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -77,7 +77,11 @@ pub fn flash_lrem_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
 
     // Build new list by removing matching elements.
     let mut new_items = std::collections::VecDeque::with_capacity(items.len());
-    let max = if count == 0 { usize::MAX } else { count.unsigned_abs() as usize };
+    let max = if count == 0 {
+        usize::MAX
+    } else {
+        count.unsigned_abs() as usize
+    };
     let mut removed = 0usize;
 
     if count >= 0 {
@@ -109,7 +113,7 @@ pub fn flash_lrem_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         let _ = key_handle.delete();
         cache.delete(key.as_slice());
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.rem", key);
+        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lrem", key);
 
         #[cfg(not(test))]
         {
@@ -164,7 +168,7 @@ pub fn flash_lrem_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.rem", key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lrem", key);
 
     #[cfg(not(test))]
     {

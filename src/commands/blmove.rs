@@ -9,10 +9,10 @@ use {
     valkey_module::raw,
 };
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -46,14 +46,13 @@ impl crate::async_io::CompletionHandle for BlMoveNvmeHandle {
 // ── C callbacks ───────────────────────────────────────────────────────────────
 
 #[cfg(not(test))]
-unsafe extern "C" fn blmove_free_privdata(
-    _ctx: *mut raw::RedisModuleCtx,
-    data: *mut c_void,
-) { unsafe {
-    if !data.is_null() {
-        drop(Box::from_raw(data as *mut BlMovePrivdata));
+unsafe extern "C" fn blmove_free_privdata(_ctx: *mut raw::RedisModuleCtx, data: *mut c_void) {
+    unsafe {
+        if !data.is_null() {
+            drop(Box::from_raw(data as *mut BlMovePrivdata));
+        }
     }
-}}
+}
 
 /// Timeout: return nil.
 #[cfg(not(test))]
@@ -61,10 +60,12 @@ unsafe extern "C" fn blmove_timeout(
     ctx: *mut raw::RedisModuleCtx,
     _argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int { unsafe {
-    raw::RedisModule_ReplyWithNull.unwrap()(ctx);
-    raw::REDISMODULE_OK as c_int
-}}
+) -> c_int {
+    unsafe {
+        raw::RedisModule_ReplyWithNull.unwrap()(ctx);
+        raw::REDISMODULE_OK as c_int
+    }
+}
 
 /// Reply callback for BLMOVE: atomically pops from src and pushes to dst.
 /// Returns `REDISMODULE_ERR` (stay blocked) if src is empty (race condition).
@@ -73,47 +74,50 @@ unsafe extern "C" fn blmove_reply(
     ctx: *mut raw::RedisModuleCtx,
     argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int { unsafe {
-    let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
-    if privdata_ptr.is_null() {
-        raw::RedisModule_ReplyWithNull.unwrap()(ctx);
-        return raw::REDISMODULE_OK as c_int;
-    }
-    let pd = &*(privdata_ptr as *const BlMovePrivdata);
-    let src_left = pd.src_left;
-    let dst_left = pd.dst_left;
-    let dst_key_bytes = pd.dst_key_bytes.clone();
+) -> c_int {
+    unsafe {
+        let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
+        if privdata_ptr.is_null() {
+            raw::RedisModule_ReplyWithNull.unwrap()(ctx);
+            return raw::REDISMODULE_OK as c_int;
+        }
+        let pd = &*(privdata_ptr as *const BlMovePrivdata);
+        let src_left = pd.src_left;
+        let dst_left = pd.dst_left;
+        let dst_key_bytes = pd.dst_key_bytes.clone();
 
-    let context = Context::new(ctx);
+        let context = Context::new(ctx);
 
-    // src key is argv[1].
-    let src_ptr = *argv.add(1);
-    let src_key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, src_ptr));
+        // src key is argv[1].
+        let src_ptr = *argv.add(1);
+        let src_key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, src_ptr));
 
-    // Pop from src.
-    let (elem, src_serialized_opt) = match pop_one_blmove(&context, &src_key, src_left) {
-        None => return raw::REDISMODULE_ERR as c_int, // src empty — stay blocked
-        Some(v) => v,
-    };
+        // Pop from src.
+        let (elem, src_serialized_opt) = match pop_one_blmove(&context, &src_key, src_left) {
+            None => return raw::REDISMODULE_ERR as c_int, // src empty — stay blocked
+            Some(v) => v,
+        };
 
-    // Push to dst.
-    let dst_serialized = push_one_blmove(&context, &dst_key_bytes, &elem, dst_left);
+        // Push to dst.
+        let dst_serialized = push_one_blmove(&context, &dst_key_bytes, &elem, dst_left);
 
-    // Replicate as FLASH.LMOVE (non-blocking).
-    // argv[1]=src, argv[2]=dst are available; replicate the whole thing.
-    context.replicate_verbatim();
+        // Replicate as FLASH.LMOVE (non-blocking).
+        // argv[1]=src, argv[2]=dst are available; replicate the whole thing.
+        context.replicate_verbatim();
 
-    context.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", &src_key);
-    // Also notify on dst if it's a different key.
-    if src_key.as_slice() != dst_key_bytes.as_slice() {
-        let dst_vs = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, *argv.add(2)));
-        context.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", &dst_vs);
-    }
+        context.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", &src_key);
+        // Also notify on dst if it's a different key.
+        if src_key.as_slice() != dst_key_bytes.as_slice() {
+            let dst_vs =
+                ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, *argv.add(2)));
+            context.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", &dst_vs);
+        }
 
-    // Async NVMe writes (fire-and-forget).
-    #[cfg(not(test))]
-    if !crate::replication::is_replica()
-        && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+        // Async NVMe writes (fire-and-forget).
+        #[cfg(not(test))]
+        if !crate::replication::is_replica()
+            && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+        {
             use crate::storage::backend::StorageBackend;
             let src_bytes = src_key.as_slice().to_vec();
             let dst_bytes = dst_key_bytes.clone();
@@ -127,35 +131,38 @@ unsafe extern "C" fn blmove_reply(
                     }
                     Some(ref s) => {
                         if let Ok(offset) = storage.put(&src_bytes, s)
-                            && let Some(wal) = WAL.get() {
-                                let kh = crate::util::key_hash(&src_bytes);
-                                let vh = crate::util::value_hash(s);
-                                let _ = wal.append(crate::storage::wal::WalOp::Put {
-                                    key_hash: kh,
-                                    offset,
-                                    value_hash: vh,
-                                });
-                            }
+                            && let Some(wal) = WAL.get()
+                        {
+                            let kh = crate::util::key_hash(&src_bytes);
+                            let vh = crate::util::value_hash(s);
+                            let _ = wal.append(crate::storage::wal::WalOp::Put {
+                                key_hash: kh,
+                                offset,
+                                value_hash: vh,
+                            });
+                        }
                     }
                 }
                 // Persist dst.
                 if let Ok(offset) = storage.put(&dst_bytes, &dst_ser)
-                    && let Some(wal) = WAL.get() {
-                        let kh = crate::util::key_hash(&dst_bytes);
-                        let vh = crate::util::value_hash(&dst_ser);
-                        let _ = wal.append(crate::storage::wal::WalOp::Put {
-                            key_hash: kh,
-                            offset,
-                            value_hash: vh,
-                        });
-                    }
+                    && let Some(wal) = WAL.get()
+                {
+                    let kh = crate::util::key_hash(&dst_bytes);
+                    let vh = crate::util::value_hash(&dst_ser);
+                    let _ = wal.append(crate::storage::wal::WalOp::Put {
+                        key_hash: kh,
+                        offset,
+                        value_hash: vh,
+                    });
+                }
                 Ok(vec![])
             });
         }
 
-    raw::reply_with_string_buffer(ctx, elem.as_ptr() as *const _, elem.len());
-    raw::REDISMODULE_OK as c_int
-}}
+        raw::reply_with_string_buffer(ctx, elem.as_ptr() as *const _, elem.len());
+        raw::REDISMODULE_OK as c_int
+    }
+}
 
 // ── In-memory helpers ─────────────────────────────────────────────────────────
 
@@ -223,12 +230,7 @@ fn pop_one_blmove(
 
 /// Push `elem` to `dst_key_bytes` (head if `push_left`, tail otherwise).
 /// Creates the key if it doesn't exist. Returns the serialized new list for NVMe persistence.
-fn push_one_blmove(
-    ctx: &Context,
-    dst_key_bytes: &[u8],
-    elem: &[u8],
-    push_left: bool,
-) -> Vec<u8> {
+fn push_one_blmove(ctx: &Context, dst_key_bytes: &[u8], elem: &[u8], push_left: bool) -> Vec<u8> {
     // We need a ValkeyString for open_key_writable.
     let dst_vs = ValkeyString::create_from_slice(ctx.ctx, dst_key_bytes);
 
@@ -310,12 +312,20 @@ pub fn flash_blmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
     let src_left = match src_dir.as_slice() {
         b"LEFT" => true,
         b"RIGHT" => false,
-        _ => return Err(ValkeyError::Str("ERR syntax error — expected LEFT or RIGHT")),
+        _ => {
+            return Err(ValkeyError::Str(
+                "ERR syntax error — expected LEFT or RIGHT",
+            ));
+        }
     };
     let dst_left = match dst_dir.as_slice() {
         b"LEFT" => true,
         b"RIGHT" => false,
-        _ => return Err(ValkeyError::Str("ERR syntax error — expected LEFT or RIGHT")),
+        _ => {
+            return Err(ValkeyError::Str(
+                "ERR syntax error — expected LEFT or RIGHT",
+            ));
+        }
     };
 
     let dst_key_bytes = dst_key.as_slice().to_vec();
@@ -342,50 +352,59 @@ pub fn flash_blmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRes
             let dst_ser = push_one_blmove(ctx, &dst_key_bytes, &elem, dst_left);
 
             ctx.replicate_verbatim();
-            ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", src_key);
+            ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", src_key);
             if src_key.as_slice() != dst_key.as_slice() {
-                ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", dst_key);
+                ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", dst_key);
             }
 
             #[cfg(not(test))]
             if !crate::replication::is_replica()
-                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
-                    use crate::storage::backend::StorageBackend;
-                    let src_bytes = src_key.as_slice().to_vec();
-                    let dst_bytes = dst_key_bytes.clone();
-                    let elem_clone = elem.clone();
-                    let bc = ctx.block_client();
-                    let handle = Box::new(BlMoveFastPathHandle {
-                        tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
-                        elem: elem_clone,
-                    });
-                    let src_ser = src_ser_opt;
-                    pool.submit_or_complete(handle, move || {
-                        match src_ser {
-                            None => { storage.delete(&src_bytes).ok(); }
-                            Some(ref s) => {
-                                if let Ok(offset) = storage.put(&src_bytes, s)
-                                    && let Some(wal) = WAL.get() {
-                                        let kh = crate::util::key_hash(&src_bytes);
-                                        let vh = crate::util::value_hash(s);
-                                        let _ = wal.append(crate::storage::wal::WalOp::Put {
-                                            key_hash: kh, offset, value_hash: vh,
-                                        });
-                                    }
-                            }
+                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+            {
+                use crate::storage::backend::StorageBackend;
+                let src_bytes = src_key.as_slice().to_vec();
+                let dst_bytes = dst_key_bytes.clone();
+                let elem_clone = elem.clone();
+                let bc = ctx.block_client();
+                let handle = Box::new(BlMoveFastPathHandle {
+                    tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
+                    elem: elem_clone,
+                });
+                let src_ser = src_ser_opt;
+                pool.submit_or_complete(handle, move || {
+                    match src_ser {
+                        None => {
+                            storage.delete(&src_bytes).ok();
                         }
-                        if let Ok(offset) = storage.put(&dst_bytes, &dst_ser)
-                            && let Some(wal) = WAL.get() {
-                                let kh = crate::util::key_hash(&dst_bytes);
-                                let vh = crate::util::value_hash(&dst_ser);
+                        Some(ref s) => {
+                            if let Ok(offset) = storage.put(&src_bytes, s)
+                                && let Some(wal) = WAL.get()
+                            {
+                                let kh = crate::util::key_hash(&src_bytes);
+                                let vh = crate::util::value_hash(s);
                                 let _ = wal.append(crate::storage::wal::WalOp::Put {
-                                    key_hash: kh, offset, value_hash: vh,
+                                    key_hash: kh,
+                                    offset,
+                                    value_hash: vh,
                                 });
                             }
-                        Ok(vec![])
-                    });
-                    return Ok(ValkeyValue::NoReply);
-                }
+                        }
+                    }
+                    if let Ok(offset) = storage.put(&dst_bytes, &dst_ser)
+                        && let Some(wal) = WAL.get()
+                    {
+                        let kh = crate::util::key_hash(&dst_bytes);
+                        let vh = crate::util::value_hash(&dst_ser);
+                        let _ = wal.append(crate::storage::wal::WalOp::Put {
+                            key_hash: kh,
+                            offset,
+                            value_hash: vh,
+                        });
+                    }
+                    Ok(vec![])
+                });
+                return Ok(ValkeyValue::NoReply);
+            }
 
             return Ok(ValkeyValue::StringBuffer(elem));
         }

@@ -1,15 +1,15 @@
 use std::collections::VecDeque;
 
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 #[cfg(not(test))]
 use valkey_module::raw;
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
 #[cfg(not(test))]
 use crate::WAL;
+use crate::commands::list_common::{current_time_ms, promote_cold_list};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 
 // ── LMoveCompletionHandle ─────────────────────────────────────────────────────
 
@@ -52,12 +52,20 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     let src_left = match src_dir.as_slice() {
         b"LEFT" => true,
         b"RIGHT" => false,
-        _ => return Err(ValkeyError::Str("ERR syntax error — expected LEFT or RIGHT")),
+        _ => {
+            return Err(ValkeyError::Str(
+                "ERR syntax error — expected LEFT or RIGHT",
+            ));
+        }
     };
     let dst_left = match dst_dir.as_slice() {
         b"LEFT" => true,
         b"RIGHT" => false,
-        _ => return Err(ValkeyError::Str("ERR syntax error — expected LEFT or RIGHT")),
+        _ => {
+            return Err(ValkeyError::Str(
+                "ERR syntax error — expected LEFT or RIGHT",
+            ));
+        }
     };
 
     let cache = CACHE
@@ -125,7 +133,7 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         cache.put(src_key.as_slice(), serialized.clone());
 
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", src_key);
+        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", src_key);
 
         // src == dst in a rotation — signal so BLPOP clients on this key wake up.
         #[cfg(not(test))]
@@ -245,8 +253,8 @@ pub fn flash_lmove_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     cache.put(dst_key.as_slice(), dst_serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", src_key);
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.move", dst_key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", src_key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lmove", dst_key);
 
     // Signal dst so any FLASH.BLPOP clients blocked on it wake up.
     #[cfg(not(test))]
@@ -334,7 +342,14 @@ fn finish_lmove(
 
     #[allow(unused_variables, unreachable_code)]
     {
-        let _ = (ctx, dst_write, src_serialized, _src_key, _dst_key_slice, _src_bytes);
+        let _ = (
+            ctx,
+            dst_write,
+            src_serialized,
+            _src_key,
+            _dst_key_slice,
+            _src_bytes,
+        );
         Ok(ValkeyValue::Null)
     }
 }

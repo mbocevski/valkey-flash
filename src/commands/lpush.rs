@@ -1,15 +1,15 @@
 use std::collections::VecDeque;
 
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 #[cfg(not(test))]
 use valkey_module::raw;
+use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
+use crate::CACHE;
 use crate::commands::list_common::{
     apply_ttl_to_key, find_ttl_start, parse_ttl_options, promote_cold_list,
 };
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
 use crate::types::Tier;
-use crate::CACHE;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -121,7 +121,15 @@ fn do_push(
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.push", key);
+    ctx.notify_keyspace_event(
+        NotifyEvent::LIST,
+        if push_left {
+            "flash.lpush"
+        } else {
+            "flash.rpush"
+        },
+        key,
+    );
 
     // Wake any BLPOP/BRPOP clients blocked on this key.
     #[cfg(not(test))]

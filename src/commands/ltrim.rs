@@ -1,9 +1,9 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list, resolve_range};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list, resolve_range};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -80,7 +80,7 @@ pub fn flash_ltrim_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
         let _ = key_handle.delete();
         cache.delete(key.as_slice());
         ctx.replicate_verbatim();
-        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.trim", key);
+        ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.ltrim", key);
 
         #[cfg(not(test))]
         {
@@ -134,7 +134,7 @@ pub fn flash_ltrim_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResu
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.trim", key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.ltrim", key);
 
     #[cfg(not(test))]
     {

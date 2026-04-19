@@ -1,9 +1,9 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -47,7 +47,7 @@ pub fn flash_linsert_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
         _ => {
             return Err(ValkeyError::Str(
                 "ERR syntax error — expected BEFORE or AFTER",
-            ))
+            ));
         }
     };
     let pivot = args[3].as_slice().to_vec();
@@ -110,7 +110,7 @@ pub fn flash_linsert_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyRe
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.insert", key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.linsert", key);
 
     #[cfg(not(test))]
     {

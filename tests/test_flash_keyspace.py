@@ -110,54 +110,69 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
 
     # ── List notifications ─────────────────────────────────────────────────
 
-    def test_list_notifications_fire_on_push(self):
+    def test_list_rpush_emits_keyspace_event(self):
         ps = self._setup_pubsub()
-        self.client.execute_command("FLASH.RPUSH", "ks_lpush", "a", "b")
+        self.client.execute_command("FLASH.RPUSH", "ks_rpush", "a", "b")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.push", "ks_lpush")
+        self._assert_event(messages, "flash.rpush", "ks_rpush")
+
+    def test_list_lpush_emits_keyspace_event(self):
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.LPUSH", "ks_lpush", "a", "b")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.lpush", "ks_lpush")
 
     def test_list_lpop_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lpop", "x", "y")
         ps = self._setup_pubsub()
         self.client.execute_command("FLASH.LPOP", "ks_lpop")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.pop", "ks_lpop")
+        self._assert_event(messages, "flash.lpop", "ks_lpop")
+
+    def test_list_rpop_emits_keyspace_event(self):
+        self.client.execute_command("FLASH.RPUSH", "ks_rpop", "x", "y")
+        ps = self._setup_pubsub()
+        self.client.execute_command("FLASH.RPOP", "ks_rpop")
+        messages = self._collect_messages(ps, 2)
+        self._assert_event(messages, "flash.rpop", "ks_rpop")
 
     def test_list_lset_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lset", "a", "b")
         ps = self._setup_pubsub()
         self.client.execute_command("FLASH.LSET", "ks_lset", "0", "A")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.set", "ks_lset")
+        self._assert_event(messages, "flash.lset", "ks_lset")
 
     def test_list_linsert_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lins", "a", "c")
         ps = self._setup_pubsub()
         self.client.execute_command("FLASH.LINSERT", "ks_lins", "BEFORE", "c", "b")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.insert", "ks_lins")
+        self._assert_event(messages, "flash.linsert", "ks_lins")
 
     def test_list_lrem_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lrem", "a", "a", "b")
         ps = self._setup_pubsub()
         self.client.execute_command("FLASH.LREM", "ks_lrem", "0", "a")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.rem", "ks_lrem")
+        self._assert_event(messages, "flash.lrem", "ks_lrem")
 
     def test_list_ltrim_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_ltrim", "a", "b", "c")
         ps = self._setup_pubsub()
         self.client.execute_command("FLASH.LTRIM", "ks_ltrim", "0", "1")
         messages = self._collect_messages(ps, 2)
-        self._assert_event(messages, "flash.list.trim", "ks_ltrim")
+        self._assert_event(messages, "flash.ltrim", "ks_ltrim")
 
     def test_list_lmove_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lmv_src", "a", "b")
         ps = self._setup_pubsub()
-        self.client.execute_command("FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT")
+        self.client.execute_command(
+            "FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT"
+        )
         messages = self._collect_messages(ps, 4)
-        self._assert_event(messages, "flash.list.move", "ks_lmv_src")
-        self._assert_event(messages, "flash.list.move", "ks_lmv_dst")
+        self._assert_event(messages, "flash.lmove", "ks_lmv_src")
+        self._assert_event(messages, "flash.lmove", "ks_lmv_dst")
 
     # ── ZSet notifications ─────────────────────────────────────────────────
 
@@ -225,3 +240,27 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.ZRANGESTORE", "ks_zrs_dst", "ks_zrs_src", "0", "-1")
         messages = self._collect_messages(ps, 2)
         self._assert_event(messages, "flash.zrangestore", "ks_zrs_dst")
+
+    def test_zadd_nx_existing_fires_no_notification(self):
+        self.client.execute_command("FLASH.ZADD", "ks_zadd_nx", "1.0", "m")
+        self.client.execute_command("CONFIG", "SET", "notify-keyspace-events", "KEA")
+        sub_client = self.server.get_new_client()
+        ps = sub_client.pubsub()
+        ps.psubscribe("__keyevent@0__:flash.zadd")
+        # Drain subscribe confirmation.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            msg = ps.get_message()
+            if msg and msg["type"] == "psubscribe":
+                break
+            time.sleep(0.01)
+        # NX on an existing member — should be a no-op, no notification.
+        self.client.execute_command("FLASH.ZADD", "ks_zadd_nx", "NX", "1.0", "m")
+        time.sleep(0.1)
+        messages = []
+        msg = ps.get_message()
+        while msg:
+            if msg["type"] == "pmessage":
+                messages.append(msg)
+            msg = ps.get_message()
+        assert messages == [], f"Expected no flash.zadd event on NX no-op but got: {messages}"

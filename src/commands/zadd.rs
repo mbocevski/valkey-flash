@@ -1,10 +1,12 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::current_time_ms;
-use crate::commands::zset_common::{finish_zset_write, parse_score, promote_cold_zset, ZSetReply};
-use crate::types::zset::{format_score, zset_serialize, FlashZSetObject, ZSetInner, FLASH_ZSET_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::current_time_ms;
+use crate::commands::zset_common::{ZSetReply, finish_zset_write, parse_score, promote_cold_zset};
+use crate::types::Tier;
+use crate::types::zset::{
+    FLASH_ZSET_TYPE, FlashZSetObject, ZSetInner, format_score, zset_serialize,
+};
 
 // ── FLASH.ZADD ────────────────────────────────────────────────────────────────
 
@@ -207,7 +209,9 @@ pub fn flash_zadd_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::ZSET, "flash.zadd", key);
+    if added > 0 || changed > 0 {
+        ctx.notify_keyspace_event(NotifyEvent::ZSET, "flash.zadd", key);
+    }
 
     #[cfg(not(test))]
     unsafe {

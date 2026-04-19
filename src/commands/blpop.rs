@@ -9,10 +9,10 @@ use {
     valkey_module::raw,
 };
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -42,14 +42,13 @@ impl crate::async_io::CompletionHandle for BlPopNvmeHandle {
 // ── C callbacks ───────────────────────────────────────────────────────────────
 
 #[cfg(not(test))]
-unsafe extern "C" fn blpop_free_privdata(
-    _ctx: *mut raw::RedisModuleCtx,
-    data: *mut c_void,
-) { unsafe {
-    if !data.is_null() {
-        drop(Box::from_raw(data as *mut BlPopPrivdata));
+unsafe extern "C" fn blpop_free_privdata(_ctx: *mut raw::RedisModuleCtx, data: *mut c_void) {
+    unsafe {
+        if !data.is_null() {
+            drop(Box::from_raw(data as *mut BlPopPrivdata));
+        }
     }
-}}
+}
 
 /// Called by the Valkey core when the blocking timeout fires. Returns nil array.
 #[cfg(not(test))]
@@ -57,10 +56,12 @@ unsafe extern "C" fn blpop_timeout(
     ctx: *mut raw::RedisModuleCtx,
     _argv: *mut *mut raw::RedisModuleString,
     _argc: c_int,
-) -> c_int { unsafe {
-    raw::RedisModule_ReplyWithNullArray.unwrap()(ctx);
-    raw::REDISMODULE_OK as c_int
-}}
+) -> c_int {
+    unsafe {
+        raw::RedisModule_ReplyWithNullArray.unwrap()(ctx);
+        raw::REDISMODULE_OK as c_int
+    }
+}
 
 /// Called by the Valkey core when a watched key signals ready.
 ///
@@ -72,37 +73,39 @@ unsafe extern "C" fn blpop_reply(
     ctx: *mut raw::RedisModuleCtx,
     argv: *mut *mut raw::RedisModuleString,
     argc: c_int,
-) -> c_int { unsafe {
-    let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
-    let pop_left = if privdata_ptr.is_null() {
-        true
-    } else {
-        (*(privdata_ptr as *const BlPopPrivdata)).pop_left
-    };
+) -> c_int {
+    unsafe {
+        let privdata_ptr = raw::RedisModule_GetBlockedClientPrivateData.unwrap()(ctx);
+        let pop_left = if privdata_ptr.is_null() {
+            true
+        } else {
+            (*(privdata_ptr as *const BlPopPrivdata)).pop_left
+        };
 
-    let context = Context::new(ctx);
+        let context = Context::new(ctx);
 
-    // argc layout: [cmd, key1, key2, ..., timeout]  → keys at [1, argc-2].
-    let num_keys = (argc as usize).saturating_sub(2);
-    for i in 1..=(num_keys) {
-        let key_ptr = *argv.add(i);
-        // Borrow the key pointer without incrementing its refcount.
-        let key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, key_ptr));
+        // argc layout: [cmd, key1, key2, ..., timeout]  → keys at [1, argc-2].
+        let num_keys = (argc as usize).saturating_sub(2);
+        for i in 1..=(num_keys) {
+            let key_ptr = *argv.add(i);
+            // Borrow the key pointer without incrementing its refcount.
+            let key = ManuallyDrop::new(ValkeyString::from_redis_module_string(ctx, key_ptr));
 
-        if let Some((elem, serialized_opt)) = pop_one(&context, &key, pop_left) {
-            // Replicate as FLASH.LPOP / FLASH.RPOP so replicas execute non-blocking.
-            let pop_cmd = if pop_left { "FLASH.LPOP" } else { "FLASH.RPOP" };
-            context.replicate(pop_cmd, &[&*key]);
-            context.notify_keyspace_event(
-                NotifyEvent::LIST,
-                if pop_left { "flash.list.lpop" } else { "flash.list.rpop" },
-                &key,
-            );
+            if let Some((elem, serialized_opt)) = pop_one(&context, &key, pop_left) {
+                // Replicate as FLASH.LPOP / FLASH.RPOP so replicas execute non-blocking.
+                let pop_cmd = if pop_left { "FLASH.LPOP" } else { "FLASH.RPOP" };
+                context.replicate(pop_cmd, &[&*key]);
+                context.notify_keyspace_event(
+                    NotifyEvent::LIST,
+                    if pop_left { "flash.lpop" } else { "flash.rpop" },
+                    &key,
+                );
 
-            // Async NVMe write (fire-and-forget).
-            #[cfg(not(test))]
-            if !crate::replication::is_replica()
-                && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
+                // Async NVMe write (fire-and-forget).
+                #[cfg(not(test))]
+                if !crate::replication::is_replica()
+                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+                {
                     use crate::storage::backend::StorageBackend;
                     let key_bytes = key.as_slice().to_vec();
                     match serialized_opt {
@@ -130,22 +133,19 @@ unsafe extern "C" fn blpop_reply(
                     }
                 }
 
-            // Reply: [key, element] 2-element array.
-            raw::reply_with_array(ctx, 2);
-            raw::reply_with_string(ctx, key_ptr);
-            raw::reply_with_string_buffer(
-                ctx,
-                elem.as_ptr() as *const _,
-                elem.len(),
-            );
+                // Reply: [key, element] 2-element array.
+                raw::reply_with_array(ctx, 2);
+                raw::reply_with_string(ctx, key_ptr);
+                raw::reply_with_string_buffer(ctx, elem.as_ptr() as *const _, elem.len());
 
-            return raw::REDISMODULE_OK as c_int;
+                return raw::REDISMODULE_OK as c_int;
+            }
         }
-    }
 
-    // No key had elements — stay blocked, retry on next signal.
-    raw::REDISMODULE_ERR as c_int
-}}
+        // No key had elements — stay blocked, retry on next signal.
+        raw::REDISMODULE_ERR as c_int
+    }
+}
 
 // ── Shared pop helper ─────────────────────────────────────────────────────────
 
@@ -259,53 +259,54 @@ fn do_blpop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool) -> ValkeyRes
                 ctx.replicate(pop_cmd, &[key]);
                 ctx.notify_keyspace_event(
                     NotifyEvent::LIST,
-                    if pop_left { "flash.list.lpop" } else { "flash.list.rpop" },
+                    if pop_left { "flash.lpop" } else { "flash.rpop" },
                     key,
                 );
 
                 #[cfg(not(test))]
                 if !crate::replication::is_replica()
-                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get()) {
-                        use crate::storage::backend::StorageBackend;
-                        let key_bytes = key.as_slice().to_vec();
-                        match serialized_opt {
-                            None => {
-                                let bc = ctx.block_client();
-                                let handle = Box::new(BlPopFastPathHandle {
-                                    tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
-                                    key_bytes_owned: key.as_slice().to_vec(),
-                                    elem: elem.clone(),
-                                });
-                                pool.submit_or_complete(handle, move || {
-                                    storage.delete(&key_bytes).ok();
-                                    Ok(vec![])
-                                });
-                                return Ok(ValkeyValue::NoReply);
-                            }
-                            Some(serialized) => {
-                                let bc = ctx.block_client();
-                                let handle = Box::new(BlPopFastPathHandle {
-                                    tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
-                                    key_bytes_owned: key.as_slice().to_vec(),
-                                    elem: elem.clone(),
-                                });
-                                pool.submit_or_complete(handle, move || {
-                                    let offset = storage.put(&key_bytes, &serialized)?;
-                                    if let Some(wal) = WAL.get() {
-                                        let kh = crate::util::key_hash(&key_bytes);
-                                        let vh = crate::util::value_hash(&serialized);
-                                        let _ = wal.append(crate::storage::wal::WalOp::Put {
-                                            key_hash: kh,
-                                            offset,
-                                            value_hash: vh,
-                                        });
-                                    }
-                                    Ok(vec![])
-                                });
-                                return Ok(ValkeyValue::NoReply);
-                            }
+                    && let (Some(storage), Some(pool)) = (STORAGE.get(), POOL.get())
+                {
+                    use crate::storage::backend::StorageBackend;
+                    let key_bytes = key.as_slice().to_vec();
+                    match serialized_opt {
+                        None => {
+                            let bc = ctx.block_client();
+                            let handle = Box::new(BlPopFastPathHandle {
+                                tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
+                                key_bytes_owned: key.as_slice().to_vec(),
+                                elem: elem.clone(),
+                            });
+                            pool.submit_or_complete(handle, move || {
+                                storage.delete(&key_bytes).ok();
+                                Ok(vec![])
+                            });
+                            return Ok(ValkeyValue::NoReply);
+                        }
+                        Some(serialized) => {
+                            let bc = ctx.block_client();
+                            let handle = Box::new(BlPopFastPathHandle {
+                                tsc: valkey_module::ThreadSafeContext::with_blocked_client(bc),
+                                key_bytes_owned: key.as_slice().to_vec(),
+                                elem: elem.clone(),
+                            });
+                            pool.submit_or_complete(handle, move || {
+                                let offset = storage.put(&key_bytes, &serialized)?;
+                                if let Some(wal) = WAL.get() {
+                                    let kh = crate::util::key_hash(&key_bytes);
+                                    let vh = crate::util::value_hash(&serialized);
+                                    let _ = wal.append(crate::storage::wal::WalOp::Put {
+                                        key_hash: kh,
+                                        offset,
+                                        value_hash: vh,
+                                    });
+                                }
+                                Ok(vec![])
+                            });
+                            return Ok(ValkeyValue::NoReply);
                         }
                     }
+                }
 
                 return Ok(ValkeyValue::Array(vec![
                     ValkeyValue::StringBuffer(key.as_slice().to_vec()),
@@ -319,8 +320,7 @@ fn do_blpop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool) -> ValkeyRes
     #[cfg(not(test))]
     {
         let privdata = Box::into_raw(Box::new(BlPopPrivdata { pop_left })) as *mut c_void;
-        let mut key_ptrs: Vec<*mut raw::RedisModuleString> =
-            keys.iter().map(|k| k.inner).collect();
+        let mut key_ptrs: Vec<*mut raw::RedisModuleString> = keys.iter().map(|k| k.inner).collect();
         unsafe {
             raw::RedisModule_BlockClientOnKeys.unwrap()(
                 ctx.ctx,

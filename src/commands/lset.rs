@@ -1,9 +1,9 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
-use crate::commands::list_common::{current_time_ms, promote_cold_list, resolve_index};
-use crate::types::list::{list_serialize, FlashListObject, FLASH_LIST_TYPE};
-use crate::types::Tier;
 use crate::CACHE;
+use crate::commands::list_common::{current_time_ms, promote_cold_list, resolve_index};
+use crate::types::Tier;
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 #[cfg(not(test))]
 use crate::{POOL, STORAGE, WAL};
 
@@ -70,8 +70,8 @@ pub fn flash_lset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
         (list, ttl)
     };
 
-    let idx = resolve_index(index, items.len())
-        .ok_or(ValkeyError::Str("ERR index out of range"))?;
+    let idx =
+        resolve_index(index, items.len()).ok_or(ValkeyError::Str("ERR index out of range"))?;
     items[idx] = new_val;
 
     key_handle
@@ -96,7 +96,7 @@ pub fn flash_lset_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResul
     cache.put(key.as_slice(), serialized.clone());
 
     ctx.replicate_verbatim();
-    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.list.set", key);
+    ctx.notify_keyspace_event(NotifyEvent::LIST, "flash.lset", key);
 
     #[cfg(not(test))]
     {
