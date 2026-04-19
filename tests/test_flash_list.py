@@ -368,8 +368,7 @@ class TestFlashListColdTier(ValkeyFlashTestCase):
 
 class TestFlashListReplication(ValkeyFlashTestCase):
 
-    def test_lpush_replicates_to_replica(self):
-        from valkeytestframework.conftest import resource_port_tracker
+    def _make_replica(self):
         primary_port = self.server.port
         replica_server, replica_client = self.create_server(
             testdir=self.testdir,
@@ -380,12 +379,180 @@ class TestFlashListReplication(ValkeyFlashTestCase):
                 "replicaof": f"127.0.0.1 {primary_port}",
             },
         )
+        time.sleep(0.5)
+        return replica_server, replica_client
+
+    def test_lpush_replicates_to_replica(self):
+        replica_server, replica_client = self._make_replica()
         try:
-            import time
-            time.sleep(0.5)
             self.client.execute_command("FLASH.RPUSH", "repl_list", "a", "b", "c")
             time.sleep(0.3)
             result = replica_client.execute_command("FLASH.LRANGE", "repl_list", "0", "-1")
             assert result == [b"a", b"b", b"c"]
         finally:
             replica_server.stop()
+
+    def test_lpop_replicates_to_replica(self):
+        replica_server, replica_client = self._make_replica()
+        try:
+            self.client.execute_command("FLASH.RPUSH", "repl_lpop", "x", "y", "z")
+            time.sleep(0.2)
+            self.client.execute_command("FLASH.LPOP", "repl_lpop")
+            time.sleep(0.2)
+            result = replica_client.execute_command("FLASH.LRANGE", "repl_lpop", "0", "-1")
+            assert result == [b"y", b"z"]
+        finally:
+            replica_server.stop()
+
+    def test_lset_replicates_to_replica(self):
+        replica_server, replica_client = self._make_replica()
+        try:
+            self.client.execute_command("FLASH.RPUSH", "repl_lset", "old", "b")
+            time.sleep(0.2)
+            self.client.execute_command("FLASH.LSET", "repl_lset", "0", "new")
+            time.sleep(0.2)
+            assert replica_client.execute_command("FLASH.LINDEX", "repl_lset", "0") == b"new"
+        finally:
+            replica_server.stop()
+
+
+class TestFlashListTTL(ValkeyFlashTestCase):
+
+    def test_lpush_ex_sets_ttl(self):
+        self.client.execute_command("FLASH.LPUSH", "ttl_lpex", "v", "EX", "60")
+        assert 0 < self.client.execute_command("TTL", "ttl_lpex") <= 60
+
+    def test_rpush_px_sets_ttl(self):
+        self.client.execute_command("FLASH.RPUSH", "ttl_rppx", "v", "PX", "30000")
+        assert 0 < self.client.execute_command("PTTL", "ttl_rppx") <= 30000
+
+    def test_rpush_keepttl_preserves_ttl(self):
+        self.client.execute_command("FLASH.RPUSH", "ttl_kttl", "a", "PX", "30000")
+        ttl_before = self.client.execute_command("PTTL", "ttl_kttl")
+        self.client.execute_command("FLASH.RPUSH", "ttl_kttl", "b", "KEEPTTL")
+        ttl_after = self.client.execute_command("PTTL", "ttl_kttl")
+        assert ttl_after > 0
+        assert abs(ttl_before - ttl_after) < 1500
+
+    def test_lpop_does_not_clear_ttl(self):
+        self.client.execute_command("FLASH.RPUSH", "ttl_pop", "a", "b", "EX", "60")
+        self.client.execute_command("FLASH.LPOP", "ttl_pop")
+        assert self.client.execute_command("TTL", "ttl_pop") > 0
+
+    def test_lrange_does_not_clear_ttl(self):
+        self.client.execute_command("FLASH.RPUSH", "ttl_lr", "a", "b", "EX", "60")
+        self.client.execute_command("FLASH.LRANGE", "ttl_lr", "0", "-1")
+        assert self.client.execute_command("TTL", "ttl_lr") > 0
+
+    def test_no_ttl_by_default(self):
+        self.client.execute_command("FLASH.RPUSH", "ttl_none", "v")
+        assert self.client.execute_command("TTL", "ttl_none") == -1
+
+
+class TestFlashListColdTierExtended(ValkeyFlashTestCase):
+
+    def test_lpop_after_demote_returns_head(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_lpop", "a", "b", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lpop")
+        result = self.client.execute_command("FLASH.LPOP", "cold_lpop")
+        assert result == b"a"
+        assert self.client.execute_command("FLASH.LLEN", "cold_lpop") == 2
+
+    def test_rpop_after_demote_returns_tail(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_rpop", "a", "b", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_rpop")
+        result = self.client.execute_command("FLASH.RPOP", "cold_rpop")
+        assert result == b"c"
+
+    def test_lindex_after_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_li", "x", "y", "z")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_li")
+        assert self.client.execute_command("FLASH.LINDEX", "cold_li", "1") == b"y"
+        assert self.client.execute_command("FLASH.LINDEX", "cold_li", "-1") == b"z"
+
+    def test_lset_after_demote_promotes_and_updates(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_ls", "a", "b", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_ls")
+        self.client.execute_command("FLASH.LSET", "cold_ls", "1", "B")
+        assert self.client.execute_command("FLASH.LINDEX", "cold_ls", "1") == b"B"
+
+    def test_lrem_after_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_lrem", "a", "b", "a", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lrem")
+        count = self.client.execute_command("FLASH.LREM", "cold_lrem", "0", "a")
+        assert count == 2
+        assert self.client.execute_command("FLASH.LLEN", "cold_lrem") == 2
+
+    def test_ltrim_after_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_ltrim", "a", "b", "c", "d")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_ltrim")
+        self.client.execute_command("FLASH.LTRIM", "cold_ltrim", "1", "2")
+        items = self.client.execute_command("FLASH.LRANGE", "cold_ltrim", "0", "-1")
+        assert items == [b"b", b"c"]
+
+    def test_linsert_after_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_lins", "a", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lins")
+        result = self.client.execute_command("FLASH.LINSERT", "cold_lins", "BEFORE", "c", "b")
+        assert result == 3
+        items = self.client.execute_command("FLASH.LRANGE", "cold_lins", "0", "-1")
+        assert items == [b"a", b"b", b"c"]
+
+    def test_lmove_after_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "cold_lmv", "a", "b", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lmv")
+        elem = self.client.execute_command("FLASH.LMOVE", "cold_lmv", "cold_lmv_dst", "LEFT", "RIGHT")
+        assert elem == b"a"
+        assert self.client.execute_command("FLASH.LLEN", "cold_lmv") == 2
+
+
+class TestFlashListEdgeCases(ValkeyFlashTestCase):
+
+    def test_rpop_with_count(self):
+        self.client.execute_command("FLASH.RPUSH", "rpoc", "a", "b", "c", "d")
+        result = self.client.execute_command("FLASH.RPOP", "rpoc", "2")
+        assert result == [b"d", b"c"]
+
+    def test_lpop_count_exceeds_length_returns_all(self):
+        self.client.execute_command("FLASH.RPUSH", "lpoc_x", "a", "b")
+        result = self.client.execute_command("FLASH.LPOP", "lpoc_x", "100")
+        assert result == [b"a", b"b"]
+        assert self.client.execute_command("EXISTS", "lpoc_x") == 0
+
+    def test_rpop_count_zero_returns_empty(self):
+        self.client.execute_command("FLASH.RPUSH", "rpoc0", "a")
+        result = self.client.execute_command("FLASH.RPOP", "rpoc0", "0")
+        assert result == []
+
+    def test_lrange_start_after_end_returns_empty(self):
+        self.client.execute_command("FLASH.RPUSH", "lr_se", "a", "b", "c")
+        result = self.client.execute_command("FLASH.LRANGE", "lr_se", "3", "1")
+        assert result == []
+
+    def test_binary_value_round_trip(self):
+        data = bytes(range(256))
+        self.client.execute_command("FLASH.RPUSH", "bin_list", data)
+        result = self.client.execute_command("FLASH.LINDEX", "bin_list", "0")
+        assert result == data
+
+    def test_lpushx_wrongtype_error(self):
+        self.client.execute_command("FLASH.SET", "str_lpushx", "v")
+        with pytest.raises(ResponseError):
+            self.client.execute_command("FLASH.LPUSHX", "str_lpushx", "val")
+
+    def test_ltrim_wrongtype_error(self):
+        self.client.execute_command("FLASH.HSET", "ht_ltrim", "f", "v")
+        with pytest.raises(ResponseError):
+            self.client.execute_command("FLASH.LTRIM", "ht_ltrim", "0", "-1")
+
+    def test_lmove_wrongtype_error(self):
+        self.client.execute_command("FLASH.HSET", "ht_lmv", "f", "v")
+        with pytest.raises(ResponseError):
+            self.client.execute_command("FLASH.LMOVE", "ht_lmv", "dst", "LEFT", "RIGHT")
+
+    def test_lrem_negative_removes_from_tail(self):
+        self.client.execute_command("FLASH.RPUSH", "lrem_neg", "a", "b", "a", "c", "a")
+        result = self.client.execute_command("FLASH.LREM", "lrem_neg", "-2", "a")
+        assert result == 2
+        items = self.client.execute_command("FLASH.LRANGE", "lrem_neg", "0", "-1")
+        assert items == [b"a", b"b", b"c"]
