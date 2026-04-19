@@ -405,6 +405,53 @@ jobs:
         topology: [single, cluster]
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+    # A handful of cluster tests (test_flash_cluster_no_flash_target.py) spawn a
+    # standalone host-side valkey-server alongside the dockerized cluster to
+    # exercise cross-node migration. That requires SERVER_VERSION, a
+    # locally-built module .so, and a host-side valkey-server binary. The docker
+    # image's binaries aren't addressable from the host, so we build them here.
+    - name: Set server version
+      run: echo "SERVER_VERSION=9.0" >> $GITHUB_ENV
+    - name: Cache Cargo registry
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Build module (release)
+      run: RUSTFLAGS="-D warnings" cargo build --release
+    - name: Set module path
+      run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
+    - name: Get Valkey HEAD SHA
+      id: valkey-sha
+      run: |
+        SHA=$(git ls-remote "${{ env.VALKEY_REPO_URL }}" \
+          "refs/heads/${{ env.SERVER_VERSION }}" \
+          "refs/tags/${{ env.SERVER_VERSION }}" \
+          | head -1 | awk '{print $1}')
+        echo "sha=$SHA" >> $GITHUB_OUTPUT
+    - name: Cache Valkey server binary
+      id: cache-valkey
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: tests/build/binaries/${{ env.SERVER_VERSION }}
+        key: valkey-server-${{ env.SERVER_VERSION }}-${{ steps.valkey-sha.outputs.sha }}
+    - name: Build valkey-server
+      if: steps.cache-valkey.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p "tests/build/binaries/${{ env.SERVER_VERSION }}"
+        cd tests/build
+        git clone "${{ env.VALKEY_REPO_URL }}"
+        cd valkey
+        git checkout ${{ env.SERVER_VERSION }}
+        make -j
+        cp src/valkey-server ../binaries/${{ env.SERVER_VERSION }}/
+        if [ -f src/modules/lua/libvalkeylua.so ]; then
+          cp src/modules/lua/libvalkeylua.so ../binaries/${{ env.SERVER_VERSION }}/
+        fi
     - name: Get test framework HEAD SHA
       id: tf-sha
       run: |
