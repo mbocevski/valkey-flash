@@ -4,6 +4,7 @@ use crate::commands::migrate_probe::remote_probe;
 use crate::types::hash::{FlashHashObject, FLASH_HASH_TYPE};
 use crate::types::list::{FlashListObject, FLASH_LIST_TYPE};
 use crate::types::string::{FlashStringObject, FLASH_STRING_TYPE};
+use crate::types::zset::{FlashZSetObject, FLASH_ZSET_TYPE};
 use crate::types::Tier;
 
 /// Estimate serialised NVMe bytes for a FLASH key on this node.
@@ -48,6 +49,17 @@ fn flash_key_bytes(ctx: &Context, key: &ValkeyString) -> Option<usize> {
             Tier::Hot(items) => {
                 // Mirrors list_serialize wire format: [u32 count] + per-elem [u32 len][bytes]
                 4 + items.iter().map(|e| 4 + e.len()).sum::<usize>()
+            }
+            Tier::Cold { value_len, .. } => *value_len as usize,
+        });
+    }
+
+    // FlashZSet?
+    if let Ok(Some(obj)) = handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
+        return Some(match &obj.tier {
+            Tier::Hot(inner) => {
+                // Mirrors zset_serialize wire format: [u32 count] + per-member [f64][u32 mlen][bytes]
+                4 + inner.members.keys().map(|m| 8 + 4 + m.len()).sum::<usize>()
             }
             Tier::Cold { value_len, .. } => *value_len as usize,
         });

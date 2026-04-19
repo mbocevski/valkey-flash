@@ -49,6 +49,7 @@ use crate::storage::wal::{Wal, WalSyncMode};
 use crate::types::hash::FLASH_HASH_TYPE;
 use crate::types::list::FLASH_LIST_TYPE;
 use crate::types::string::FLASH_STRING_TYPE;
+use crate::types::zset::FLASH_ZSET_TYPE;
 
 use crate::commands::blmove::flash_blmove_command;
 use crate::commands::blpop::flash_blpop_command;
@@ -84,6 +85,18 @@ use crate::commands::ltrim::flash_ltrim_command;
 use crate::commands::migrate::flash_migrate_command;
 use crate::commands::migrate_probe::flash_migrate_probe_command;
 use crate::commands::set::flash_set_command;
+use crate::commands::zadd::flash_zadd_command;
+use crate::commands::zpop::{
+    flash_zpopmax_command, flash_zpopmin_command, flash_zrem_command, flash_zincrby_command,
+};
+use crate::commands::zrange::{
+    flash_zrange_command, flash_zrangebyscore_command, flash_zrevrangebyscore_command,
+    flash_zrangebylex_command, flash_zrevrangebylex_command,
+};
+use crate::commands::zread::{
+    flash_zscore_command, flash_zrank_command, flash_zrevrank_command, flash_zcard_command,
+    flash_zcount_command, flash_zlexcount_command, flash_zscan_command,
+};
 
 pub const MODULE_NAME: &str = "flash";
 pub const MODULE_VERSION: i32 = 1;
@@ -547,6 +560,7 @@ valkey_module! {
         FLASH_STRING_TYPE,
         FLASH_HASH_TYPE,
         FLASH_LIST_TYPE,
+        FLASH_ZSET_TYPE,
     ],
     init: initialize,
     deinit: deinitialize,
@@ -587,6 +601,23 @@ valkey_module! {
         ["FLASH.BLMOVE", flash_blmove_command, "write deny-oom no-multi slow", 1, 2, 1, "write slow flash"],
         ["FLASH.MIGRATE", flash_migrate_command, "write", 0, 0, 0, "admin dangerous flash"],
         ["FLASH.MIGRATE.PROBE", flash_migrate_probe_command, "readonly", 0, 0, 0, "admin dangerous flash"],
+        ["FLASH.ZADD", flash_zadd_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.ZREM", flash_zrem_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.ZINCRBY", flash_zincrby_command, "write deny-oom", 1, 1, 1, "write flash"],
+        ["FLASH.ZPOPMIN", flash_zpopmin_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.ZPOPMAX", flash_zpopmax_command, "write", 1, 1, 1, "write flash"],
+        ["FLASH.ZSCORE", flash_zscore_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZRANK", flash_zrank_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZREVRANK", flash_zrevrank_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZCARD", flash_zcard_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZCOUNT", flash_zcount_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZLEXCOUNT", flash_zlexcount_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZRANGE", flash_zrange_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZRANGEBYSCORE", flash_zrangebyscore_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZREVRANGEBYSCORE", flash_zrevrangebyscore_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZRANGEBYLEX", flash_zrangebylex_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZREVRANGEBYLEX", flash_zrevrangebylex_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZSCAN", flash_zscan_command, "readonly", 1, 1, 1, "read flash"],
     ],
     configurations: [
         i64: [

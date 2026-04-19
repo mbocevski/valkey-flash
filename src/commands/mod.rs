@@ -27,3 +27,8 @@ pub mod ltrim;
 pub mod migrate;
 pub mod migrate_probe;
 pub mod set;
+pub mod zadd;
+pub mod zpop;
+pub mod zrange;
+pub mod zread;
+pub mod zset_common;

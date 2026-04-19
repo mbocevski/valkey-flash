@@ -1,6 +1,7 @@
 pub mod hash;
 pub mod list;
 pub mod string;
+pub mod zset;
 
 // ── Tier ──────────────────────────────────────────────────────────────────────
 
