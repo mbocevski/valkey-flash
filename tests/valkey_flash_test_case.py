@@ -19,13 +19,16 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # findable by the server process when it lives next to the binary.
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
-        # Each test gets its own NVMe backing file inside the per-test testdir,
-        # so state from one test never leaks into the next. The loadmodule arg
-        # is a single space-separated string: the .so path followed by any
-        # module config name/value pairs. Note: module-init args use the raw
-        # config name (`path`), without the `flash.` prefix — the prefix only
-        # applies when addressing the knob via `CONFIG GET`/`SET`.
-        flash_path = os.path.join(self.testdir, "flash.bin")
+        # Each test gets its own NVMe backing file in a fresh per-test subdir
+        # under self.testdir (which the framework shares across the class);
+        # state from one test never leaks into the next. The loadmodule arg is
+        # a single space-separated string: the .so path followed by any module
+        # config name/value pairs. Note: module-init args use the raw config
+        # name (`path`), without the `flash.` prefix — the `flash.` prefix
+        # only applies when addressing the knob via `CONFIG GET`/`SET`.
+        import tempfile
+        flash_dir = tempfile.mkdtemp(prefix="flash_", dir=self.testdir)
+        flash_path = os.path.join(flash_dir, "flash.bin")
         args = {
             "enable-debug-command": "yes",
             "loadmodule": f"{os.getenv('MODULE_PATH')} path {flash_path}",
