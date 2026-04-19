@@ -56,7 +56,7 @@ class TestFlashDefragString(ValkeyFlashTestCase):
                 client.execute_command("DEL", *[f"stress_{j}" for j in range(i, min(i + 10, 500))])
 
         # Server is still alive if this succeeds.
-        assert client.execute_command("PING") == b"PONG"
+        assert client.execute_command("PING") is True
 
 
 class TestFlashDefragHash(ValkeyFlashTestCase):
@@ -104,7 +104,7 @@ class TestFlashDefragHash(ValkeyFlashTestCase):
             if i % 30 == 0:
                 client.execute_command("DEL", *[f"hstress_{k}" for k in range(i, min(i + 5, 300))])
 
-        assert client.execute_command("PING") == b"PONG"
+        assert client.execute_command("PING") is True
 
 
 class TestFlashDefragList(ValkeyFlashTestCase):
@@ -146,7 +146,7 @@ class TestFlashDefragList(ValkeyFlashTestCase):
             if i % 30 == 0:
                 client.execute_command("DEL", *[f"lstress_{k}" for k in range(i, min(i + 5, 300))])
 
-        assert client.execute_command("PING") == b"PONG"
+        assert client.execute_command("PING") is True
 
 
 class TestFlashDefragZSet(ValkeyFlashTestCase):
@@ -191,4 +191,4 @@ class TestFlashDefragZSet(ValkeyFlashTestCase):
             if i % 30 == 0:
                 client.execute_command("DEL", *[f"zstress_{k}" for k in range(i, min(i + 5, 300))])
 
-        assert client.execute_command("PING") == b"PONG"
+        assert client.execute_command("PING") is True

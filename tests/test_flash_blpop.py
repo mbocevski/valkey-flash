@@ -83,7 +83,7 @@ class TestFlashBLPopWakeUp(ValkeyFlashTestCase):
         time.sleep(0.15)  # Give the thread time to block.
 
         # Push from a second connection.
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.RPUSH", "bwake1", "hello")
 
         t.join(timeout=3.0)
@@ -100,7 +100,7 @@ class TestFlashBLPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.RPUSH", "bwake2", "world")
 
         t.join(timeout=3.0)
@@ -119,7 +119,7 @@ class TestFlashBLPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.RPUSH", "bwk_target", "hit")
 
         t.join(timeout=3.0)
@@ -186,7 +186,7 @@ class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.LPUSH", "bmsrc", "mover")
 
         t.join(timeout=3.0)
@@ -213,7 +213,7 @@ class TestFlashBLMoveWakeUp(ValkeyFlashTestCase):
         time.sleep(0.15)
 
         # LMOVE on a different key into bmrot_empty via a second connection.
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.RPUSH", "bmrot_src2", "signal_elem")
         pusher.execute_command("FLASH.LMOVE", "bmrot_src2", "bmrot_empty", "LEFT", "RIGHT")
 
@@ -235,7 +235,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        mover = self.create_client()
+        mover = self.server.get_new_client()
         mover.execute_command("FLASH.RPUSH", "lmove_src", "payload")
         mover.execute_command("FLASH.LMOVE", "lmove_src", "lmove_dst", "LEFT", "RIGHT")
 
@@ -253,7 +253,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        mover = self.create_client()
+        mover = self.server.get_new_client()
         mover.execute_command("FLASH.RPUSH", "lmove_src2", "p2")
         mover.execute_command("FLASH.LMOVE", "lmove_src2", "lmove_dst2", "RIGHT", "LEFT")
 
@@ -285,7 +285,7 @@ class TestFlashBlpopWakesOnLmove(ValkeyFlashTestCase):
         time.sleep(0.15)
 
         # Push to blmove_chain_src — wakes BLMOVE, which pushes to dst, which wakes BLPOP.
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.RPUSH", "blmove_chain_src", "chained")
 
         t2.join(timeout=3.0)

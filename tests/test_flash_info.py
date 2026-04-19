@@ -21,7 +21,7 @@ EXPECTED_FIELDS = [
 
 class TestFlashInfo(ValkeyFlashTestCase):
     def _info(self):
-        return self.client.info("flash")
+        return self.parse_valkey_info("flash")
 
     def test_all_expected_fields_present(self):
         info = self._info()

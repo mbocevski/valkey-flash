@@ -81,51 +81,51 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
 
     ctx.builder()
         .add_section("flash")
-        .field("flash_cache_hits", hits.to_string())?
-        .field("flash_cache_misses", misses.to_string())?
-        .field("flash_cache_hit_ratio", hit_ratio)?
-        .field("flash_cache_size_bytes", cache_size.to_string())?
-        .field("flash_cache_capacity_bytes", cache_capacity.to_string())?
-        .field("flash_eviction_count", evictions.to_string())?
-        .field("flash_storage_used_bytes", storage_used.to_string())?
-        .field("flash_storage_free_bytes", storage_free.to_string())?
-        .field("flash_storage_capacity_bytes", storage_capacity.to_string())?
-        .field("flash_wal_size_bytes", wal_size.to_string())?
-        .field("flash_compaction_runs", compaction_runs.to_string())?
+        .field("cache_hits", hits.to_string())?
+        .field("cache_misses", misses.to_string())?
+        .field("cache_hit_ratio", hit_ratio)?
+        .field("cache_size_bytes", cache_size.to_string())?
+        .field("cache_capacity_bytes", cache_capacity.to_string())?
+        .field("eviction_count", evictions.to_string())?
+        .field("storage_used_bytes", storage_used.to_string())?
+        .field("storage_free_bytes", storage_free.to_string())?
+        .field("storage_capacity_bytes", storage_capacity.to_string())?
+        .field("wal_size_bytes", wal_size.to_string())?
+        .field("compaction_runs", compaction_runs.to_string())?
         .field(
-            "flash_compaction_bytes_reclaimed",
+            "compaction_bytes_reclaimed",
             compaction_bytes_reclaimed.to_string(),
         )?
-        .field("flash_tiered_keys", tiered_keys.to_string())?
-        .field("flash_module_state", module_state)?
-        .field("flash_cluster_mode", cluster_mode.to_string())?
+        .field("tiered_keys", tiered_keys.to_string())?
+        .field("module_state", module_state)?
+        .field("cluster_mode", cluster_mode.to_string())?
         .field(
-            "flash_migration_slots_in_progress",
+            "migration_slots_in_progress",
             migration_slots.to_string(),
         )?
         .field(
-            "flash_migration_bytes_sent",
+            "migration_bytes_sent",
             migration_bytes_sent.to_string(),
         )?
         .field(
-            "flash_migration_bytes_received",
+            "migration_bytes_received",
             migration_bytes_received.to_string(),
         )?
         .field(
-            "flash_migration_last_duration_ms",
+            "migration_last_duration_ms",
             migration_last_duration_ms.to_string(),
         )?
-        .field("flash_migration_errors", migration_errors.to_string())?
+        .field("migration_errors", migration_errors.to_string())?
         .field(
-            "flash_migration_bandwidth_mbps",
+            "migration_bandwidth_mbps",
             migration_bandwidth_mbps.to_string(),
         )?
         .field(
-            "flash_migration_keys_migrated",
+            "migration_keys_migrated",
             migration_keys_migrated.to_string(),
         )?
         .field(
-            "flash_migration_keys_rejected",
+            "migration_keys_rejected",
             migration_keys_rejected.to_string(),
         )?
         .build_section()?

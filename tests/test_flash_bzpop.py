@@ -137,7 +137,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.ZADD", "bzwake1", "3", "member")
 
         t.join(timeout=3.0)
@@ -154,7 +154,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.ZADD", "bzwake2", "99", "top")
 
         t.join(timeout=3.0)
@@ -173,7 +173,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.ZADD", "bzwk_target", "1", "item")
 
         t.join(timeout=3.0)
@@ -191,7 +191,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.ZADD", "bzwk_multi", "10", "high", "2", "low")
 
         t.join(timeout=3.0)
@@ -208,7 +208,7 @@ class TestFlashBZPopWakeUp(ValkeyFlashTestCase):
         t.start()
         time.sleep(0.15)
 
-        pusher = self.create_client()
+        pusher = self.server.get_new_client()
         pusher.execute_command("FLASH.ZADD", "bzwk_max", "10", "high", "2", "low")
 
         t.join(timeout=3.0)

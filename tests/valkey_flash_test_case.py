@@ -51,14 +51,10 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         )
 
     def parse_valkey_info(self, section):
-        raw = self.client.execute_command("INFO " + section)
-        lines = raw.decode("utf-8").split("\r\n")
-        result = {}
-        for line in lines:
-            if ":" in line:
-                key, value = line.split(":", 1)
-                result[key.strip()] = value.strip()
-        return result
+        # valkey-py's client.info(section) returns a dict with native types
+        # (int/float/str) and keys already at the module's field names
+        # (e.g. "flash_cache_hits"), so no prefix-stripping needed.
+        return self.client.info(section)
 
     def verify_nonblocking_during(self, blocking_client, blocking_cmd_fn, probe_client, probe_cmd):
         """Issue blocking_cmd_fn() on blocking_client in a thread, then verify the server
