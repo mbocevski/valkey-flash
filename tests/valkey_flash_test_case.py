@@ -51,6 +51,18 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # Drop the per-test flash directory so test-data/ doesn't balloon by
         # `capacity-bytes` for every test the session runs.
         shutil.rmtree(self.flash_dir, ignore_errors=True)
+        # Force-kill the server if the framework's shutdown failed: leaked
+        # valkey-server processes accumulate io_uring rings, and a long suite
+        # run eventually hits per-user kernel limits ("io_uring unavailable:
+        # Cannot allocate memory"). ValkeyTestCase only logs "SHUTDOWN was
+        # unsuccessful" and moves on.
+        server_proc = getattr(self.server, "server", None)
+        if server_proc is not None and server_proc.poll() is None:
+            try:
+                server_proc.kill()
+                server_proc.wait(timeout=5)
+            except Exception:
+                pass
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:

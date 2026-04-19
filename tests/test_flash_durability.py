@@ -4,8 +4,9 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 from valkeytestframework.util.waiters import wait_for_equal
 
 
-def _wal_path() -> pathlib.Path:
-    return pathlib.Path("/tmp/valkey-flash.wal")
+def _wal_path(test_case) -> pathlib.Path:
+    """WAL sits next to the backing store; the test case owns both paths."""
+    return pathlib.Path(test_case.flash_dir) / "flash.wal"
 
 
 def _bgsave_and_restart(server):
@@ -24,14 +25,14 @@ def _crash_restart(server):
 
 class TestFlashDurability(ValkeyFlashTestCase):
     def test_set_grows_wal_file(self):
-        wal = _wal_path()
+        wal = _wal_path(self)
         size_before = wal.stat().st_size
         self.client.execute_command("FLASH.SET", "k1", "v1")
         assert wal.stat().st_size > size_before
 
     def test_del_grows_wal_file(self):
         self.client.execute_command("FLASH.SET", "k1", "v1")
-        wal = _wal_path()
+        wal = _wal_path(self)
         size_after_set = wal.stat().st_size
         self.client.execute_command("FLASH.DEL", "k1")
         assert wal.stat().st_size > size_after_set
