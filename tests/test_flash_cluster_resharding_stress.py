@@ -55,25 +55,40 @@ def _discover_primaries(seed_port: int = 7001) -> list[NodeInfo]:
             if isinstance(node_id, bytes):
                 node_id = node_id.decode()
 
+            # valkey-py 6.x returns CLUSTER NODES as a dict {addr: {...}};
+            # older versions returned raw bytes. Handle both.
             nodes_raw = c.cluster("nodes")
-            if isinstance(nodes_raw, bytes):
-                nodes_raw = nodes_raw.decode()
-
-            for line in nodes_raw.strip().split("\n"):
-                parts = line.split()
-                if parts[0] != node_id:
-                    continue
-                addr = parts[1].split("@")[0]  # host:port
-                host, port_str = addr.rsplit(":", 1)
-                result.append(
-                    NodeInfo(
-                        node_id=node_id,
-                        internal_host=host,
-                        internal_port=int(port_str),
-                        external_port=ext_port,
+            if isinstance(nodes_raw, dict):
+                for addr, info in nodes_raw.items():
+                    if info.get("node_id") != node_id:
+                        continue
+                    host_str, port_str = addr.rsplit(":", 1)
+                    result.append(
+                        NodeInfo(
+                            node_id=node_id,
+                            internal_host=host_str,
+                            internal_port=int(port_str),
+                            external_port=ext_port,
+                        )
                     )
-                )
-                break
+                    break
+            else:
+                text = nodes_raw.decode() if isinstance(nodes_raw, bytes) else str(nodes_raw)
+                for line in text.strip().split("\n"):
+                    parts = line.split()
+                    if not parts or parts[0] != node_id:
+                        continue
+                    addr = parts[1].split("@")[0]  # host:port
+                    host_str, port_str = addr.rsplit(":", 1)
+                    result.append(
+                        NodeInfo(
+                            node_id=node_id,
+                            internal_host=host_str,
+                            internal_port=int(port_str),
+                            external_port=ext_port,
+                        )
+                    )
+                    break
         finally:
             c.close()
     return result
@@ -373,12 +388,16 @@ def test_single_slot_migration_under_load(docker_cluster):
     # -- concurrent traffic --
     stop = threading.Event()
     tracker = AckTracker()
-    all_keys = string_keys + hash_keys
-
+    # Pass only `string_keys` to the traffic threads. The worker internally
+    # derives `hkey = "h:" + key` for each FLASH.HSET, so a key never has to
+    # be both a string and a hash. Earlier versions of this test passed
+    # `string_keys + hash_keys`, which let a worker pick `h:{m1}0` as the
+    # string target — racing FLASH.SET against the already-hash-typed key
+    # during migration, leaving the destination with the wrong type.
     threads = [
         threading.Thread(
             target=_run_mixed_traffic,
-            args=(stop, tracker, all_keys, tid),
+            args=(stop, tracker, string_keys, tid),
             daemon=True,
         )
         for tid in range(4)
@@ -456,7 +475,9 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
             # Create a key that hashes to this exact slot by finding a matching tag.
             # Approach: use {<slot>}key and verify; fall back to raw slot tag.
             probe_key = f"{{stress16:{slot}}}key"
-            probe_slot = int(cluster_seed.cluster("keyslot", probe_key))
+            probe_slot = int(
+                cluster_seed.execute_command("CLUSTER", "KEYSLOT", probe_key)
+            )
             if probe_slot == slot:
                 cluster_seed.execute_command("FLASH.SET", probe_key, f"pre:{slot}")
             # If the hash tag doesn't map to this slot, the slot stays empty

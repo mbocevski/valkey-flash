@@ -1,7 +1,10 @@
 use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
 
 use crate::CACHE;
+use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject};
+use crate::types::list::{FLASH_LIST_TYPE, FlashListObject};
 use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
+use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject};
 
 // ── DelCompletionHandle ───────────────────────────────────────────────────────
 
@@ -66,14 +69,51 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
     let keys = &args[1..];
 
     // Phase 1: type-check every key without modifying anything.
-    // Collect indices of keys that are present flash strings.
+    // A key is eligible for FLASH.DEL if it holds any FLASH.* module type
+    // (string / hash / list / zset). Native Valkey types or other module
+    // types produce WRONGTYPE (no partial delete).
     let mut present: Vec<&ValkeyString> = Vec::new();
     for key in keys {
         let kh = ctx.open_key(key);
-        match kh.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
-            Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => {}
-            Ok(Some(_)) => present.push(key),
+        // Missing keys short-circuit to absent on the first probe (string);
+        // present keys might be any of the four FLASH types — walk them all.
+        if let Ok(Some(_)) = kh.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
+            present.push(key);
+            continue;
+        }
+        if let Ok(Some(_)) = kh.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
+            present.push(key);
+            continue;
+        }
+        if let Ok(Some(_)) = kh.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
+            present.push(key);
+            continue;
+        }
+        if let Ok(Some(_)) = kh.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
+            present.push(key);
+            continue;
+        }
+        // get_value returns Err only when the key exists and is not the
+        // requested module type. If all four of our get_value calls returned
+        // Err, the key holds something else — either a native type or an
+        // unknown module — so report WRONGTYPE.
+        //
+        // If the key doesn't exist (Ok(None) for every type), fall through
+        // without adding it to `present`.
+        let exists_non_flash = kh
+            .get_value::<FlashStringObject>(&FLASH_STRING_TYPE)
+            .is_err()
+            && kh
+                .get_value::<FlashHashObject>(&FLASH_HASH_TYPE)
+                .is_err()
+            && kh
+                .get_value::<FlashListObject>(&FLASH_LIST_TYPE)
+                .is_err()
+            && kh
+                .get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE)
+                .is_err();
+        if exists_non_flash {
+            return Err(ValkeyError::WrongType);
         }
         // kh (ValkeyKey) drops here → CloseKey
     }

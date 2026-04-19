@@ -145,6 +145,10 @@ def test_flash_hexists_redirect(docker_cluster):
 def test_flash_hlen_redirect(docker_cluster):
     """FLASH.HLEN returns field count via transparent MOVED redirect."""
     with _cluster_client() as c:
+        # docker_cluster is session-scoped; earlier tests in this file reuse
+        # _HASH_KEY so start from a clean slate rather than relying on each
+        # test to clean up on exit.
+        _cleanup(c, _HASH_KEY)
         c.execute_command("FLASH.HSET", _HASH_KEY, "a", "1", "b", "2", "c", "3")
         length = c.execute_command("FLASH.HLEN", _HASH_KEY)
         assert int(length) == 3, f"expected 3, got {length}"

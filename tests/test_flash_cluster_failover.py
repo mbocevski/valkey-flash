@@ -68,6 +68,30 @@ def _slot_ranges_for_node(node_id: str, seed_port: int) -> list[tuple[int, int]]
         c.close()
 
 
+def _cluster_nodes_as_list(nodes) -> list[dict]:
+    """Normalize `c.cluster("nodes")` output across valkey-py versions.
+
+    valkey-py 6.x returns a dict `{addr: {node_id, flags, master_id, ...}}`;
+    older versions return the raw bytes of the CLUSTER NODES output. This
+    helper produces a list of dicts with canonical keys: id, flags, master_id."""
+    if isinstance(nodes, dict):
+        return [
+            {
+                "id": entry.get("node_id", ""),
+                "flags": entry.get("flags", ""),
+                "master_id": entry.get("master_id", "-"),
+            }
+            for entry in nodes.values()
+        ]
+    text = nodes.decode() if isinstance(nodes, (bytes, bytearray)) else str(nodes)
+    out = []
+    for line in text.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4:
+            out.append({"id": parts[0], "flags": parts[2], "master_id": parts[3]})
+    return out
+
+
 def _find_replica_port(primary_port: int, replica_ports: tuple[int, ...]) -> int | None:
     """Return the external port of the replica that replicates from primary_port."""
     primary_id = _node_id(primary_port)
@@ -76,14 +100,12 @@ def _find_replica_port(primary_port: int, replica_ports: tuple[int, ...]) -> int
         try:
             my_id_raw = c.cluster("myid")
             my_id = my_id_raw.decode() if isinstance(my_id_raw, bytes) else my_id_raw
-            nodes_raw = c.cluster("nodes")
-            if isinstance(nodes_raw, bytes):
-                nodes_raw = nodes_raw.decode()
-            for line in nodes_raw.strip().split("\n"):
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                if parts[0] == my_id and "slave" in parts[2] and parts[3] == primary_id:
+            for n in _cluster_nodes_as_list(c.cluster("nodes")):
+                if (
+                    n["id"] == my_id
+                    and "slave" in n["flags"]
+                    and n["master_id"] == primary_id
+                ):
                     return rep_port
         except Exception:
             pass
@@ -104,16 +126,11 @@ def _wait_for_promotion(
         try:
             c = valkey.Valkey(host="localhost", port=survivor_port, socket_timeout=5)
             try:
-                nodes_raw = c.cluster("nodes")
-                if isinstance(nodes_raw, bytes):
-                    nodes_raw = nodes_raw.decode()
-                for line in nodes_raw.strip().split("\n"):
-                    parts = line.split()
+                for n in _cluster_nodes_as_list(c.cluster("nodes")):
                     if (
-                        len(parts) >= 3
-                        and parts[0] == replica_id
-                        and "master" in parts[2]
-                        and "fail" not in parts[2]
+                        n["id"] == replica_id
+                        and "master" in n["flags"]
+                        and "fail" not in n["flags"]
                     ):
                         return True
             finally:
@@ -132,9 +149,14 @@ def _wait_for_cluster_stable(seed_port: int, timeout: float = 30.0) -> bool:
             c = valkey.Valkey(host="localhost", port=seed_port, socket_timeout=5)
             try:
                 raw = c.cluster("info")
-                text = raw.decode() if isinstance(raw, bytes) else str(raw)
-                if "cluster_state:ok" in text:
-                    return True
+                # valkey-py 6.x returns a dict; older versions a text buffer.
+                if isinstance(raw, dict):
+                    if raw.get("cluster_state") == "ok":
+                        return True
+                else:
+                    text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    if "cluster_state:ok" in text:
+                        return True
             finally:
                 c.close()
         except Exception:
@@ -202,6 +224,17 @@ def _run_failover_scenario(
     replica_port = _find_replica_port(killed_port, replica_ports)
     assert replica_port is not None, f"Could not find a replica of primary on port {killed_port}"
 
+    # Wait for the cluster's gossip state to fully converge before the kill.
+    # A freshly-brought-up compose cluster has `cluster_state:ok` on the seed
+    # node the moment `cluster-init` exits, but every node's view of *every*
+    # other node's role is not consistent for a few seconds after that. A
+    # failover election started against an inconsistent view takes far longer
+    # to propagate the new-primary news back to `survivor_port`, and the 60 s
+    # poll window runs out.
+    assert _wait_for_cluster_stable(seed_port, timeout=30.0), (
+        f"cluster at seed port {seed_port} not stable before failover trigger"
+    )
+
     # ── Step 2: Hard-kill primary-1 ───────────────────────────────────────────
     subprocess.run(["docker", "kill", container_name], check=True, capture_output=True)
 
@@ -209,10 +242,10 @@ def _run_failover_scenario(
     promoted = _wait_for_promotion(
         survivor_port=survivor_port,
         replica_port=replica_port,
-        timeout=30.0,
+        timeout=120.0,
     )
     assert promoted, (
-        f"Replica on port {replica_port} did not promote to master within 30 s "
+        f"Replica on port {replica_port} did not promote to master within 120 s "
         f"(cluster-node-timeout=5000ms)"
     )
 

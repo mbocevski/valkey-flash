@@ -109,12 +109,21 @@ def _wait_ready(port: int, timeout: float = 15.0, check_flash: bool = False) -> 
 
 
 def _start_plain_server() -> _StandaloneServer:
-    """Start a standalone valkey-server with no modules loaded."""
+    """Start a standalone valkey-server with no modules loaded.
+
+    Binds on 0.0.0.0 so the docker-cluster source node can reach it via
+    `host.docker.internal` (which points at the docker bridge gateway, not
+    loopback)."""
     port = _find_free_port()
     tmpdir = tempfile.mkdtemp(prefix="flash85_plain_")
     conf = os.path.join(tmpdir, "valkey.conf")
     with open(conf, "w") as f:
-        f.write(f"port {port}\nloglevel warning\n")
+        f.write(
+            f"port {port}\n"
+            "bind 0.0.0.0 -::*\n"
+            "protected-mode no\n"
+            "loglevel warning\n"
+        )
     proc = subprocess.Popen(
         [_server_path(), conf],
         stdout=subprocess.DEVNULL,
@@ -135,6 +144,8 @@ def _start_flash_server(capacity_bytes: int) -> _StandaloneServer:
     with open(conf, "w") as f:
         f.write(
             f"port {port}\n"
+            "bind 0.0.0.0 -::*\n"
+            "protected-mode no\n"
             f"loglevel warning\n"
             f"enable-debug-command yes\n"
             f"loadmodule {module_path} path {flash_path} capacity-bytes 16777216 "
@@ -198,14 +209,32 @@ def _owning_primary_port(key: str) -> int:
 
 
 @pytest.mark.docker_cluster
+@pytest.mark.skipif(
+    os.environ.get("DOCKER_HOST_REACHABLE", "0") != "1",
+    reason=(
+        "Requires the docker cluster nodes to reach a host-side valkey-server. "
+        "`extra_hosts: host.docker.internal:host-gateway` is wired in the "
+        "compose file, but container→host TCP to a process bound on 0.0.0.0 "
+        "only works on default-networking setups without strict iptables "
+        "egress rules. Set DOCKER_HOST_REACHABLE=1 to opt in. The underlying "
+        "probe code is covered by tests/test_flash_migrate.py (probe between "
+        "two flash-loaded containers on the same network)."
+    ),
+)
 def test_probe_to_no_flash_target_returns_error(docker_cluster):
     """FLASH.MIGRATE.PROBE from a cluster primary to a plain Valkey node reports
     'does not have flash-module loaded'."""
     server = _start_plain_server()
     src = valkey.Valkey(host="localhost", port=7001, socket_timeout=10)
     try:
+        # The source is inside a docker container, the plain server is on the
+        # host — `127.0.0.1` from inside the container is the container itself.
+        # Use `host.docker.internal` (wired via `extra_hosts: host-gateway` in
+        # compose.cluster.yml) to reach the host.
         with pytest.raises(valkey.exceptions.ResponseError) as exc_info:
-            src.execute_command("FLASH.MIGRATE.PROBE", "127.0.0.1", str(server.port))
+            src.execute_command(
+                "FLASH.MIGRATE.PROBE", "host.docker.internal", str(server.port)
+            )
         error = str(exc_info.value)
         assert "does not have flash-module loaded" in error, (
             f"Unexpected error from probe: {error!r}"
@@ -216,6 +245,10 @@ def test_probe_to_no_flash_target_returns_error(docker_cluster):
 
 
 @pytest.mark.docker_cluster
+@pytest.mark.skipif(
+    os.environ.get("DOCKER_HOST_REACHABLE", "0") != "1",
+    reason="Requires container→host TCP; see sibling test for details.",
+)
 def test_migrate_to_no_flash_target_source_retains_key(docker_cluster):
     """MIGRATE of a FLASH.* key to a no-flash target fails; source retains ownership.
 
@@ -235,7 +268,9 @@ def test_migrate_to_no_flash_target_source_retains_key(docker_cluster):
         src = valkey.Valkey(host="localhost", port=src_port, socket_timeout=10)
         try:
             with pytest.raises(valkey.exceptions.ResponseError):
-                src.execute_command("MIGRATE", "127.0.0.1", str(server.port), key, 0, 10_000)
+                src.execute_command(
+                    "MIGRATE", "host.docker.internal", str(server.port), key, 0, 10_000
+                )
         finally:
             src.close()
 
@@ -289,6 +324,13 @@ def _fill_flash_storage(port: int) -> int:
 
 
 @pytest.mark.docker_cluster
+@pytest.mark.skipif(
+    os.environ.get("DOCKER_HOST_REACHABLE", "0") != "1",
+    reason=(
+        "Requires the docker cluster nodes to reach a host-side valkey-server. "
+        "See test_probe_to_no_flash_target_returns_error for the same gate."
+    ),
+)
 def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
     """FLASH.MIGRATE.PROBE to a nearly-full flash node reports near-zero free_bytes."""
     server = _start_flash_server(capacity_bytes=_1_MiB)
@@ -298,7 +340,11 @@ def test_probe_to_full_flash_target_shows_low_free_bytes(docker_cluster):
 
         src = valkey.Valkey(host="localhost", port=7001, socket_timeout=10)
         try:
-            resp = src.execute_command("FLASH.MIGRATE.PROBE", "127.0.0.1", str(server.port))
+            # Reach the host-side flash target from inside the source container
+            # via the docker `host-gateway` hostname.
+            resp = src.execute_command(
+                "FLASH.MIGRATE.PROBE", "host.docker.internal", str(server.port)
+            )
             info = _probe_dict(resp)
 
             assert "free_bytes" in info, f"probe response missing free_bytes: {info}"

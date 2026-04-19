@@ -191,7 +191,7 @@ def docker_single():
         pytest.skip("set USE_DOCKER=1 to run Docker-based tests")
 
     docker = DockerClient(compose_files=[_SINGLE_COMPOSE], compose_project_name="vf-single")
-    docker.compose.up(detach=True, build=True)
+    docker.compose.up(detach=True, build=True, quiet=True)
     try:
         _all_healthy(docker, ["valkey-flash"])
         client = valkey.Valkey(host="localhost", port=6379, socket_timeout=10)
@@ -209,11 +209,18 @@ def docker_cluster():
     _REPLICAS = ["flash-replica-1", "flash-replica-2", "flash-replica-3"]
 
     docker = DockerClient(compose_files=[_CLUSTER_COMPOSE], compose_project_name="vf-cluster")
-    docker.compose.up(detach=True, build=True)
+    docker.compose.up(detach=True, build=True, quiet=True)
     try:
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
         client = _connect_cluster_with_retry("localhost", 7001, "vf-cluster")
+        # Let every replica's gossip finalize its primary pairing before any
+        # test starts. `cluster-init` completing only guarantees slots are
+        # covered; each node's CLUSTER NODES view of the other 5 nodes can
+        # still show a few "handshake" flags for 2-3 seconds. Tests that kill
+        # a primary and expect its paired replica to auto-promote need every
+        # node's view consistent.
+        time.sleep(3)
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)
@@ -236,11 +243,14 @@ def docker_cluster_replica_tier():
         compose_files=[_CLUSTER_COMPOSE, _REPLICA_TIER_COMPOSE],
         compose_project_name="vf-cluster-rt",
     )
-    docker.compose.up(detach=True, build=True)
+    docker.compose.up(detach=True, build=True, quiet=True)
     try:
         _all_healthy(docker, _PRIMARIES + _REPLICAS)
         _wait_cluster_init(docker)
         client = _connect_cluster_with_retry("localhost", 7011, "vf-cluster-rt")
+        # Let every replica's gossip finalize before any test runs.
+        # See docker_cluster() for rationale.
+        time.sleep(3)
         yield client
     finally:
         docker.compose.down(volumes=True, timeout=10)

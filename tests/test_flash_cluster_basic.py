@@ -106,13 +106,23 @@ def test_flash_set_across_slots(docker_cluster):
 
 @pytest.mark.docker_cluster
 def test_flash_get_from_replicas(docker_cluster):
-    """Replicas reflect FLASH.SET writes within 200 ms (async replication)."""
+    """Replicas reflect FLASH.SET writes (async replication, cluster path).
+
+    Writes via a cluster client (routes to the primary owning the slot), then
+    reads directly from each replica node. The replica that pairs with the
+    owning primary must observe the value; other replicas respond with MOVED.
+    """
     key = "{repl}probe"
-    # Write via cluster client (lands on primary).
+    # Issue the write through the cluster client, then use WAIT to block until
+    # the primary has pushed the command to ≥1 replica (up to 500 ms). This
+    # makes the test deterministic regardless of replication-stream buffering.
     with _cluster_rw() as c:
         c.execute_command("FLASH.SET", key, "replica-check")
-
-    time.sleep(0.2)  # give replication time to propagate
+        # Route WAIT to the slot's primary so we're asking the correct node.
+        slot = c.execute_command("CLUSTER", "KEYSLOT", key)
+        owner_node = c.nodes_manager.get_node_from_slot(int(slot), read_from_replicas=False)
+        owner = c.get_valkey_connection(owner_node)
+        owner.execute_command("WAIT", 1, 500)
 
     # Read directly from each replica node.
     for port in _REPLICA_PORTS:

@@ -97,13 +97,19 @@ pub(crate) fn remote_probe(host: &str, port: u16) -> Result<ProbeResult, String>
         return Ok(cached);
     }
 
-    let stream = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|e| format!("ERR FLASH-MIGRATE target {addr} invalid address: {e}"))?,
-        Duration::from_secs(5),
-    )
-    .map_err(|_| format!("ERR FLASH-MIGRATE target {addr} did not respond within timeout"))?;
+    // `SocketAddr::parse` only accepts numeric addresses. Resolve hostnames via
+    // `ToSocketAddrs` so callers can target `host.docker.internal`, internal
+    // DNS names, or any other symbolic peer.
+    let socket_addr = {
+        use std::net::ToSocketAddrs;
+        (host, port)
+            .to_socket_addrs()
+            .map_err(|e| format!("ERR FLASH-MIGRATE target {addr} invalid address: {e}"))?
+            .next()
+            .ok_or_else(|| format!("ERR FLASH-MIGRATE target {addr} resolved to no addresses"))?
+    };
+    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5))
+        .map_err(|_| format!("ERR FLASH-MIGRATE target {addr} did not respond within timeout"))?;
 
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))

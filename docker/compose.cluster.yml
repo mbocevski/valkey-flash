@@ -28,6 +28,12 @@ x-flash-node: &flash-node
   networks:
     - flash-cluster
   restart: unless-stopped
+  # Make the docker host reachable via `host.docker.internal` from inside each
+  # container. Needed for FLASH.MIGRATE.PROBE tests that spin up a plain
+  # valkey-server on the host and expect a clustered primary (in a container)
+  # to be able to TCP-connect to it.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
   healthcheck:
     test: ["CMD", "valkey-cli", "ping"]
     interval: 5s
