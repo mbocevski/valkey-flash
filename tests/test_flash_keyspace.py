@@ -5,20 +5,22 @@ from valkey_flash_test_case import ValkeyFlashTestCase
 
 class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
     def _setup_pubsub(self):
-        self.client.execute_command("CONFIG", "SET", "notify-keyspace-events", "KEA")
-        sub_client = self.server.get_new_client()
-        ps = sub_client.pubsub()
+        # Pattern from valkey-bloom tests/test_bloom_keyspace.py: pubsub on the
+        # same client object that runs the command. Cross-client pubsub delivery
+        # is unreliable in this test environment (standalone Python works, but
+        # pytest doesn't forward events between two distinct valkey.Valkey
+        # instances bound to the same server). Using one client with its pool
+        # internally carving out a dedicated pubsub connection works.
+        ps = self.client.pubsub()
         ps.psubscribe("__key*__:*")
-        # Drain the subscription confirmation message.
-        timeout = time.time() + 5
-        while time.time() < timeout:
-            msg = ps.get_message()
-            if msg and msg["type"] == "psubscribe":
-                break
-            time.sleep(0.01)
+        self.client.execute_command(
+            "CONFIG", "SET", "notify-keyspace-events", "KEA"
+        )
         return ps
 
     def _collect_messages(self, ps, count, timeout_secs=5):
+        # We don't pre-drain the psubscribe ack in _setup_pubsub, so the first
+        # call here sees a non-pmessage (psubscribe ack) which we silently skip.
         messages = []
         deadline = time.time() + timeout_secs
         while len(messages) < count and time.time() < deadline:
