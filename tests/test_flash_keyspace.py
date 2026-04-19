@@ -167,9 +167,7 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
     def test_list_lmove_emits_keyspace_event(self):
         self.client.execute_command("FLASH.RPUSH", "ks_lmv_src", "a", "b")
         ps = self._setup_pubsub()
-        self.client.execute_command(
-            "FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT"
-        )
+        self.client.execute_command("FLASH.LMOVE", "ks_lmv_src", "ks_lmv_dst", "LEFT", "RIGHT")
         messages = self._collect_messages(ps, 4)
         self._assert_event(messages, "flash.lmove", "ks_lmv_src")
         self._assert_event(messages, "flash.lmove", "ks_lmv_dst")
