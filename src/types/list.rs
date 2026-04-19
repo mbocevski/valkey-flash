@@ -690,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_element_at_cap_limit_works() {
+    fn deserialize_element_well_under_cap_passes() {
         // A single element whose claimed length equals MAX_ELEMENT_BYTES must
         // still be rejected at the cap (not at elen > MAX_ELEMENT_BYTES).
         // Verify that elements well under the cap pass through.
