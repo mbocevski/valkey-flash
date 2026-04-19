@@ -231,7 +231,7 @@ class TestFlashZRangeStore(ValkeyFlashTestCase):
 
     def test_zrangestore_limit_without_byscore_bylex_errors(self):
         self.client.execute_command("FLASH.ZADD", "zrs9", "1.0", "a", "2.0", "b")
-        with pytest.raises(ResponseError, match="ERR syntax error"):
+        with pytest.raises(ResponseError, match="syntax error"):
             self.client.execute_command(
                 "FLASH.ZRANGESTORE", "zrs9dst", "zrs9", "0", "-1", "LIMIT", "0", "2"
             )
