@@ -354,63 +354,94 @@ class TestFlashListColdTier(ValkeyFlashTestCase):
         assert len(items) == 3
 
 
-class TestFlashListReplication(ValkeyFlashTestCase):
-    def _make_replica(self):
-        import os as _os
-        import tempfile as _tempfile
-        primary_port = self.server.port
-        replica_dir = _tempfile.mkdtemp(prefix="flash_repl_list_", dir=self.testdir)
-        replica_path = _os.path.join(replica_dir, "flash.bin")
-        replica_server, replica_client = self.create_server(
-            testdir=self.testdir,
-            server_path=self.server.valkey_path,
-            args={
-                "enable-debug-command": "yes",
-                "loadmodule": (
-                    f"{_os.getenv('MODULE_PATH')} "
-                    f"path {replica_path} capacity-bytes 16777216"
-                ),
-                "replicaof": f"127.0.0.1 {primary_port}",
-            },
+class TestFlashListReplication:
+    """Uses the framework's ReplicationTestCase so the replica gets its own
+    logfile, port allocator, and shutdown handling. Importing here (inside the
+    module, not at top-level) avoids disturbing the ValkeyFlashTestCase-based
+    tests above, which use a different setup path."""
+
+
+# Use a dedicated ReplicationTestCase subclass so setup_replication works
+# correctly. Inheriting from ReplicationTestCase (not ValkeyFlashTestCase) means
+# we lose the flash-test-case fixture, so we set it up directly here with
+# per-replica flash paths.
+from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
+import os as _os
+import shutil as _shutil
+import tempfile as _tempfile
+
+
+def _flash_loadmodule_arg(flash_path):
+    return f"{_os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
+
+
+class TestFlashListReplication(_ReplTC):
+    @pytest.fixture(autouse=True)
+    def setup_test(self, setup):
+        binaries_dir = (
+            f"{_os.path.dirname(_os.path.realpath(__file__))}"
+            f"/build/binaries/{_os.environ['SERVER_VERSION']}"
         )
-        time.sleep(0.5)
-        return replica_server, replica_client
+        server_path = _os.path.join(binaries_dir, "valkey-server")
+        existing = _os.environ.get("LD_LIBRARY_PATH", "")
+        _os.environ["LD_LIBRARY_PATH"] = (
+            f"{binaries_dir}:{existing}" if existing else binaries_dir
+        )
+        self._flash_dir = _tempfile.mkdtemp(prefix="flash_repl_list_", dir=self.testdir)
+        primary_path = _os.path.join(self._flash_dir, "primary.bin")
+        self.args = {
+            "enable-debug-command": "yes",
+            "loadmodule": _flash_loadmodule_arg(primary_path),
+        }
+        self.server, self.client = self.create_server(
+            testdir=self.testdir, server_path=server_path, args=self.args
+        )
+        yield
+        _shutil.rmtree(self._flash_dir, ignore_errors=True)
 
-    @pytest.mark.xfail(reason="Replication for FLASH.LIST/ZSET needs investigation — tracked in backlog")
-    def test_lpush_replicates_to_replica(self):
-        replica_server, replica_client = self._make_replica()
-        try:
-            self.client.execute_command("FLASH.RPUSH", "repl_list", "a", "b", "c")
-            time.sleep(0.3)
-            result = replica_client.execute_command("FLASH.LRANGE", "repl_list", "0", "-1")
-            assert result == [b"a", b"b", b"c"]
-        finally:
-            replica_server.exit()
+    def setup_replication(self, num_replicas=1):
+        """Override so each replica gets its own flash.bin path."""
+        self.num_replicas = num_replicas
+        self.replicas = []
+        self.skip_teardown = False
+        self.create_replicas(num_replicas)
+        for i, replica in enumerate(self.replicas):
+            replica_path = _os.path.join(self._flash_dir, f"replica{i}.bin")
+            replica.args["loadmodule"] = _flash_loadmodule_arg(replica_path)
+        self.start_replicas()
+        self.wait_for_replicas(self.num_replicas)
+        self.wait_for_primary_link_up_all_replicas()
+        self.wait_for_all_replicas_online(self.num_replicas)
+        for i in range(len(self.replicas)):
+            self.waitForReplicaToSyncUp(self.replicas[i])
+        return self.replicas
 
-    @pytest.mark.xfail(reason="Replication for FLASH.LIST/ZSET needs investigation — tracked in backlog")
+    def test_rpush_replicates_to_replica(self):
+        self.setup_replication(num_replicas=1)
+        r = self.replicas[0]
+        self.client.execute_command("FLASH.RPUSH", "repl_list", "a", "b", "c")
+        self.waitForReplicaToSyncUp(r)
+        result = r.client.execute_command("FLASH.LRANGE", "repl_list", "0", "-1")
+        assert result == [b"a", b"b", b"c"]
+
     def test_lpop_replicates_to_replica(self):
-        replica_server, replica_client = self._make_replica()
-        try:
-            self.client.execute_command("FLASH.RPUSH", "repl_lpop", "x", "y", "z")
-            time.sleep(0.2)
-            self.client.execute_command("FLASH.LPOP", "repl_lpop")
-            time.sleep(0.2)
-            result = replica_client.execute_command("FLASH.LRANGE", "repl_lpop", "0", "-1")
-            assert result == [b"y", b"z"]
-        finally:
-            replica_server.exit()
+        self.setup_replication(num_replicas=1)
+        r = self.replicas[0]
+        self.client.execute_command("FLASH.RPUSH", "repl_lpop", "x", "y", "z")
+        self.waitForReplicaToSyncUp(r)
+        self.client.execute_command("FLASH.LPOP", "repl_lpop")
+        self.waitForReplicaToSyncUp(r)
+        result = r.client.execute_command("FLASH.LRANGE", "repl_lpop", "0", "-1")
+        assert result == [b"y", b"z"]
 
-    @pytest.mark.xfail(reason="Replication for FLASH.LIST/ZSET needs investigation — tracked in backlog")
     def test_lset_replicates_to_replica(self):
-        replica_server, replica_client = self._make_replica()
-        try:
-            self.client.execute_command("FLASH.RPUSH", "repl_lset", "old", "b")
-            time.sleep(0.2)
-            self.client.execute_command("FLASH.LSET", "repl_lset", "0", "new")
-            time.sleep(0.2)
-            assert replica_client.execute_command("FLASH.LINDEX", "repl_lset", "0") == b"new"
-        finally:
-            replica_server.exit()
+        self.setup_replication(num_replicas=1)
+        r = self.replicas[0]
+        self.client.execute_command("FLASH.RPUSH", "repl_lset", "old", "b")
+        self.waitForReplicaToSyncUp(r)
+        self.client.execute_command("FLASH.LSET", "repl_lset", "0", "new")
+        self.waitForReplicaToSyncUp(r)
+        assert r.client.execute_command("FLASH.LINDEX", "repl_lset", "0") == b"new"
 
 
 class TestFlashListTTL(ValkeyFlashTestCase):
