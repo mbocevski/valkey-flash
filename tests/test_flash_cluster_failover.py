@@ -310,6 +310,53 @@ def _run_failover_scenario(
         with suppress(Exception):
             subprocess.run(["docker", "start", container_name], check=True, capture_output=True)
 
+        # ── Restore topology: hand the primary role back to the original node ─
+        # After docker-start, the resurrected container rejoins as a replica of
+        # the node that was promoted during the test. Subsequent tests that
+        # iterate primaries 7001/7002/7003 assume the original layout, so
+        # flip the role back by forcing a CLUSTER FAILOVER TAKEOVER on the
+        # container that just came back up.
+        _restore_original_primary_role(killed_port=killed_port, timeout=30.0)
+
+
+def _restore_original_primary_role(killed_port: int, timeout: float = 30.0) -> None:
+    """After a failover test, reclaim the primary role for the container on
+    `killed_port` so the session-scoped cluster fixture is usable by the next
+    test. Uses CLUSTER FAILOVER TAKEOVER on the original primary; the node
+    that was promoted during the test demotes itself back to a replica."""
+    deadline = time.monotonic() + timeout
+    # Wait for the restarted container to be reachable.
+    while time.monotonic() < deadline:
+        try:
+            c = valkey.Valkey(host="localhost", port=killed_port, socket_timeout=3)
+            if c.ping():
+                break
+        except Exception:
+            time.sleep(1)
+    else:
+        return  # best-effort; next test's own stability check will still fire
+
+    # Issue TAKEOVER. Safe even if the node is already primary (no-op).
+    for _ in range(int(timeout)):
+        try:
+            c = valkey.Valkey(host="localhost", port=killed_port, socket_timeout=3)
+            try:
+                c.execute_command("CLUSTER", "FAILOVER", "TAKEOVER")
+                break
+            except valkey.exceptions.ResponseError as e:
+                # "You should send CLUSTER FAILOVER to a replica" means we're
+                # already the primary — nothing to do.
+                if "replica" in str(e).lower():
+                    return
+                time.sleep(1)
+            finally:
+                c.close()
+        except Exception:
+            time.sleep(1)
+
+    # Give the cluster one more beat to converge on the new roles.
+    _wait_for_cluster_stable(killed_port, timeout=10.0)
+
 
 # ── Test A — standard cluster (replica-tier-enabled=false) ───────────────────
 

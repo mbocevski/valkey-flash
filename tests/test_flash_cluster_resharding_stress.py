@@ -206,12 +206,27 @@ def _migrate_slot(
 
 
 class AckTracker:
-    """Thread-safe record of last successfully ACKed (key, value) pairs."""
+    """Thread-safe record of last successfully ACKed (key, value) pairs.
+
+    Includes a per-key lock so callers can atomise "do the write, then
+    record the ack" — without it, two threads racing to update the same key
+    can commit their writes to the server in one order and record their acks
+    in the opposite order, leaving the tracker's `last ack` out of sync with
+    the server's `last value`. That's a tracker artifact, not a module bug."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._key_locks: dict[str, threading.Lock] = {}
         self._acks: dict[str, str] = {}
         self.error_count = 0
+
+    def key_lock(self, key: str) -> threading.Lock:
+        with self._lock:
+            lk = self._key_locks.get(key)
+            if lk is None:
+                lk = threading.Lock()
+                self._key_locks[key] = lk
+            return lk
 
     def record(self, key: str, value: str) -> None:
         with self._lock:
@@ -252,34 +267,41 @@ def _run_mixed_traffic(
             value = f"t{thread_id}:i{i}"
             hkey = f"h:{key}"
 
-            try:
-                # FLASH.SET
-                client.execute_command("FLASH.SET", key, value)
-                tracker.record(key, value)
-            except (
-                valkey.exceptions.ConnectionError,
-                valkey.exceptions.TimeoutError,
-                valkey.exceptions.ClusterDownError,
-            ):
-                tracker.record_error()
-            except Exception:
-                tracker.record_error()
+            # FLASH.SET — hold the per-key lock around the write+ack pair so
+            # the server's final value matches whichever thread's ack was
+            # recorded last. Without the lock, two threads can apply writes in
+            # one order on the server and record acks in the other, leaving
+            # the tracker disagreeing with the server at the end of the run.
+            with tracker.key_lock(key):
+                try:
+                    client.execute_command("FLASH.SET", key, value)
+                    tracker.record(key, value)
+                except (
+                    valkey.exceptions.ConnectionError,
+                    valkey.exceptions.TimeoutError,
+                    valkey.exceptions.ClusterDownError,
+                ):
+                    tracker.record_error()
+                except Exception:
+                    tracker.record_error()
 
-            try:
-                # FLASH.HSET
-                client.execute_command("FLASH.HSET", hkey, "v", value)
-                tracker.record(hkey, value)
-            except Exception:
-                tracker.record_error()
+            with tracker.key_lock(hkey):
+                try:
+                    client.execute_command("FLASH.HSET", hkey, "v", value)
+                    tracker.record(hkey, value)
+                except Exception:
+                    tracker.record_error()
 
             with suppress(Exception):
                 # FLASH.GET (read — not tracked for loss, just exercises the path)
                 client.execute_command("FLASH.GET", key)
 
             with suppress(Exception):
-                # Occasional FLASH.HDEL to vary the pattern
+                # Occasional FLASH.HDEL to vary the pattern. Hold the same
+                # per-key lock so an HDEL doesn't race with a concurrent HSET.
                 if i % 7 == 0:
-                    client.execute_command("FLASH.HDEL", hkey, "v")
+                    with tracker.key_lock(hkey):
+                        client.execute_command("FLASH.HDEL", hkey, "v")
 
             i += 1
             time.sleep(0.002)  # ~500 ops/thread/s — enough load without flooding
@@ -408,25 +430,33 @@ def test_single_slot_migration_under_load(docker_cluster):
     time.sleep(1.0)  # let threads warm up before migration starts
 
     # -- migration --
+    migrated = 0
     try:
-        migrated = _migrate_slot(source, target, slot, timeout_ms=15_000)
-    except Exception as exc:
+        try:
+            migrated = _migrate_slot(source, target, slot, timeout_ms=15_000)
+        except Exception as exc:
+            stop.set()
+            pytest.fail(f"Migration failed: {exc}")
+
+        time.sleep(0.5)  # let cluster gossip converge and in-flight ops drain
+
+        # -- stop traffic --
         stop.set()
-        pytest.fail(f"Migration failed: {exc}")
+        for t in threads:
+            t.join(timeout=10)
 
-    time.sleep(0.5)  # let cluster gossip converge and in-flight ops drain
-
-    # -- stop traffic --
-    stop.set()
-    for t in threads:
-        t.join(timeout=10)
-
-    # -- assert zero loss --
-    _assert_zero_loss(
-        tracker,
-        f"test_single_slot_migration_under_load "
-        f"(slot={slot}, {migrated} keys moved, {tracker.error_count} traffic errors)",
-    )
+        # -- assert zero loss --
+        _assert_zero_loss(
+            tracker,
+            f"test_single_slot_migration_under_load "
+            f"(slot={slot}, {migrated} keys moved, {tracker.error_count} traffic errors)",
+        )
+    finally:
+        # Reverse the migration so the session-scoped docker_cluster fixture
+        # leaves slot ownership in its pristine state for subsequent tests.
+        stop.set()
+        with suppress(Exception):
+            _migrate_slot(target, source, slot, timeout_ms=15_000)
 
 
 # ── Test B — 16 concurrent slot migrations ────────────────────────────────────
@@ -534,45 +564,57 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
     # -- concurrent migrations with throttle --
     migration_errors: list[str] = []
     migration_lock = threading.Lock()
+    successfully_migrated: list[int] = []
 
     def do_migrate(slot: int) -> int:
         try:
-            return _migrate_slot(source, target, slot, timeout_ms=20_000)
+            keys = _migrate_slot(source, target, slot, timeout_ms=20_000)
+            with migration_lock:
+                successfully_migrated.append(slot)
+            return keys
         except Exception as exc:
             with migration_lock:
                 migration_errors.append(f"slot {slot}: {exc}")
             return 0
 
     total_migrated = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_MIGRATIONS) as pool:
-        futures = {pool.submit(do_migrate, s): s for s in slots_to_migrate}
-        for fut in concurrent.futures.as_completed(futures):
-            total_migrated += fut.result()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_MIGRATIONS) as pool:
+            futures = {pool.submit(do_migrate, s): s for s in slots_to_migrate}
+            for fut in concurrent.futures.as_completed(futures):
+                total_migrated += fut.result()
 
-    time.sleep(1.0)  # convergence window
+        time.sleep(1.0)  # convergence window
 
-    stop.set()
-    for t in threads:
-        t.join(timeout=15)
+        stop.set()
+        for t in threads:
+            t.join(timeout=15)
 
-    # Report migration errors but don't immediately fail — check data loss first.
-    if migration_errors:
-        print(
-            f"\nWarning: {len(migration_errors)} slot migration error(s):\n"
-            + "\n".join(f"  {e}" for e in migration_errors)
+        # Report migration errors but don't immediately fail — check data loss first.
+        if migration_errors:
+            print(
+                f"\nWarning: {len(migration_errors)} slot migration error(s):\n"
+                + "\n".join(f"  {e}" for e in migration_errors)
+            )
+
+        # -- zero loss assertion --
+        _assert_zero_loss(
+            tracker,
+            f"test_sixteen_slot_migrations_under_load "
+            f"({len(slots_to_migrate)} slots, {total_migrated} keys moved, "
+            f"{len(migration_errors)} migration errors, "
+            f"{tracker.error_count} traffic errors)",
         )
 
-    # -- zero loss assertion --
-    _assert_zero_loss(
-        tracker,
-        f"test_sixteen_slot_migrations_under_load "
-        f"({len(slots_to_migrate)} slots, {total_migrated} keys moved, "
-        f"{len(migration_errors)} migration errors, "
-        f"{tracker.error_count} traffic errors)",
-    )
-
-    if migration_errors:
-        pytest.fail(
-            f"{len(migration_errors)} slot migration(s) failed (data not lost, "
-            f"but migrations incomplete): " + "; ".join(migration_errors[:5])
-        )
+        if migration_errors:
+            pytest.fail(
+                f"{len(migration_errors)} slot migration(s) failed (data not lost, "
+                f"but migrations incomplete): " + "; ".join(migration_errors[:5])
+            )
+    finally:
+        # Reverse every slot that was successfully migrated so the shared
+        # cluster fixture is usable by subsequent tests.
+        stop.set()
+        for slot in successfully_migrated:
+            with suppress(Exception):
+                _migrate_slot(target, source, slot, timeout_ms=20_000)
