@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `cache_put` in `FLASH.MIGRATE.PROBE` now skips insertion when `flash.migration-probe-cache-sec` is 0 (caching disabled), matching the existing guard in `cache_get`; previously the cache was polluted even when TTL=0 and stale entries could be served if TTL was later re-enabled
+
 ### Added
 
 - ACL `@fast` category for O(1) FLASH.* commands: `FLASH.LLEN`, `FLASH.ZSCORE`, `FLASH.ZCARD` — command flags updated to `"readonly fast"` and ACL categories to `"read fast flash"`; verified via `COMMAND INFO` in `test_flash_list_acl_categories` and `test_flash_zset_acl_categories`

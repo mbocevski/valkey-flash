@@ -37,6 +37,10 @@ fn cache_get(addr: &str) -> Option<ProbeResult> {
 }
 
 fn cache_put(addr: &str, result: ProbeResult) {
+    let ttl_sec = FLASH_MIGRATION_PROBE_CACHE_SEC.load(std::sync::atomic::Ordering::Relaxed);
+    if ttl_sec <= 0 {
+        return;
+    }
     if let Ok(mut guard) = PROBE_CACHE.lock() {
         guard.insert(addr.to_string(), (Instant::now(), result));
     }
