@@ -22,7 +22,7 @@ docker run --rm -d --name flash \
   -e FLASH_CAPACITY_BYTES=1073741824 \
   -e FLASH_CACHE_SIZE_BYTES=268435456 \
   -v flash-data:/data \
-  ghcr.io/valkey-io/valkey-flash:1.0.0
+  ghcr.io/mbocevski/valkey-flash:1.0.0
 ```
 
 If you don't have the `seccomp-flash.json` file handy, swap the `--security-opt` to `seccomp=unconfined` for quick-start.
@@ -50,7 +50,6 @@ valkey-cli FLASH.HGETALL session:42
 
 ```
 
-> `FLASH.LPUSH` / `FLASH.ZADD` and the rest of the list + sorted-set APIs land in a follow-on v1.x release. v1.0.0 ships strings and hashes.
 
 ### 3. Observe the tiering in action
 
@@ -77,7 +76,7 @@ If you're building from source or already have Valkey running.
 ### 1. Build the module
 
 ```sh
-git clone https://github.com/valkey-io/valkey-flash
+git clone https://github.com/mbocevski/valkey-flash
 cd valkey-flash
 cargo build --release
 # → target/release/libvalkey_flash.so

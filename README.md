@@ -1,12 +1,12 @@
 # valkey-flash
 
-[![CI](https://github.com/valkey-io/valkey-flash/actions/workflows/ci.yml/badge.svg)](https://github.com/valkey-io/valkey-flash/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/valkey-io/valkey-flash/branch/main/graph/badge.svg)](https://codecov.io/gh/valkey-io/valkey-flash)
+[![CI](https://github.com/mbocevski/valkey-flash/actions/workflows/ci.yml/badge.svg)](https://github.com/mbocevski/valkey-flash/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/mbocevski/valkey-flash/branch/main/graph/badge.svg)](https://codecov.io/gh/mbocevski/valkey-flash)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 A Valkey module that tiers key/value data to NVMe storage, letting Valkey serve a working set larger than RAM. Hot entries live in an in-memory cache; cold entries reside on NVMe and are promoted back on read. The NVMe I/O path uses `io_uring` and runs on background threads — the Valkey event loop never blocks on disk.
 
-valkey-flash ships full cluster support, durable writes via a per-record WAL, and native RDB + AOF persistence. **Strings and hashes** are supported as tiered types in v1.0.0; **lists and sorted sets** are planned for a follow-on v1.x release (see [CHANGELOG](CHANGELOG.md)).
+valkey-flash ships full cluster support, durable writes via a per-record WAL, and native RDB + AOF persistence. **Strings, hashes, lists, and sorted sets** are all supported as tiered types in v1.0.0 — see the [command reference](#commands) below and [CHANGELOG](CHANGELOG.md) for details.
 
 ## Quick start
 
@@ -16,7 +16,7 @@ docker run --rm -p 6379:6379 \
   --security-opt seccomp=docker/seccomp-flash.json \
   -e FLASH_PATH=/data/flash -e FLASH_CAPACITY_BYTES=1073741824 \
   -v flash-data:/data \
-  ghcr.io/valkey-io/valkey-flash:1.0.0
+  ghcr.io/mbocevski/valkey-flash:1.0.0
 
 # From another shell
 valkey-cli FLASH.SET hello world
@@ -43,7 +43,7 @@ It is not the right fit if every request is latency-critical at tail percentiles
 
 ### Pre-built binaries
 
-Releases publish `.so` artifacts for linux-x86_64, linux-aarch64, and macos-arm64. Download from [GitHub Releases](https://github.com/valkey-io/valkey-flash/releases) and load with:
+Releases publish `.so` artifacts for linux-x86_64, linux-aarch64, and macos-arm64. Download from [GitHub Releases](https://github.com/mbocevski/valkey-flash/releases) and load with:
 
 ```
 valkey-server --loadmodule /path/to/libvalkey_flash.so \
@@ -53,7 +53,7 @@ valkey-server --loadmodule /path/to/libvalkey_flash.so \
 
 ### Docker / Podman / Kubernetes
 
-Multi-arch images are published to GHCR at `ghcr.io/valkey-io/valkey-flash`. See [Running in containers](#running-in-containers) below for the seccomp requirement and platform-specific notes.
+Multi-arch images are published to GHCR at `ghcr.io/mbocevski/valkey-flash`. See [Running in containers](#running-in-containers) below for the seccomp requirement and platform-specific notes.
 
 ### Build from source
 
@@ -66,7 +66,7 @@ cargo build --release
 # → target/release/libvalkey_flash.so
 ```
 
-Build requires Rust (pinned to `rust:1.95.0-trixie` in the Dockerfile; `cargo --version` should be ≥1.85 locally for edition-2021 support).
+Build requires Rust (pinned to `rust:1.95.0-trixie` in the Dockerfile; `cargo --version` should be ≥1.90 locally for edition-2024 support).
 
 ## Commands
 
@@ -90,6 +90,43 @@ All FLASH.* commands are opt-in per key — existing native Valkey data types ar
 | `FLASH.HDEL key field [field ...]` | Delete fields; empty hash deletes the key |
 | `FLASH.HEXISTS key field` | 0 or 1 |
 | `FLASH.HLEN key` | Number of fields |
+
+### Lists (`FlashList`)
+
+| Command | Purpose |
+|---|---|
+| `FLASH.LPUSH key value [value ...]` / `FLASH.RPUSH key value [value ...]` | Push values to the head / tail |
+| `FLASH.LPUSHX key value [value ...]` / `FLASH.RPUSHX key value [value ...]` | Push only if the key exists |
+| `FLASH.LPOP key [count]` / `FLASH.RPOP key [count]` | Pop one or more values from the head / tail |
+| `FLASH.LLEN key` | Number of elements |
+| `FLASH.LRANGE key start stop` | Slice (inclusive, supports negative indices) |
+| `FLASH.LINDEX key index` | Element at index |
+| `FLASH.LSET key index value` | Overwrite element at index |
+| `FLASH.LINSERT key BEFORE\|AFTER pivot value` | Insert relative to pivot |
+| `FLASH.LREM key count value` | Remove occurrences |
+| `FLASH.LTRIM key start stop` | Keep only `[start, stop]` slice |
+| `FLASH.LMOVE src dst LEFT\|RIGHT LEFT\|RIGHT` | Atomic move between lists |
+| `FLASH.RPOPLPUSH src dst` | Shorthand for LMOVE RIGHT LEFT |
+| `FLASH.BLPOP key [key ...] timeout` / `FLASH.BRPOP ... timeout` | Blocking pop; `0` = block indefinitely |
+| `FLASH.BLMOVE src dst LEFT\|RIGHT LEFT\|RIGHT timeout` | Blocking variant of LMOVE |
+
+### Sorted sets (`FlashZSet`)
+
+| Command | Purpose |
+|---|---|
+| `FLASH.ZADD key [NX\|XX] [GT\|LT] [CH] [INCR] score member [score member ...]` | Insert or update members |
+| `FLASH.ZREM key member [member ...]` | Remove members |
+| `FLASH.ZINCRBY key increment member` | Increment a member's score (NaN-guarded) |
+| `FLASH.ZPOPMIN key [count]` / `FLASH.ZPOPMAX key [count]` | Pop lowest / highest-scored members |
+| `FLASH.BZPOPMIN key [key ...] timeout` / `FLASH.BZPOPMAX ... timeout` | Blocking pop variants |
+| `FLASH.ZSCORE key member` | Member's score (nil if absent) |
+| `FLASH.ZRANK key member [WITHSCORE]` / `FLASH.ZREVRANK key member [WITHSCORE]` | Rank by score ascending / descending |
+| `FLASH.ZCARD key` | Number of members |
+| `FLASH.ZCOUNT key min max` / `FLASH.ZLEXCOUNT key min max` | Count by score / lex range |
+| `FLASH.ZRANGE key start stop [BYSCORE\|BYLEX] [REV] [LIMIT offset count] [WITHSCORES]` | Unified range query |
+| `FLASH.ZRANGEBYSCORE` / `FLASH.ZREVRANGEBYSCORE` / `FLASH.ZRANGEBYLEX` / `FLASH.ZREVRANGEBYLEX` | Legacy range aliases |
+| `FLASH.ZSCAN key cursor [MATCH pattern] [COUNT count]` | Incremental iteration |
+| `FLASH.ZUNIONSTORE` / `FLASH.ZINTERSTORE` / `FLASH.ZDIFFSTORE` / `FLASH.ZRANGESTORE` | Set arithmetic with `WEIGHTS` / `AGGREGATE SUM\|MIN\|MAX` |
 
 ### Admin / debug
 
@@ -162,7 +199,7 @@ docker run --rm \
   -e FLASH_PATH=/data/flash \
   -e FLASH_CAPACITY_BYTES=1073741824 \
   -v flash-data:/data \
-  ghcr.io/valkey-io/valkey-flash:1.0.0
+  ghcr.io/mbocevski/valkey-flash:1.0.0
 ```
 
 **Docker Compose** — the bundled [`docker/compose.single.yml`](docker/compose.single.yml) already uses the profile:
@@ -190,7 +227,7 @@ sudo podman run --rm \
   -e FLASH_PATH=/data/flash \
   -e FLASH_CAPACITY_BYTES=1073741824 \
   -v flash-data:/data \
-  ghcr.io/valkey-io/valkey-flash:1.0.0
+  ghcr.io/mbocevski/valkey-flash:1.0.0
 ```
 
 **Rootless Podman** — same flag, with additional caveats:
@@ -228,7 +265,7 @@ securityContext:
 | | Versions |
 |---|---|
 | Valkey | unstable, 8.1, 9.0 |
-| Rust (build) | ≥1.85 (edition 2021) |
+| Rust (build) | ≥1.90 (edition 2024) |
 | Linux kernel | ≥5.6 (io_uring), ≥5.11 recommended for rootless containers |
 | Platforms (shipped binaries) | linux-x86_64, linux-aarch64, macos-arm64 |
 | Clients | Any RESP-compliant client; cluster-mode required for cluster deployments (tested against valkey-py) |
@@ -275,7 +312,7 @@ make docker-test-cluster # 3-primary + 3-replica Compose stack
 
 ## Security
 
-Report vulnerabilities through [GitHub Security Advisories](https://github.com/valkey-io/valkey-flash/security/advisories/new) — see [SECURITY.md](SECURITY.md) for the full policy.
+Report vulnerabilities through [GitHub Security Advisories](https://github.com/mbocevski/valkey-flash/security/advisories/new) — see [SECURITY.md](SECURITY.md) for the full policy.
 
 ## License
 

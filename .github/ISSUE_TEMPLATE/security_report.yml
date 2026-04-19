@@ -6,5 +6,5 @@ body:
       value: |
         **Do not file security vulnerabilities as public issues.**
 
-        Report them privately via [GitHub Security Advisories](https://github.com/valkey-io/valkey-flash/security/advisories/new).
+        Report them privately via [GitHub Security Advisories](https://github.com/mbocevski/valkey-flash/security/advisories/new).
         Your report will be reviewed by maintainers without public disclosure until a fix is ready.

@@ -13,7 +13,7 @@ Security fixes are backported to the latest minor release on the current major l
 
 **Do not file a public GitHub issue for security vulnerabilities.**
 
-Report through **[GitHub Security Advisories](https://github.com/valkey-io/valkey-flash/security/advisories/new)** — private disclosure, encrypted in transit, and tracked with automatic CVE coordination if applicable.
+Report through **[GitHub Security Advisories](https://github.com/mbocevski/valkey-flash/security/advisories/new)** — private disclosure, encrypted in transit, and tracked with automatic CVE coordination if applicable.
 
 Include:
 - A clear description of the vulnerability
