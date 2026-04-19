@@ -30,7 +30,6 @@ from dataclasses import dataclass
 import pytest
 import valkey
 import valkey.exceptions
-from valkey.cluster import ValkeyCluster
 from docker_fixtures import flash_cluster_client
 
 # ── Topology helpers ──────────────────────────────────────────────────────────
@@ -505,9 +504,7 @@ def test_sixteen_slot_migrations_under_load(docker_cluster):
             # Create a key that hashes to this exact slot by finding a matching tag.
             # Approach: use {<slot>}key and verify; fall back to raw slot tag.
             probe_key = f"{{stress16:{slot}}}key"
-            probe_slot = int(
-                cluster_seed.execute_command("CLUSTER", "KEYSLOT", probe_key)
-            )
+            probe_slot = int(cluster_seed.execute_command("CLUSTER", "KEYSLOT", probe_key))
             if probe_slot == slot:
                 cluster_seed.execute_command("FLASH.SET", probe_key, f"pre:{slot}")
             # If the hash tag doesn't map to this slot, the slot stays empty

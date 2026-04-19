@@ -29,12 +29,11 @@ def _prepend_lib_path():
 def _server_args(extra=None, flash_path=None):
     if flash_path is None:
         import tempfile
+
         flash_path = os.path.join(tempfile.mkdtemp(prefix="flash_get_"), "flash.bin")
     args = {
         "enable-debug-command": "yes",
-        "loadmodule": (
-            f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
-        ),
+        "loadmodule": (f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"),
     }
     if extra:
         args.update(extra)
@@ -174,6 +173,7 @@ class TestFlashGetReplication(ReplicationTestCase):
         _prepend_lib_path()
         import shutil
         import tempfile
+
         self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_get_", dir=self.testdir)
         primary_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = _server_args(flash_path=primary_path)

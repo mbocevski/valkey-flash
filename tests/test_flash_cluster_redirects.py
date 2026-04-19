@@ -24,15 +24,12 @@ from contextlib import suppress
 import pytest
 
 try:
+    from importlib.util import find_spec
+
     import valkey
     import valkey.exceptions
 
-    try:
-        from valkey.cluster import ValkeyCluster
-
-        _HAVE_CLUSTER_CLIENT = True
-    except ImportError:
-        _HAVE_CLUSTER_CLIENT = False
+    _HAVE_CLUSTER_CLIENT = find_spec("valkey.cluster") is not None
     _HAVE_VALKEY = True
 except ImportError:
     _HAVE_VALKEY = False

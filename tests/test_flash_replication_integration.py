@@ -54,9 +54,7 @@ def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAI
 
 
 def _flash_loadmodule_arg(flash_path):
-    return (
-        f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
-    )
+    return f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
 
 
 class TestFlashReplicationIntegration(ReplicationTestCase):
@@ -65,6 +63,7 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         _setup_ld_path()
         import shutil
         import tempfile
+
         self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_int_", dir=self.testdir)
         flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {
@@ -193,11 +192,15 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         # bytes/str. Normalise both shapes to (id, flags) pairs.
         raw = self.client.execute_command("CLIENT LIST")
         if isinstance(raw, list):
-            pairs = [(str(c.get(b"id") or c.get("id")),
-                      (c.get(b"flags") or c.get("flags") or b"").decode()
-                      if isinstance(c.get(b"flags") or c.get("flags"), (bytes, bytearray))
-                      else str(c.get(b"flags") or c.get("flags") or ""))
-                     for c in raw]
+            pairs = [
+                (
+                    str(c.get(b"id") or c.get("id")),
+                    (c.get(b"flags") or c.get("flags") or b"").decode()
+                    if isinstance(c.get(b"flags") or c.get("flags"), (bytes, bytearray))
+                    else str(c.get(b"flags") or c.get("flags") or ""),
+                )
+                for c in raw
+            ]
         else:
             text = raw.decode() if isinstance(raw, (bytes, bytearray)) else raw
             pairs = []

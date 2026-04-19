@@ -162,8 +162,11 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
 
     def test_flash_list_acl_categories(self):
         write, read, fast, slow, flash = (
-            self._cat("write"), self._cat("read"), self._cat("fast"),
-            self._cat("slow"), self._cat("flash"),
+            self._cat("write"),
+            self._cat("read"),
+            self._cat("fast"),
+            self._cat("slow"),
+            self._cat("flash"),
         )
         # Write commands must be @write @flash
         assert b"flash.lpush" in write and b"flash.lpush" in flash
@@ -178,8 +181,11 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
 
     def test_flash_zset_acl_categories(self):
         write, read, fast, slow, flash = (
-            self._cat("write"), self._cat("read"), self._cat("fast"),
-            self._cat("slow"), self._cat("flash"),
+            self._cat("write"),
+            self._cat("read"),
+            self._cat("fast"),
+            self._cat("slow"),
+            self._cat("flash"),
         )
         # Write commands must be @write @flash
         assert b"flash.zadd" in write and b"flash.zadd" in flash
@@ -190,6 +196,12 @@ class TestFlashACLCategory(ValkeyFlashTestCase):
         # Range reads must be @read @flash (not @fast — O(log N + M))
         assert b"flash.zrange" in read and b"flash.zrange" in flash
         # Blocking commands must be @write @slow @flash
-        assert b"flash.bzpopmin" in write and b"flash.bzpopmin" in slow and b"flash.bzpopmin" in flash
+        assert (
+            b"flash.bzpopmin" in write and b"flash.bzpopmin" in slow and b"flash.bzpopmin" in flash
+        )
         # Store ops must be @write @slow @flash
-        assert b"flash.zunionstore" in write and b"flash.zunionstore" in slow and b"flash.zunionstore" in flash
+        assert (
+            b"flash.zunionstore" in write
+            and b"flash.zunionstore" in slow
+            and b"flash.zunionstore" in flash
+        )

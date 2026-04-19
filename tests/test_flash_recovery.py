@@ -1,3 +1,4 @@
+import contextlib
 import pathlib
 import struct
 
@@ -31,6 +32,7 @@ def _default_flash_path(test_case=None) -> str:
     pass `self` so the helper can locate that dir."""
     if test_case is not None and hasattr(test_case, "flash_dir"):
         import os as _os
+
         return _os.path.join(test_case.flash_dir, "flash.bin")
     return "/tmp/valkey-flash.bin"
 
@@ -131,15 +133,14 @@ class TestFlashRecovery(ValkeyFlashTestCase):
         already started')."""
         import os as _os
         import signal as _signal
+
         _os.kill(self.server.pid(), _signal.SIGKILL)
         self.server.server.wait(timeout=5)
         # Let framework's start() know there is no running server.
         self.server.server = None
         if self.client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self.client.close()
-            except Exception:
-                pass
         self.client = None
 
     def _write_corrupt_wal_offline(self):

@@ -1,4 +1,3 @@
-import pytest
 from valkey_flash_test_case import ValkeyFlashTestCase
 
 

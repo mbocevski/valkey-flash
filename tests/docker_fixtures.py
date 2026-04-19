@@ -70,8 +70,8 @@ def _build_address_remap(base_port: int, compose_project: str):
     clients must talk to `localhost:700N`. Build a map of both shapes:
       - hostname → host-port (static, from compose layout)
       - container IP → host-port (discovered via `docker inspect`)"""
-    import subprocess
     import json
+    import subprocess
 
     name_to_port = {
         "flash-primary-1": base_port,
@@ -84,23 +84,33 @@ def _build_address_remap(base_port: int, compose_project: str):
 
     ip_to_port: dict[str, int] = {}
     try:
-        container_names = subprocess.check_output(
-            [
-                "docker", "ps",
-                "--filter", f"label=com.docker.compose.project={compose_project}",
-                "--format", "{{.Names}}",
-            ],
-            timeout=5,
-        ).decode().split()
+        container_names = (
+            subprocess.check_output(
+                [
+                    "docker",
+                    "ps",
+                    "--filter",
+                    f"label=com.docker.compose.project={compose_project}",
+                    "--format",
+                    "{{.Names}}",
+                ],
+                timeout=5,
+            )
+            .decode()
+            .split()
+        )
         for cname in container_names:
             service = next((s for s in name_to_port if s in cname), None)
             if service is None:
                 continue
-            ip_json = subprocess.check_output(
-                ["docker", "inspect", "-f",
-                 "{{json .NetworkSettings.Networks}}", cname],
-                timeout=5,
-            ).decode().strip()
+            ip_json = (
+                subprocess.check_output(
+                    ["docker", "inspect", "-f", "{{json .NetworkSettings.Networks}}", cname],
+                    timeout=5,
+                )
+                .decode()
+                .strip()
+            )
             for net_info in json.loads(ip_json).values():
                 ip = net_info.get("IPAddress")
                 if ip:
@@ -143,9 +153,7 @@ def _connect_cluster_with_retry(
             last_exc = exc
         time.sleep(1)
     else:
-        raise RuntimeError(
-            f"Cluster at {host}:{port} not ok after {timeout}s: {last_exc}"
-        )
+        raise RuntimeError(f"Cluster at {host}:{port} not ok after {timeout}s: {last_exc}")
 
     # Build the discovery map *after* the cluster is up so every container is
     # running and has a stable IP.

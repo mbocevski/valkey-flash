@@ -14,9 +14,7 @@ pub unsafe fn module_string_bytes(s: *mut valkey_module::raw::RedisModuleString)
         return Vec::new();
     }
     let mut len: usize = 0;
-    let ptr = unsafe {
-        valkey_module::raw::RedisModule_StringPtrLen.unwrap()(s, &mut len)
-    };
+    let ptr = unsafe { valkey_module::raw::RedisModule_StringPtrLen.unwrap()(s, &mut len) };
     if ptr.is_null() || len == 0 {
         return Vec::new();
     }

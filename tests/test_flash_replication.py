@@ -5,9 +5,7 @@ from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 
 def _flash_loadmodule_arg(flash_path):
-    return (
-        f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
-    )
+    return f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
 
 
 class TestFlashReplication(ReplicationTestCase):
@@ -22,6 +20,7 @@ class TestFlashReplication(ReplicationTestCase):
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         import shutil
         import tempfile
+
         self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_", dir=self.testdir)
         flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {

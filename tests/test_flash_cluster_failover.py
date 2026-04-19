@@ -101,11 +101,7 @@ def _find_replica_port(primary_port: int, replica_ports: tuple[int, ...]) -> int
             my_id_raw = c.cluster("myid")
             my_id = my_id_raw.decode() if isinstance(my_id_raw, bytes) else my_id_raw
             for n in _cluster_nodes_as_list(c.cluster("nodes")):
-                if (
-                    n["id"] == my_id
-                    and "slave" in n["flags"]
-                    and n["master_id"] == primary_id
-                ):
+                if n["id"] == my_id and "slave" in n["flags"] and n["master_id"] == primary_id:
                     return rep_port
         except Exception:
             pass

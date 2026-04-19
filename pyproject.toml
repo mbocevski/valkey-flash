@@ -21,7 +21,10 @@ select = ["E", "F", "I", "W", "B", "UP", "SIM", "PL"]
 ignore = []
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["PLR0913", "PLR2004", "PLR0912", "PLR0915", "E501"]
+# PLC0415 / E402: tests import runtime-dependent modules inside fixtures after
+#   setting LD_LIBRARY_PATH, and append secondary ReplicationTestCase classes
+#   with late imports at the bottom of the file. Both patterns are intentional.
+"tests/**/*.py" = ["PLR0913", "PLR2004", "PLR0912", "PLR0915", "E501", "PLC0415", "E402"]
 "scripts/**/*.py" = ["PLR0912", "PLR2004"]
 
 [tool.ruff.format]

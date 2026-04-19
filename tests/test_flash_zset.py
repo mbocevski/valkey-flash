@@ -1,6 +1,5 @@
 import math
 import os as _os
-import time as _time
 
 import pytest
 from valkey import ResponseError
@@ -475,9 +474,10 @@ class TestFlashZSetColdTier(ValkeyFlashTestCase):
 # ── Replication ───────────────────────────────────────────────────────────────
 
 
-from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
 import shutil as _shutil
 import tempfile as _tempfile
+
+from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
 
 
 def _flash_loadmodule_arg(flash_path):
@@ -493,9 +493,7 @@ class TestFlashZSetReplication(_ReplTC):
         )
         server_path = _os.path.join(binaries_dir, "valkey-server")
         existing = _os.environ.get("LD_LIBRARY_PATH", "")
-        _os.environ["LD_LIBRARY_PATH"] = (
-            f"{binaries_dir}:{existing}" if existing else binaries_dir
-        )
+        _os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         self._flash_dir = _tempfile.mkdtemp(prefix="flash_repl_zset_", dir=self.testdir)
         primary_path = _os.path.join(self._flash_dir, "primary.bin")
         self.args = {
@@ -530,9 +528,7 @@ class TestFlashZSetReplication(_ReplTC):
         r = self.replicas[0]
         self.client.execute_command("FLASH.ZADD", "repl_z1", "1.0", "a", "2.0", "b")
         self.waitForReplicaToSyncUp(r)
-        result = r.client.execute_command(
-            "FLASH.ZRANGE", "repl_z1", "0", "-1", "WITHSCORES"
-        )
+        result = r.client.execute_command("FLASH.ZRANGE", "repl_z1", "0", "-1", "WITHSCORES")
         assert result == [b"a", b"1", b"b", b"2"]
 
     def test_zrem_replicates_to_replica(self):

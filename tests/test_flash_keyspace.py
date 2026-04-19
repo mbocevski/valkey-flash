@@ -13,9 +13,7 @@ class TestFlashKeyspaceNotifications(ValkeyFlashTestCase):
         # internally carving out a dedicated pubsub connection works.
         ps = self.client.pubsub()
         ps.psubscribe("__key*__:*")
-        self.client.execute_command(
-            "CONFIG", "SET", "notify-keyspace-events", "KEA"
-        )
+        self.client.execute_command("CONFIG", "SET", "notify-keyspace-events", "KEA")
         return ps
 
     def _collect_messages(self, ps, count, timeout_secs=5):

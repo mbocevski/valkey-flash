@@ -103,15 +103,9 @@ pub fn flash_del_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult
         let exists_non_flash = kh
             .get_value::<FlashStringObject>(&FLASH_STRING_TYPE)
             .is_err()
-            && kh
-                .get_value::<FlashHashObject>(&FLASH_HASH_TYPE)
-                .is_err()
-            && kh
-                .get_value::<FlashListObject>(&FLASH_LIST_TYPE)
-                .is_err()
-            && kh
-                .get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE)
-                .is_err();
+            && kh.get_value::<FlashHashObject>(&FLASH_HASH_TYPE).is_err()
+            && kh.get_value::<FlashListObject>(&FLASH_LIST_TYPE).is_err()
+            && kh.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE).is_err();
         if exists_non_flash {
             return Err(ValkeyError::WrongType);
         }

@@ -1,5 +1,3 @@
-import time
-
 import pytest
 from valkey import ResponseError
 from valkey_flash_test_case import ValkeyFlashTestCase
@@ -354,21 +352,15 @@ class TestFlashListColdTier(ValkeyFlashTestCase):
         assert len(items) == 3
 
 
-class TestFlashListReplication:
-    """Uses the framework's ReplicationTestCase so the replica gets its own
-    logfile, port allocator, and shutdown handling. Importing here (inside the
-    module, not at top-level) avoids disturbing the ValkeyFlashTestCase-based
-    tests above, which use a different setup path."""
-
-
-# Use a dedicated ReplicationTestCase subclass so setup_replication works
-# correctly. Inheriting from ReplicationTestCase (not ValkeyFlashTestCase) means
-# we lose the flash-test-case fixture, so we set it up directly here with
-# per-replica flash paths.
-from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
+# TestFlashListReplication (below) inherits ReplicationTestCase so the replica
+# gets its own logfile, port allocator, and shutdown handling. Imports are
+# aliased and placed here (not at the top of the file) to avoid disturbing the
+# ValkeyFlashTestCase-based tests above, which use a different setup path.
 import os as _os
 import shutil as _shutil
 import tempfile as _tempfile
+
+from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
 
 
 def _flash_loadmodule_arg(flash_path):
@@ -384,9 +376,7 @@ class TestFlashListReplication(_ReplTC):
         )
         server_path = _os.path.join(binaries_dir, "valkey-server")
         existing = _os.environ.get("LD_LIBRARY_PATH", "")
-        _os.environ["LD_LIBRARY_PATH"] = (
-            f"{binaries_dir}:{existing}" if existing else binaries_dir
-        )
+        _os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         self._flash_dir = _tempfile.mkdtemp(prefix="flash_repl_list_", dir=self.testdir)
         primary_path = _os.path.join(self._flash_dir, "primary.bin")
         self.args = {

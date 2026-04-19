@@ -118,12 +118,7 @@ def _start_plain_server() -> _StandaloneServer:
     tmpdir = tempfile.mkdtemp(prefix="flash85_plain_")
     conf = os.path.join(tmpdir, "valkey.conf")
     with open(conf, "w") as f:
-        f.write(
-            f"port {port}\n"
-            "bind 0.0.0.0\n"
-            "protected-mode no\n"
-            "loglevel warning\n"
-        )
+        f.write(f"port {port}\nbind 0.0.0.0\nprotected-mode no\nloglevel warning\n")
     proc = subprocess.Popen(
         [_server_path(), conf],
         stdout=subprocess.DEVNULL,
@@ -220,9 +215,7 @@ def test_probe_to_no_flash_target_returns_error(docker_cluster):
         # Use `host.docker.internal` (wired via `extra_hosts: host-gateway` in
         # compose.cluster.yml) to reach the host.
         with pytest.raises(valkey.exceptions.ResponseError) as exc_info:
-            src.execute_command(
-                "FLASH.MIGRATE.PROBE", "host.docker.internal", str(server.port)
-            )
+            src.execute_command("FLASH.MIGRATE.PROBE", "host.docker.internal", str(server.port))
         error = str(exc_info.value)
         assert "does not have flash-module loaded" in error, (
             f"Unexpected error from probe: {error!r}"

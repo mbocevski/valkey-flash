@@ -99,14 +99,8 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .field("tiered_keys", tiered_keys.to_string())?
         .field("module_state", module_state)?
         .field("cluster_mode", cluster_mode.to_string())?
-        .field(
-            "migration_slots_in_progress",
-            migration_slots.to_string(),
-        )?
-        .field(
-            "migration_bytes_sent",
-            migration_bytes_sent.to_string(),
-        )?
+        .field("migration_slots_in_progress", migration_slots.to_string())?
+        .field("migration_bytes_sent", migration_bytes_sent.to_string())?
         .field(
             "migration_bytes_received",
             migration_bytes_received.to_string(),

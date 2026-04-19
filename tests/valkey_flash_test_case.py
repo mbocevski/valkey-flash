@@ -8,7 +8,6 @@ import pytest
 from valkey import ResponseError
 from valkeytestframework.valkey_test_case import ValkeyTestCase
 
-
 # Tests only write tiny payloads, but the module's default capacity is 1 GiB
 # per flash.bin. Without an override every test would leave behind a 1 GiB
 # file — hundreds of tests fill the host disk. Cap at 16 MiB by default.

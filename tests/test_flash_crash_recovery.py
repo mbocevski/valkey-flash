@@ -106,6 +106,7 @@ class _CrashTestBase(ValkeyFlashTestCase):
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{binaries_dir}:{existing}" if existing else binaries_dir
         import tempfile
+
         self._flash_dir = tempfile.mkdtemp(prefix="flash_crash_", dir=self.testdir)
         flash_path = os.path.join(self._flash_dir, "flash.bin")
         args = {
@@ -122,6 +123,7 @@ class _CrashTestBase(ValkeyFlashTestCase):
         )
         yield
         import shutil
+
         shutil.rmtree(self._flash_dir, ignore_errors=True)
 
 
