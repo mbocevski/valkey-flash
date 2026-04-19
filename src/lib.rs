@@ -97,6 +97,10 @@ use crate::commands::zread::{
     flash_zscore_command, flash_zrank_command, flash_zrevrank_command, flash_zcard_command,
     flash_zcount_command, flash_zlexcount_command, flash_zscan_command,
 };
+use crate::commands::zstore::{
+    flash_zunionstore_command, flash_zinterstore_command,
+    flash_zdiffstore_command, flash_zrangestore_command,
+};
 
 pub const MODULE_NAME: &str = "flash";
 pub const MODULE_VERSION: i32 = 1;
@@ -618,6 +622,10 @@ valkey_module! {
         ["FLASH.ZRANGEBYLEX", flash_zrangebylex_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.ZREVRANGEBYLEX", flash_zrevrangebylex_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.ZSCAN", flash_zscan_command, "readonly", 1, 1, 1, "read flash"],
+        ["FLASH.ZUNIONSTORE", flash_zunionstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
+        ["FLASH.ZINTERSTORE", flash_zinterstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
+        ["FLASH.ZDIFFSTORE", flash_zdiffstore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
+        ["FLASH.ZRANGESTORE", flash_zrangestore_command, "write deny-oom slow", 1, 1, 1, "write slow flash"],
     ],
     configurations: [
         i64: [

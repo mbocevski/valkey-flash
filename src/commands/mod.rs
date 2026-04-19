@@ -32,3 +32,4 @@ pub mod zpop;
 pub mod zrange;
 pub mod zread;
 pub mod zset_common;
+pub mod zstore;
