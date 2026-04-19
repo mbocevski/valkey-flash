@@ -243,6 +243,11 @@ pub fn flash_migrate_probe_command(_ctx: &Context, args: Vec<ValkeyString>) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serializes tests that mutate the shared FLASH_MIGRATION_PROBE_CACHE_SEC atomic
+    // and PROBE_CACHE global to prevent parallel-execution races.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn parse_resp2_flat_array_parses_correctly() {
@@ -270,6 +275,7 @@ mod tests {
 
     #[test]
     fn probe_cache_respects_ttl() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
         use std::sync::atomic::Ordering;
         let original_ttl = FLASH_MIGRATION_PROBE_CACHE_SEC.load(Ordering::Relaxed);
         FLASH_MIGRATION_PROBE_CACHE_SEC.store(60, Ordering::Relaxed);
@@ -290,6 +296,7 @@ mod tests {
 
     #[test]
     fn probe_cache_disabled_when_ttl_zero() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap();
         use std::sync::atomic::Ordering;
         FLASH_MIGRATION_PROBE_CACHE_SEC.store(0, Ordering::Relaxed);
         let result = ProbeResult {
