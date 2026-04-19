@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `MAINTAINERS.md` filled in (Marko Bocevski as project lead; maintainer-contact matrix); `CODE_OF_CONDUCT.md` enforcement channel resolved (`marko.bocevski@keitaro.com` for CoC concerns, GitHub Security Advisories for security-adjacent reports); no more TBDs in repo-level docs
 - Bumped `Cargo.toml` version to `1.0.0` (was `0.1.0`); retargeted all repository URLs from `valkey-io/valkey-flash` to `mbocevski/valkey-flash` (README badges + links, Cargo manifest, SECURITY.md, issue templates, Quick start); refreshed `CLAUDE.md` to reflect shipped state (strings + hashes + lists + sorted sets, cluster, persistence, keyspace events, ACL, uv + ruff tooling); added LIST and ZSET command reference tables to `README.md`; updated Rust edition requirement note from 2021 → 2024
 - Applied edition-2024 alphabetical import ordering crate-wide (style-only)
 - Migrated crate to Rust edition 2024: `cargo fix --edition` added explicit `unsafe {}` blocks inside `unsafe extern "C"` callbacks; `let`-chain collapsible-if patterns collapsed via `cargo clippy --fix`; `rdb_load` (zset) inner `unsafe {}` wrapper replaced with fine-grained block scoped to the cfg-gated function-pointer calls; `CLAUDE.md` convention updated to edition 2024 (#93)
