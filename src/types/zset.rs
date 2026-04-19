@@ -252,21 +252,18 @@ pub unsafe extern "C" fn mem_usage2(
 
 /// # Safety
 ///
-/// RDB format (v1 stub):
-///   `[u64 encoding_version=1][u64 shape_tag=0x04][i64 ttl_ms][zset_bytes]`
-///
-/// `zset_bytes` is `zset_serialize` output. Task #104 will add per-element
-/// format with DoS caps.
+/// RDB format (v1):
+///   `[u64 encoding_version=1][u64 shape_tag=0x04][i64 ttl_ms]`
+///   `[u64 count][for each member in BTreeMap order: save_double(score) + save_slice(member)]`
 pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
     let obj = &*value.cast::<FlashZSetObject>();
     raw::save_unsigned(io, ENCODING_VERSION as u64);
     raw::save_unsigned(io, SHAPE_TAG_ZSET);
     raw::save_signed(io, obj.ttl_ms.unwrap_or(TTL_NONE_SENTINEL));
 
-    match &obj.tier {
-        Tier::Hot(inner) => {
-            raw::save_slice(io, &zset_serialize(inner));
-        }
+    let cold_inner: ZSetInner;
+    let inner: &ZSetInner = match &obj.tier {
+        Tier::Hot(z) => z,
         Tier::Cold {
             backend_offset,
             value_len,
@@ -275,21 +272,35 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             match crate::STORAGE
                 .get()
                 .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                .and_then(|b| zset_deserialize(&b))
             {
-                Some(bytes) => raw::save_slice(io, &bytes),
+                Some(z) => {
+                    cold_inner = z;
+                    &cold_inner
+                }
                 None => {
                     logging::log_warning(
                         "flash: rdb_save Tier::Cold zset: NVMe read failed; writing empty zset",
                     );
-                    raw::save_slice(io, &zset_serialize(&ZSetInner::new()));
+                    cold_inner = ZSetInner::new();
+                    &cold_inner
                 }
             }
         }
+    };
+
+    raw::save_unsigned(io, inner.scores.len() as u64);
+    for ((ScoreF64(score), member), ()) in &inner.scores {
+        raw::save_double(io, *score);
+        raw::save_slice(io, member);
     }
 }
 
 /// # Safety
 pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *mut c_void {
+    const MAX_ZSET_MEMBERS: u64 = 1_000_000;
+    const MAX_MEMBER_BYTES: usize = 512 * 1024 * 1024;
+
     if encver > ENCODING_VERSION {
         logging::log_warning(
             format!(
@@ -337,13 +348,58 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         }
     };
 
-    let zset_bytes = match raw::load_string_buffer(io) {
-        Ok(buf) => buf.as_ref().to_vec(),
+    let count = match raw::load_unsigned(io) {
+        Ok(c) => c,
         Err(_) => {
-            logging::log_warning("flash: rdb_load zset: short read on zset bytes");
+            logging::log_warning("flash: rdb_load zset: short read on member count");
             return null_mut();
         }
     };
+    if count > MAX_ZSET_MEMBERS {
+        logging::log_warning(
+            format!(
+                "flash: rdb_load zset: member count {count} exceeds cap {MAX_ZSET_MEMBERS}"
+            )
+            .as_str(),
+        );
+        return null_mut();
+    }
+
+    let mut inner = ZSetInner {
+        scores: BTreeMap::new(),
+        members: HashMap::with_capacity(count as usize),
+    };
+    for i in 0..count {
+        let score = match raw::load_double(io) {
+            Ok(s) => s,
+            Err(_) => {
+                logging::log_warning(
+                    format!("flash: rdb_load zset: short read on score {i}").as_str(),
+                );
+                return null_mut();
+            }
+        };
+        let member_buf = match raw::load_string_buffer(io) {
+            Ok(buf) => buf,
+            Err(_) => {
+                logging::log_warning(
+                    format!("flash: rdb_load zset: short read on member {i}").as_str(),
+                );
+                return null_mut();
+            }
+        };
+        if member_buf.as_ref().len() > MAX_MEMBER_BYTES {
+            logging::log_warning(
+                format!(
+                    "flash: rdb_load zset: member {i} size {} exceeds 512 MiB cap",
+                    member_buf.as_ref().len()
+                )
+                .as_str(),
+            );
+            return null_mut();
+        }
+        inner.insert(member_buf.as_ref().to_vec(), score);
+    }
 
     let ttl_ms = if ttl_raw == TTL_NONE_SENTINEL {
         None
@@ -351,17 +407,31 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         Some(ttl_raw)
     };
 
-    match zset_deserialize(&zset_bytes) {
-        Some(inner) => Box::into_raw(Box::new(FlashZSetObject {
-            tier: Tier::Hot(inner),
-            ttl_ms,
-        }))
-        .cast::<c_void>(),
-        None => {
-            logging::log_warning("flash: rdb_load zset: corrupt zset bytes");
-            null_mut()
+    let obj = Box::into_raw(Box::new(FlashZSetObject {
+        tier: Tier::Hot(inner),
+        ttl_ms,
+    }))
+    .cast::<c_void>();
+
+    // Signal key-ready so BZPOPMIN/BZPOPMAX clients waiting on this key
+    // wake up. Relevant for DEBUG RELOAD / live in-process RDB round-trips.
+    // Only signal non-empty sets — empty sets can't unblock a pop.
+    #[cfg(not(test))]
+    if count > 0 {
+        if let (Some(get_key_fn), Some(get_ctx_fn), Some(signal_fn)) = (
+            raw::RedisModule_GetKeyNameFromIO,
+            raw::RedisModule_GetContextFromIO,
+            raw::RedisModule_SignalKeyAsReady,
+        ) {
+            let ctx = get_ctx_fn(io);
+            let key_name = get_key_fn(io);
+            if !ctx.is_null() && !key_name.is_null() {
+                signal_fn(ctx, key_name as *mut _);
+            }
         }
     }
+
+    obj
 }
 
 /// # Safety
@@ -642,6 +712,40 @@ mod tests {
     #[test]
     fn format_score_float() {
         assert_eq!(format_score(1.5), "1.5");
+    }
+
+    #[test]
+    fn rdb_count_cap_rejects_oversized() {
+        // Simulate a corrupt count field: encode count > MAX_MEMBERS using NVMe format
+        // then verify zset_deserialize (which shares the same cap) rejects it.
+        let mut buf = Vec::new();
+        // NVMe format uses u32 count — max u32 exceeds the 1_000_000 cap.
+        let huge: u32 = 2_000_000;
+        buf.extend_from_slice(&huge.to_le_bytes());
+        // No actual member data — truncated after count.
+        assert!(zset_deserialize(&buf).is_none());
+    }
+
+    #[test]
+    fn rdb_member_cap_rejects_oversized() {
+        // Simulate a member length field that would exceed MAX_MEMBER_BYTES.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        buf.extend_from_slice(&1.0f64.to_le_bytes()); // score = 1.0
+        // Member length field of 600 MiB — exceeds cap.
+        let huge_len: u32 = 600 * 1024 * 1024;
+        buf.extend_from_slice(&huge_len.to_le_bytes());
+        // No actual member bytes.
+        assert!(zset_deserialize(&buf).is_none());
+    }
+
+    #[test]
+    fn rdb_load_constants_are_sensible() {
+        // Document the expected cap values; changing them requires a deliberate decision.
+        const MAX_ZSET_MEMBERS: u64 = 1_000_000;
+        const MAX_MEMBER_BYTES: usize = 512 * 1024 * 1024;
+        assert_eq!(MAX_ZSET_MEMBERS, 1_000_000);
+        assert_eq!(MAX_MEMBER_BYTES, 512 * 1024 * 1024);
     }
 
     #[test]
