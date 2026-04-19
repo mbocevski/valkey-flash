@@ -93,12 +93,18 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Set module path
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
+    - name: Ruff check
+      run: |
+        uv run ruff check .
+        uv run ruff format --check .
     - name: Run integration tests
-      run: python -m pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
+      run: uv run pytest --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py
 
   asan-build:
     name: ASAN / Valkey ${{ matrix.server_version }}
@@ -180,13 +186,15 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Set module path
       run: echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
     - name: Run integration tests with ASAN
       run: |
-        python -m pytest --capture=sys --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py -m "not skip_for_asan" 2>&1 | tee test_output.tmp
+        uv run pytest --capture=sys --cache-clear -v tests/ --ignore=tests/test_docker_smoke.py -m "not skip_for_asan" 2>&1 | tee test_output.tmp
 
         if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
           echo "Memory leaks detected in the following tests:"
@@ -258,14 +266,16 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Set paths
       run: |
         echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
         echo "SERVER_BIN=$(realpath tests/build/binaries/${{ matrix.server_version }}/valkey-server)" >> $GITHUB_ENV
     - name: Run latency smoke test
-      run: python tests/latency_smoke.py
+      run: uv run python tests/latency_smoke.py
     - name: Upload latency report
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
@@ -330,14 +340,16 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Set paths
       run: |
         echo "MODULE_PATH=$(realpath target/release/libvalkey_flash.so)" >> $GITHUB_ENV
         echo "SERVER_BIN=$(realpath tests/build/binaries/${{ matrix.server_version }}/valkey-server)" >> $GITHUB_ENV
     - name: Run benchmark suite
-      run: python tests/bench.py
+      run: uv run python tests/bench.py
     - name: Upload benchmark report
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
@@ -380,8 +392,10 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Smoke-test custom seccomp profile
       run: |
         docker run -d --name seccomp-smoke \
@@ -394,7 +408,7 @@ jobs:
         docker exec seccomp-smoke valkey-cli FLASH.GET smokekey | grep -q smokeval
         docker rm -f seccomp-smoke
     - name: Run Docker integration tests
-      run: USE_DOCKER=1 python -m pytest --cache-clear -v tests/test_docker_smoke.py -m docker_${{ matrix.topology }}
+      run: USE_DOCKER=1 uv run pytest --cache-clear -v tests/test_docker_smoke.py -m docker_${{ matrix.topology }}
     - name: Collect compose logs on failure
       if: failure()
       run: |
@@ -507,8 +521,10 @@ jobs:
       uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
       with:
         python-version: '3.11'
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
     - name: Run unit tests under llvm-cov
       run: cargo llvm-cov --no-report --features enable-system-alloc
     - name: Build instrumented module for integration tests
@@ -519,7 +535,7 @@ jobs:
       run: |
         LLVM_PROFILE_FILE="$PWD/target/llvm-cov-target/flash-%p-%m.profraw" \
           MODULE_PATH="$PWD/target/llvm-cov-target/debug/libvalkey_flash.so" \
-          python -m pytest tests/ \
+          uv run pytest tests/ \
             --ignore=tests/test_docker_smoke.py \
             --ignore=tests/test_flash_acl.py \
             --ignore=tests/test_flash_aof.py \

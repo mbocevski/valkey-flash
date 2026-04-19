@@ -68,8 +68,10 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39  # v3
     - name: Install test dependencies
-      run: pip install -r requirements.txt
+      run: uv sync --frozen
 
     - name: Set module and server paths
       run: |
@@ -102,7 +104,7 @@ jobs:
         if [ -n "${{ steps.baseline.outputs.path }}" ]; then
           baseline_arg="--baseline ${{ steps.baseline.outputs.path }}"
         fi
-        python3 tests/bench/ycsb.py $baseline_arg
+        uv run python3 tests/bench/ycsb.py $baseline_arg
 
     - name: Upload YCSB report
       if: always()
