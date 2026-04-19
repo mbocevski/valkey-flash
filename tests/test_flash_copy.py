@@ -205,3 +205,49 @@ class TestFlashCopyZSet(ValkeyFlashTestCase):
         assert client.execute_command("FLASH.ZCARD", "dst_zrep") == 1
         assert client.execute_command("FLASH.ZSCORE", "dst_zrep", "old_m") is None
         assert float(client.execute_command("FLASH.ZSCORE", "dst_zrep", "new_m")) == 3.0
+
+
+class TestFlashCopyTTL(ValkeyFlashTestCase):
+
+    def test_list_copy_preserves_ttl(self):
+        client = self.client
+        client.execute_command("FLASH.RPUSH", "ttlcpy_lsrc", "a", "b", "c")
+        client.execute_command("PEXPIRE", "ttlcpy_lsrc", "60000")
+        result = client.execute_command("COPY", "ttlcpy_lsrc", "ttlcpy_ldst")
+        assert result == 1
+        assert client.execute_command("TTL", "ttlcpy_ldst") > 0
+        assert client.execute_command("PTTL", "ttlcpy_ldst") <= 60000
+
+    def test_zset_copy_preserves_ttl(self):
+        client = self.client
+        client.execute_command("FLASH.ZADD", "ttlcpy_zsrc", "1", "a", "2", "b")
+        client.execute_command("PEXPIRE", "ttlcpy_zsrc", "60000")
+        result = client.execute_command("COPY", "ttlcpy_zsrc", "ttlcpy_zdst")
+        assert result == 1
+        assert client.execute_command("TTL", "ttlcpy_zdst") > 0
+        assert client.execute_command("PTTL", "ttlcpy_zdst") <= 60000
+
+
+class TestFlashCopyColdTier(ValkeyFlashTestCase):
+
+    def test_list_copy_from_cold_tier(self):
+        client = self.client
+        client.execute_command(
+            "FLASH.RPUSH", "cold_lsrc", *[f"v{i}" for i in range(100)]
+        )
+        client.execute_command("FLASH.DEBUG.DEMOTE", "cold_lsrc")
+        result = client.execute_command("COPY", "cold_lsrc", "cold_ldst")
+        assert result == 1
+        assert client.execute_command("FLASH.LLEN", "cold_ldst") == 100
+        assert client.execute_command("FLASH.LINDEX", "cold_ldst", 0) == b"v0"
+        assert client.execute_command("FLASH.LINDEX", "cold_ldst", 99) == b"v99"
+
+    def test_zset_copy_from_cold_tier(self):
+        client = self.client
+        pairs = sum([[str(i), f"m{i}"] for i in range(100)], [])
+        client.execute_command("FLASH.ZADD", "cold_zsrc", *pairs)
+        client.execute_command("FLASH.DEBUG.DEMOTE", "cold_zsrc")
+        result = client.execute_command("COPY", "cold_zsrc", "cold_zdst")
+        assert result == 1
+        assert client.execute_command("FLASH.ZCARD", "cold_zdst") == 100
+        assert float(client.execute_command("FLASH.ZSCORE", "cold_zdst", "m50")) == 50.0
