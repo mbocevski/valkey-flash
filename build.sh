@@ -81,21 +81,14 @@ else
     rm -rf valkey-test-framework
 fi
 
-REQUIREMENTS_FILE="requirements.txt"
-if [ -f "$SCRIPT_DIR/$REQUIREMENTS_FILE" ]; then
-    if command -v pip > /dev/null 2>&1; then
-        echo "Using pip to install packages..."
-        pip install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
-    elif command -v pip3 > /dev/null 2>&1; then
-        echo "Using pip3 to install packages..."
-        pip3 install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
-    elif python3 -m pip --version > /dev/null 2>&1; then
-        echo "Using python3 -m pip to install packages..."
-        python3 -m pip install -r "$SCRIPT_DIR/$REQUIREMENTS_FILE"
-    else
-        echo "Error: No pip available. Please install Python package installer."
-        exit 1
-    fi
+if command -v uv > /dev/null 2>&1; then
+    echo "Installing Python dependencies and checking code style with uv..."
+    uv sync --frozen
+    uv run ruff check .
+    uv run ruff format --check .
+else
+    echo "Error: uv is required. Install from https://docs.astral.sh/uv/"
+    exit 1
 fi
 
 os_type=$(uname)
@@ -119,10 +112,10 @@ fi
 echo "Running the integration tests..."
 if [ -n "${ASAN_BUILD}" ]; then
     if [ -n "$TEST_PATTERN" ]; then
-        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN 2>&1 | tee test_output.tmp
+        uv run pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN 2>&1 | tee test_output.tmp
     else
         echo "TEST_PATTERN is not set. Running all integration tests."
-        python3 -m pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" 2>&1 | tee test_output.tmp
+        uv run pytest --capture=sys --cache-clear -v "$SCRIPT_DIR/tests/" 2>&1 | tee test_output.tmp
     fi
 
     if grep -q "LeakSanitizer: detected memory leaks" test_output.tmp; then
@@ -145,10 +138,10 @@ if [ -n "${ASAN_BUILD}" ]; then
     rm test_output.tmp
 else
     if [ -n "$TEST_PATTERN" ]; then
-        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
+        uv run pytest --cache-clear -v "$SCRIPT_DIR/tests/" -k $TEST_PATTERN
     else
         echo "TEST_PATTERN is not set. Running all integration tests."
-        python3 -m pytest --cache-clear -v "$SCRIPT_DIR/tests/"
+        uv run pytest --cache-clear -v "$SCRIPT_DIR/tests/"
     fi
 fi
 

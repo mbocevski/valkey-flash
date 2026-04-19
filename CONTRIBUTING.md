@@ -11,12 +11,30 @@ Thank you for your interest in contributing.
 ## Workflow
 
 1. Fork the repository and create a feature branch.
-2. Run `./build.sh` before opening a pull request — it runs fmt, clippy, unit tests, and integration tests:
+2. Install [uv](https://docs.astral.sh/uv/) if you don't have it:
+   ```sh
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+3. Run `./build.sh` before opening a pull request — it syncs deps, runs ruff, fmt, clippy, unit tests, and integration tests:
    ```sh
    SERVER_VERSION=unstable ./build.sh
    ```
-3. All CI gates must pass: fmt, clippy (`-D warnings`), unit tests, and integration tests.
-4. Open a pull request with a clear description of what changed and why.
+4. All CI gates must pass: ruff, fmt, clippy (`-D warnings`), unit tests, and integration tests.
+5. Open a pull request with a clear description of what changed and why.
+
+### Python tooling
+
+Python deps are managed with uv and declared in `pyproject.toml`. Use `uv sync` to install, `uv run pytest` to run tests:
+
+```sh
+uv sync                          # install/update deps from uv.lock
+uv run pytest tests/             # run integration tests
+uv run ruff check .              # lint
+uv run ruff format --check .     # format check
+uv run ruff format .             # format (auto-fix)
+```
+
+`requirements.txt` is kept as a compatibility shim only — `pyproject.toml` / `uv.lock` are authoritative.
 
 ## Commit style
 

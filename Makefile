@@ -4,13 +4,13 @@ docker-build:
 	docker build -t valkey-flash:dev -f docker/Dockerfile .
 
 docker-test-single:
-	USE_DOCKER=1 python -m pytest tests/test_docker_smoke.py -v -m docker_single
+	USE_DOCKER=1 uv run pytest tests/test_docker_smoke.py -v -m docker_single
 
 docker-test-cluster:
-	USE_DOCKER=1 python -m pytest tests/test_docker_smoke.py -v -m docker_cluster
+	USE_DOCKER=1 uv run pytest tests/test_docker_smoke.py -v -m docker_cluster
 
 docker-test:
-	USE_DOCKER=1 python -m pytest tests/test_docker_smoke.py -v
+	USE_DOCKER=1 uv run pytest tests/test_docker_smoke.py -v
 
 docker-clean:
 	docker compose -f docker/compose.single.yml -p vf-single down -v --remove-orphans 2>/dev/null || true
@@ -29,7 +29,7 @@ coverage-integration:
 	LLVM_PROFILE_FILE="$$PWD/target/llvm-cov-target/flash-%p-%m.profraw" \
 	  MODULE_PATH="$$PWD/target/llvm-cov-target/debug/libvalkey_flash.so" \
 	  SERVER_VERSION="$${SERVER_VERSION:-unstable}" \
-	  python3 -m pytest tests/ \
+	  uv run pytest tests/ \
 	    --ignore=tests/test_docker_smoke.py \
 	    --ignore=tests/test_flash_acl.py \
 	    --ignore=tests/test_flash_aof.py \

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Migrated crate to Rust edition 2024: `cargo fix --edition` added explicit `unsafe {}` blocks inside `unsafe extern "C"` callbacks; `let`-chain collapsible-if patterns collapsed via `cargo clippy --fix`; `rdb_load` (zset) inner `unsafe {}` wrapper replaced with fine-grained block scoped to the cfg-gated function-pointer calls; `CLAUDE.md` convention updated to edition 2024 (#93)
+- Python tooling: uv + ruff as blocking CI gate — `pyproject.toml` declares deps and ruff config; `uv.lock` pins transitive deps; CI uses `uv sync --frozen` and `uv run pytest`; `uv run ruff check/format --check` gates every `build-ubuntu` run; `requirements.txt` kept as compatibility shim
+
 ### Fixed
 
 - `cache_put` in `FLASH.MIGRATE.PROBE` now skips insertion when `flash.migration-probe-cache-sec` is 0 (caching disabled), matching the existing guard in `cache_get`; previously the cache was polluted even when TTL=0 and stale entries could be served if TTL was later re-enabled
