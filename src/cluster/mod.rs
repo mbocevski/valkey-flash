@@ -1,8 +1,9 @@
 pub mod throttle;
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use valkey_module::{Context, logging, raw};
 
 /// `true` when this instance is running in Valkey cluster mode.
@@ -34,6 +35,13 @@ pub static MIGRATION_ERRORS: AtomicU64 = AtomicU64::new(0);
 pub static MIGRATION_KEYS_MIGRATED: AtomicU64 = AtomicU64::new(0);
 /// Cumulative keys rejected during migration (oversized or promotion failure).
 pub static MIGRATION_KEYS_REJECTED: AtomicU64 = AtomicU64::new(0);
+/// Cumulative number of pre-warm timer chunks fired across all migrations —
+/// rough proxy for how bursty the chunked scheduler has been.
+pub static MIGRATION_SCAN_CHUNKS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Cumulative keys processed in a pre-warm chunk before yielding back to
+/// the event loop. `MIGRATION_SCAN_CHUNKS_TOTAL` paired with this gives a
+/// keys-per-chunk rate; a sharp drop suggests the event loop is saturated.
+pub static MIGRATION_SCAN_YIELDED_KEYS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Instant of the most recent EXPORT_STARTED — used to compute duration on
 /// EXPORT_COMPLETED.  Protected by a Mutex because Instant is not Copy+atomic.
@@ -208,14 +216,56 @@ extern "C" fn on_slot_migration(
 
 // ── EXPORT_STARTED pre-warm ───────────────────────────────────────────────────
 
-/// State collected during the keyspace scan for cold-key pre-warming.
-struct ExportScanState {
+/// Per-chunk CPU budget. Each timer tick runs scan + promote work for at
+/// most this long before yielding back to the event loop. 500 µs = ~5%
+/// of a `hz=10` Valkey tick — small enough to keep client latency <1 ms,
+/// large enough to make meaningful progress per tick on a warm keyspace.
+const CHUNK_BUDGET: Duration = Duration::from_micros(500);
+
+/// Driver state for a single EXPORT_STARTED pre-warm run.
+///
+/// Lives on the heap (owned `Box`) and is passed through
+/// `RedisModule_CreateTimer` between ticks. Each tick runs one chunk of
+/// phase-1 scan or phase-2 promote, then either reschedules itself or drops
+/// the box (ending the run).
+struct PreWarmState {
+    // ── configuration ────────────────────────────────────────────────────
     slot_ranges: Vec<(u16, u16)>,
     max_key_bytes: usize,
     deadline: Instant,
-    // (key_bytes, is_flash_string)
-    cold_keys: Vec<(Vec<u8>, bool)>,
+    job_name: String,
+
+    // ── phase 1: scan ────────────────────────────────────────────────────
+    cursor: *mut raw::RedisModuleScanCursor,
+    cursor_done: bool,
     timed_out: bool,
+    cold_keys: Vec<(Vec<u8>, bool)>, // (key_bytes, is_flash_string)
+
+    // ── phase 2: promote ─────────────────────────────────────────────────
+    promote_idx: usize,
+    throttle: throttle::BandwidthThrottle,
+
+    // ── counters ─────────────────────────────────────────────────────────
+    bytes_warmed: u64,
+    keys_warmed: u64,
+    keys_skipped: u64,
+}
+
+// SAFETY: PreWarmState is only ever touched by the main thread (event-loop
+// timer callbacks), but `Context::create_timer` requires `T: 'static + Send`
+// via its box-transfer implementation. The raw `cursor` pointer is opaque
+// to us and we never dereference it — we pass it straight back to Valkey.
+unsafe impl Send for PreWarmState {}
+
+impl Drop for PreWarmState {
+    fn drop(&mut self) {
+        if !self.cursor.is_null()
+            && let Some(cursor_destroy) = unsafe { raw::RedisModule_ScanCursorDestroy }
+        {
+            unsafe { cursor_destroy(self.cursor) };
+            self.cursor = std::ptr::null_mut();
+        }
+    }
 }
 
 #[allow(static_mut_refs)]
@@ -253,7 +303,9 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
         let nul = (0..max_len).find(|&i| *ptr.add(i) == 0).unwrap_or(max_len);
         std::slice::from_raw_parts(ptr, nul)
     };
-    let job_name = std::str::from_utf8(job_name_bytes).unwrap_or("<invalid>");
+    let job_name = std::str::from_utf8(job_name_bytes)
+        .unwrap_or("<invalid>")
+        .to_string();
 
     logging::log_notice(
         format!(
@@ -266,79 +318,186 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
     let max_key_bytes = FLASH_MIGRATION_MAX_KEY_BYTES.load(Ordering::Relaxed) as usize;
     let bw_mbps = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed) as u64;
 
-    // ── Phase 1: scan keyspace and collect Cold Flash keys in migrating slots ──
+    // Create the scan cursor up-front so it lives for the whole run.
+    let cursor = match unsafe { raw::RedisModule_ScanCursorCreate } {
+        Some(f) => unsafe { f() },
+        None => std::ptr::null_mut(),
+    };
+    if cursor.is_null() {
+        logging::log_warning("flash: cluster: EXPORT_STARTED: ScanCursorCreate unavailable");
+        return;
+    }
 
-    let mut scan_state = ExportScanState {
+    let state = Box::new(PreWarmState {
         slot_ranges,
         max_key_bytes,
-        deadline: Instant::now() + std::time::Duration::from_secs(timeout_sec),
-        cold_keys: Vec::new(),
+        deadline: Instant::now() + Duration::from_secs(timeout_sec),
+        job_name,
+        cursor,
+        cursor_done: false,
         timed_out: false,
+        cold_keys: Vec::new(),
+        promote_idx: 0,
+        throttle: throttle::BandwidthThrottle::new(bw_mbps),
+        bytes_warmed: 0,
+        keys_warmed: 0,
+        keys_skipped: 0,
+    });
+
+    // Schedule the first tick. create_timer(0ms) fires on the next event-loop
+    // iteration — it returns immediately to the caller (the event handler),
+    // which unblocks the main thread and lets client commands, cluster
+    // heartbeats, and other timers run between chunks.
+    schedule_prewarm_tick(&Context::new(ctx), state, Duration::from_millis(0));
+}
+
+fn schedule_prewarm_tick(ctx: &Context, state: Box<PreWarmState>, delay: Duration) {
+    ctx.create_timer(delay, prewarm_tick, state);
+}
+
+fn prewarm_tick(ctx: &Context, mut state: Box<PreWarmState>) {
+    // Hard deadline: if we've blown the migration-chunk timeout, tear down
+    // cleanly. Any remaining cold keys will be read from NVMe during the
+    // actual MIGRATE phase, same as pre-chunking behaviour.
+    if Instant::now() >= state.deadline {
+        state.timed_out = true;
+    }
+
+    MIGRATION_SCAN_CHUNKS_TOTAL.fetch_add(1, Ordering::Relaxed);
+
+    // ── Phase 1: scan ──
+    if !state.cursor_done && !state.timed_out {
+        run_scan_chunk(ctx, &mut state);
+        if !state.cursor_done && !state.timed_out {
+            // More scanning to do — yield and resume on the next tick.
+            schedule_prewarm_tick(ctx, state, Duration::from_millis(0));
+            return;
+        }
+        if state.timed_out {
+            logging::log_notice(
+                "flash: cluster: EXPORT_STARTED scan timed out — remaining cold keys will be read from NVMe during migration",
+            );
+        }
+        // Fall through — scan completed this tick, use the remaining budget
+        // (if any) to start phase 2.
+    }
+
+    // ── Phase 2: promote ──
+    let promote_result = run_promote_chunk(ctx, &mut state);
+
+    if state.promote_idx < state.cold_keys.len() && !state.timed_out {
+        // More keys to warm: reschedule. Delay is 0 when we yielded on
+        // CPU budget, or > 0 when the bandwidth throttle says to wait.
+        schedule_prewarm_tick(ctx, state, promote_result);
+        return;
+    }
+
+    // ── Done — flush counters and log. state drops here, destroying cursor. ──
+    MIGRATION_BYTES_SENT.fetch_add(state.bytes_warmed, Ordering::Relaxed);
+    MIGRATION_KEYS_MIGRATED.fetch_add(state.keys_warmed, Ordering::Relaxed);
+    MIGRATION_KEYS_REJECTED.fetch_add(state.keys_skipped, Ordering::Relaxed);
+    logging::log_notice(
+        format!(
+            "flash: cluster: EXPORT_STARTED pre-warm done job={}: \
+             {} keys ({} bytes) promoted, {} skipped",
+            state.job_name, state.keys_warmed, state.bytes_warmed, state.keys_skipped
+        )
+        .as_str(),
+    );
+}
+
+/// Drain the scan cursor for up to CHUNK_BUDGET, then return. Mutates
+/// `state.cold_keys` (via the C callback) and `state.cursor_done` /
+/// `state.timed_out`.
+fn run_scan_chunk(ctx: &Context, state: &mut PreWarmState) {
+    let scan_fn = match unsafe { raw::RedisModule_Scan } {
+        Some(f) => f,
+        None => {
+            state.cursor_done = true;
+            return;
+        }
     };
 
-    unsafe {
-        if let (Some(cursor_create), Some(cursor_destroy), Some(scan_fn)) = (
-            raw::RedisModule_ScanCursorCreate,
-            raw::RedisModule_ScanCursorDestroy,
-            raw::RedisModule_Scan,
-        ) {
-            let cursor = cursor_create();
-            if !cursor.is_null() {
-                let privdata =
-                    &mut scan_state as *mut ExportScanState as *mut ::std::os::raw::c_void;
-                // scan_fn returns 1 while more items remain, 0 when done.
-                while scan_fn(ctx, cursor, Some(scan_collect_cold_keys), privdata) == 1 {
-                    if scan_state.timed_out {
-                        break;
-                    }
-                }
-                cursor_destroy(cursor);
-            }
+    let start = Instant::now();
+    // `privdata` aliases `state` for the duration of each `scan_fn` call —
+    // safe because we hold no other reference to `state` or its fields
+    // while the callback runs, and the callback releases its reborrow on
+    // return.
+    let privdata: *mut c_void = state as *mut PreWarmState as *mut c_void;
+    loop {
+        let more = unsafe {
+            scan_fn(
+                ctx.ctx,
+                state.cursor,
+                Some(scan_collect_cold_keys),
+                privdata,
+            )
+        };
+        if more == 0 {
+            state.cursor_done = true;
+            return;
+        }
+        if state.timed_out {
+            return;
+        }
+        if start.elapsed() > CHUNK_BUDGET {
+            return;
         }
     }
+}
 
-    if scan_state.timed_out {
-        logging::log_notice(
-            "flash: cluster: EXPORT_STARTED scan timed out — remaining cold keys will be read from NVMe during migration",
-        );
-    }
+/// Promote as many `cold_keys` as fit in one CHUNK_BUDGET, or until the
+/// bandwidth throttle says to wait. Returns the delay the caller should
+/// pass to the next `schedule_prewarm_tick`:
+/// - `Duration::ZERO` when we yielded for CPU budget — reschedule immediately
+/// - `> 0` when the throttle has a credit deficit — wait that long
+fn run_promote_chunk(ctx: &Context, state: &mut PreWarmState) -> Duration {
+    use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
 
-    // ── Phase 2: promote collected Cold keys to Hot tier ─────────────────────
-
-    let ctx_wrapper = Context { ctx };
     let storage = match crate::STORAGE.get() {
         Some(s) => s,
         None => {
-            logging::log_notice("flash: cluster: no NVMe storage — skipping cold-key pre-warm");
-            return;
+            // No storage → nothing to warm. Drain the queue as "skipped".
+            state.keys_skipped += (state.cold_keys.len() - state.promote_idx) as u64;
+            state.promote_idx = state.cold_keys.len();
+            return Duration::ZERO;
         }
     };
     let cache = match crate::CACHE.get() {
         Some(c) => c,
-        None => return,
+        None => {
+            state.keys_skipped += (state.cold_keys.len() - state.promote_idx) as u64;
+            state.promote_idx = state.cold_keys.len();
+            return Duration::ZERO;
+        }
     };
 
-    let mut bytes_warmed: u64 = 0;
-    let mut keys_warmed: u64 = 0;
-    let mut keys_skipped: u64 = 0;
-
-    let mut throttle = throttle::BandwidthThrottle::new(bw_mbps);
-
-    for (key_bytes, is_flash_string) in scan_state.cold_keys {
-        if Instant::now() >= scan_state.deadline {
-            keys_skipped += 1;
-            continue;
+    let chunk_start = Instant::now();
+    while state.promote_idx < state.cold_keys.len() {
+        if chunk_start.elapsed() > CHUNK_BUDGET {
+            return Duration::ZERO;
+        }
+        if Instant::now() >= state.deadline {
+            let remaining = state.cold_keys.len() - state.promote_idx;
+            state.keys_skipped += remaining as u64;
+            state.promote_idx = state.cold_keys.len();
+            state.timed_out = true;
+            return Duration::ZERO;
         }
 
-        // Re-read bandwidth config so a CONFIG SET mid-migration takes effect
-        // on the next key promotion cycle.
+        // Re-read bandwidth config so a CONFIG SET mid-migration takes effect.
         let live_bw = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed) as u64;
-        if live_bw * 125_000 != throttle.limit_bps {
-            throttle.set_bandwidth_mbps(live_bw);
+        if live_bw * 125_000 != state.throttle.limit_bps {
+            state.throttle.set_bandwidth_mbps(live_bw);
         }
 
-        let key_str = ctx_wrapper.create_string(key_bytes.as_slice());
-        let key_handle = ctx_wrapper.open_key_writable(&key_str);
+        // Clone out the key bytes before the mutable borrow of `state.cold_keys`
+        // conflicts with the subsequent mutation of `state.promote_idx`.
+        let (key_bytes, is_flash_string) = state.cold_keys[state.promote_idx].clone();
+        state.promote_idx += 1;
+
+        let key_str = ctx.create_string(key_bytes.as_slice());
+        let key_handle = ctx.open_key_writable(&key_str);
 
         let promoted = if is_flash_string {
             promote_flash_string(&key_handle, &key_bytes, storage, cache)
@@ -347,26 +506,21 @@ fn handle_export_started(ctx: *mut raw::RedisModuleCtx, data: *mut ::std::os::ra
         };
 
         if let Some(value_len) = promoted {
-            bytes_warmed += value_len as u64;
-            keys_warmed += 1;
-            throttle.account(value_len as u64);
+            state.bytes_warmed += value_len as u64;
+            state.keys_warmed += 1;
+            // Non-blocking deficit: if the throttle wants us to wait, yield
+            // the rest of the chunk and let the timer reschedule for that
+            // long. Reschedule via the event loop instead of sleeping the
+            // main thread (which was the pre-chunking behaviour).
+            let deficit = state.throttle.deficit(value_len as u64);
+            if !deficit.is_zero() {
+                return deficit;
+            }
         } else {
-            keys_skipped += 1;
+            state.keys_skipped += 1;
         }
     }
-
-    // Update global migration progress counters.
-    MIGRATION_BYTES_SENT.fetch_add(bytes_warmed, Ordering::Relaxed);
-    MIGRATION_KEYS_MIGRATED.fetch_add(keys_warmed, Ordering::Relaxed);
-    MIGRATION_KEYS_REJECTED.fetch_add(keys_skipped, Ordering::Relaxed);
-
-    logging::log_notice(
-        format!(
-            "flash: cluster: EXPORT_STARTED pre-warm done: \
-             {keys_warmed} keys ({bytes_warmed} bytes) promoted, {keys_skipped} skipped"
-        )
-        .as_str(),
-    );
+    Duration::ZERO
 }
 
 // ── Scan callback (Phase 1) ───────────────────────────────────────────────────
@@ -378,8 +532,10 @@ extern "C" fn scan_collect_cold_keys(
     key: *mut raw::RedisModuleKey,
     privdata: *mut ::std::os::raw::c_void,
 ) {
-    // SAFETY: privdata is always a &mut ExportScanState cast to *mut c_void.
-    let state = unsafe { &mut *(privdata as *mut ExportScanState) };
+    // SAFETY: privdata is always a &mut PreWarmState cast to *mut c_void.
+    let state = unsafe { &mut *(privdata as *mut PreWarmState) };
+
+    MIGRATION_SCAN_YIELDED_KEYS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     if state.timed_out {
         return;
