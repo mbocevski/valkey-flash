@@ -422,9 +422,12 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
 /// One command per field-value pair.  TTL (if any) is emitted as a separate
 /// `PEXPIREAT key abs_ms` command after all fields are written.
 ///
-/// Cold-tier limitation (v1): cannot fetch from NVMe in this callback (no key
-/// bytes, no offset). Cold objects reach this branch only via FLASH.DEBUG.DEMOTE
-/// — a warning is logged and the key is skipped.
+/// Hot tier: iterate the in-memory `HashMap` directly.
+///
+/// Cold tier: materialize the serialized payload from NVMe via the fork-safe
+/// `pread_at_offset` path, deserialize, then emit the same FLASH.HSET
+/// commands. `pread` avoids touching the parent's io_uring ring from inside
+/// the BGREWRITEAOF forked child.
 pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
@@ -433,15 +436,30 @@ pub unsafe extern "C" fn aof_rewrite(
     unsafe {
         let obj = &*value.cast::<FlashHashObject>();
 
-        let fields = match &obj.tier {
+        let cold_fields: HashMap<Vec<u8>, Vec<u8>>;
+        let fields: &HashMap<Vec<u8>, Vec<u8>> = match &obj.tier {
             Tier::Hot(f) => f,
-            Tier::Cold { .. } => {
-                logging::log_warning(
-                    "flash: aof_rewrite on Tier::Cold hash — cannot fetch from NVMe without key; \
-                 skipping key",
-                );
-                return;
-            }
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => match crate::STORAGE
+                .get()
+                .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
+                .and_then(|bytes| hash_deserialize(&bytes))
+            {
+                Some(map) => {
+                    cold_fields = map;
+                    &cold_fields
+                }
+                None => {
+                    logging::log_warning(
+                        "flash: aof_rewrite on Tier::Cold hash: NVMe read/deserialize failed; \
+                         skipping key",
+                    );
+                    return;
+                }
+            },
         };
 
         let emit = match raw::RedisModule_EmitAOF {

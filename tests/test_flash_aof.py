@@ -106,3 +106,68 @@ class TestFlashAofRewrite(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.DEL", "gone")
         _bgrewriteaof_and_restart(self.server)
         assert self.client.execute_command("FLASH.GET", "gone") is None
+
+
+# ── Cold-tier AOF rewrite round-trip ──────────────────────────────────────────
+#
+# Before the pread_at_offset + aof_rewrite fix, Cold-tier keys were silently
+# dropped from the rewritten AOF — the `free` + `aof_rewrite` callbacks would
+# short-circuit on Tier::Cold with a warning and emit nothing. Any demoted key
+# was permanently lost on AOF-only restart. These tests cover the four types.
+
+
+class TestFlashAofRewriteColdTier(ValkeyFlashTestCase):
+    def test_cold_string_survives_aof_rewrite(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.SET", "cold_str", "cold_value")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_str")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.GET", "cold_str") == b"cold_value"
+
+    def test_cold_string_with_ttl_survives_aof_rewrite(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.SET", "cold_str_ttl", "cold_tv", "EX", "600")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_str_ttl")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.GET", "cold_str_ttl") == b"cold_tv"
+        assert self.client.execute_command("TTL", "cold_str_ttl") > 0
+
+    def test_cold_hash_survives_aof_rewrite(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.HSET", "cold_h", "f1", "v1", "f2", "v2", "f3", "v3")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_h")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.HGET", "cold_h", "f1") == b"v1"
+        assert self.client.execute_command("FLASH.HGET", "cold_h", "f2") == b"v2"
+        assert self.client.execute_command("FLASH.HGET", "cold_h", "f3") == b"v3"
+
+    def test_cold_list_survives_aof_rewrite(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.RPUSH", "cold_l", "a", "b", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_l")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.LRANGE", "cold_l", "0", "-1") == [
+            b"a",
+            b"b",
+            b"c",
+        ]
+
+    def test_cold_zset_survives_aof_rewrite(self):
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.ZADD", "cold_z", "1.0", "a", "2.0", "b", "3.0", "c")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cold_z")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.ZCARD", "cold_z") == 3
+        assert float(self.client.execute_command("FLASH.ZSCORE", "cold_z", "a")) == 1.0
+        assert float(self.client.execute_command("FLASH.ZSCORE", "cold_z", "b")) == 2.0
+        assert float(self.client.execute_command("FLASH.ZSCORE", "cold_z", "c")) == 3.0
+
+    def test_mixed_hot_and_cold_survive_aof_rewrite(self):
+        # Half hot, half cold — both must survive in the same rewrite.
+        _enable_aof(self.client)
+        self.client.execute_command("FLASH.SET", "mixed_hot", "hot_value")
+        self.client.execute_command("FLASH.SET", "mixed_cold", "cold_value")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "mixed_cold")
+        _bgrewriteaof_and_restart(self.server)
+        assert self.client.execute_command("FLASH.GET", "mixed_hot") == b"hot_value"
+        assert self.client.execute_command("FLASH.GET", "mixed_cold") == b"cold_value"

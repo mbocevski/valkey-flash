@@ -66,3 +66,57 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if any(m.name.startswith("docker_") for m in item.iter_markers()):
                 item.add_marker(skip_docker)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Dump compose logs for every known project on docker-test failure.
+
+    The Docker-integration fixture is session-scoped; its `docker.compose.down()`
+    teardown runs at pytest exit, BEFORE the GitHub Actions post-pytest
+    log-collection step. That's why `docker-logs-*` artifacts have been coming
+    back as ~138-byte empty files: containers are gone before the workflow
+    reaches `docker compose logs`.
+
+    Running the log dump here — inside pytest, on test failure, before the
+    session teardown — captures live container state. Output goes to
+    `test-data/compose-<project>-<test>.log`; the workflow's existing artifact
+    upload already picks up anything under `test-data/`.
+    """
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call" or not report.failed:
+        return
+    if not any(m.name.startswith("docker_") for m in item.iter_markers()):
+        return
+    if os.environ.get("USE_DOCKER") != "1":
+        return
+
+    import subprocess
+
+    os.makedirs("test-data", exist_ok=True)
+    safe_name = item.nodeid.replace("/", "_").replace("::", "-")
+    for project in ("vf-single", "vf-cluster", "vf-cluster-rt"):
+        log_path = f"test-data/compose-{project}-{safe_name}.log"
+        ps_path = f"test-data/compose-{project}-{safe_name}.ps"
+        try:
+            with open(log_path, "w") as f:
+                subprocess.run(
+                    ["docker", "compose", "-p", project, "logs", "--no-color", "--tail=500"],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    timeout=30,
+                    check=False,
+                )
+            with open(ps_path, "w") as f:
+                subprocess.run(
+                    ["docker", "compose", "-p", project, "ps", "-a"],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    timeout=15,
+                    check=False,
+                )
+        except Exception:
+            # Diagnostic path: a failure here must not mask the original test
+            # failure. Swallow and move on.
+            pass
