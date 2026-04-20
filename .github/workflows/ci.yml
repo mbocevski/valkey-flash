@@ -545,18 +545,27 @@ jobs:
     - name: Collect compose logs on failure
       if: failure()
       run: |
+        mkdir -p /tmp/docker-logs
+        # The pytest conftest dumps per-test compose logs into test-data/
+        # BEFORE the session fixture tears containers down — those files have
+        # the useful signal. Copy them into the artifact directory if present.
+        if compgen -G 'test-data/compose-*' > /dev/null; then
+          cp test-data/compose-* /tmp/docker-logs/
+        fi
+        # Fallback: best-effort post-session dump in case no test-level hook
+        # fired (e.g. the failure was in fixture setup). Containers are
+        # already gone by this point, so this is usually empty — kept only
+        # for the setup-failure case.
         for project in vf-single vf-cluster vf-cluster-rt; do
-          for cfile in docker/compose.single.yml docker/compose.cluster.yml; do
-            docker compose -f "$cfile" -p "$project" logs --no-color \
-              >> /tmp/compose.log 2>/dev/null || true
-          done
+          docker compose -p "$project" logs --no-color \
+            > "/tmp/docker-logs/session-end-$project.log" 2>&1 || true
         done
     - name: Upload compose logs
       if: failure()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: docker-logs-${{ matrix.topology }}
-        path: /tmp/compose.log
+        path: /tmp/docker-logs
         if-no-files-found: ignore
 
   fuzz-smoke:
