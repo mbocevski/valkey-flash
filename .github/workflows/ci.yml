@@ -600,7 +600,14 @@ jobs:
       SERVER_VERSION: unstable
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+    - name: Cache cargo-llvm-cov binary
+      id: cache-llvm-cov
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+      with:
+        path: ~/.cargo/bin/cargo-llvm-cov
+        key: cargo-llvm-cov-0.8.5-${{ runner.os }}
     - name: Install cargo-llvm-cov
+      if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
       run: cargo install --version =0.8.5 --locked cargo-llvm-cov
     - name: Cache Cargo registry
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -673,6 +680,10 @@ jobs:
         RUSTFLAGS="-Cinstrument-coverage --cfg=coverage" \
           cargo build --features enable-system-alloc --target-dir target/llvm-cov-target
     - name: Run integration tests
+      # --maxfail=5 keeps the job from spinning through 700 tests at 90s each
+      # when something systemic breaks (e.g. a module-init regression). Five
+      # samples is enough to tell whether it's one flaky test or a pattern,
+      # and the failure-capture step still runs on exit.
       run: |
         LLVM_PROFILE_FILE="$PWD/target/llvm-cov-target/flash-%p-%m.profraw" \
           MODULE_PATH="$PWD/target/llvm-cov-target/debug/libvalkey_flash.so" \
@@ -680,6 +691,7 @@ jobs:
             --ignore=tests/test_docker_smoke.py \
             --ignore=tests/test_flash_acl.py \
             --ignore=tests/test_flash_aof.py \
+            --maxfail=5 \
             -q --tb=short
     - name: Generate lcov report and enforce coverage gate
       run: |
@@ -696,4 +708,22 @@ jobs:
       with:
         files: lcov.info
         fail_ci_if_error: false
+    - name: Capture valkey-server logs on failure
+      if: failure()
+      run: |
+        mkdir -p /tmp/test-logs
+        find test-data -name 'logfile_*' -print -exec sh -c 'cp "$1" "/tmp/test-logs/$(echo "$1" | tr / _)"' _ {} \; 2>/dev/null || true
+        echo "=== ldd target/llvm-cov-target/debug/libvalkey_flash.so ===" > /tmp/test-logs/ldd.txt
+        ldd target/llvm-cov-target/debug/libvalkey_flash.so >> /tmp/test-logs/ldd.txt 2>&1 || true
+        echo "=== ldd tests/build/binaries/$SERVER_VERSION/valkey-server ===" >> /tmp/test-logs/ldd.txt
+        ldd "tests/build/binaries/$SERVER_VERSION/valkey-server" >> /tmp/test-logs/ldd.txt 2>&1 || true
+        echo "=== env ===" > /tmp/test-logs/env.txt
+        env | sort >> /tmp/test-logs/env.txt
+    - name: Upload test logs
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: coverage-logs
+        path: /tmp/test-logs
+        if-no-files-found: ignore
 
