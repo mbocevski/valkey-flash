@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-20
+
+First release.
+
 ### Added
 
 #### Types and commands
@@ -100,3 +104,6 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 - RDB payload parsers are pure Rust with explicit size caps (512 MiB strings, 256 MiB hashes) and per-allocation remaining-bytes guards; `rdb_load` and the fuzz harness share the same validation path.
 - WAL record CRC32C framing detects and rejects corrupt or truncated records on recovery.
 - RDB version-byte guard widened to prevent integer overflow on untrusted input.
+
+[Unreleased]: https://github.com/mbocevski/valkey-flash/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/mbocevski/valkey-flash/releases/tag/v1.0.0

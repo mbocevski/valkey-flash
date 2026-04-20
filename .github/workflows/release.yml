@@ -46,7 +46,12 @@ jobs:
         fi
         echo "Cargo.toml version $cargo_ver matches tag ${{ github.ref_name }}"
 
-  # ── 2. Build platform .so / .dylib artifacts ───────────────────────────────
+  # ── 2. Build platform .so artifacts ────────────────────────────────────────
+  #
+  # Linux only. io_uring is a Linux kernel API; the `io-uring` crate has no
+  # macOS backend and Cargo.toml lists it as an unconditional dep, so macOS
+  # builds can't compile at all. Dropping the matrix entry prevents the
+  # release workflow from half-failing on the first tag push.
 
   build-so:
     name: Build / ${{ matrix.artifact }}
@@ -66,11 +71,6 @@ jobs:
             artifact: libvalkey_flash-linux-aarch64.so
             lib_name: libvalkey_flash.so
             cross_compile: true
-
-          - target: aarch64-apple-darwin
-            runner: macos-14
-            artifact: libvalkey_flash-macos-arm64.dylib
-            lib_name: libvalkey_flash.dylib
 
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -92,11 +92,7 @@ jobs:
         sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
         rustup target add aarch64-unknown-linux-gnu
 
-    - name: Add macOS arm64 target
-      if: matrix.target == 'aarch64-apple-darwin'
-      run: rustup target add aarch64-apple-darwin
-
-    - name: Build release .so / .dylib
+    - name: Build release .so
       env:
         RUSTFLAGS: "-D warnings"
         # Linker for aarch64 Linux cross-compile; empty string for other targets
@@ -130,7 +126,7 @@ jobs:
       with:
         fetch-depth: 0  # full history for release notes
 
-    - name: Download all .so / .dylib artifacts
+    - name: Download all .so artifacts
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
       with:
         path: dist/
