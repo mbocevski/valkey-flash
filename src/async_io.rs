@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
 use crate::storage::backend::{StorageError, StorageResult};
@@ -38,10 +40,14 @@ type Task = Box<dyn FnOnce() -> StorageResult<Vec<u8>> + Send>;
 type IoTask = (Box<dyn CompletionHandle>, Task);
 
 pub struct AsyncThreadPool {
-    sender: Sender<IoTask>,
-    // Workers exit naturally when sender is dropped (channel closes). JoinHandles
-    // are kept so tests can observe clean shutdown if needed.
-    _workers: Vec<std::thread::JoinHandle<()>>,
+    // Wrapped in Mutex<Option<_>> so `shutdown()` can take and drop the
+    // sender (closing the channel) via a shared reference. Submit paths pay
+    // a trivial lock acquire — negligible next to the I/O they dispatch.
+    sender: Mutex<Option<Sender<IoTask>>>,
+    // Held so `shutdown()` can join workers before the .so is dlclose'd
+    // during `MODULE UNLOAD`; without the join, sleeping workers would wake
+    // into unmapped memory and SIGSEGV the Valkey process.
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl AsyncThreadPool {
@@ -72,8 +78,28 @@ impl AsyncThreadPool {
         // Drop the original receiver; each worker holds its own clone.
         drop(receiver);
         AsyncThreadPool {
-            sender,
-            _workers: workers,
+            sender: Mutex::new(Some(sender)),
+            workers: Mutex::new(workers),
+        }
+    }
+
+    /// Shut the pool down cleanly. Drops the sender so the channel closes and
+    /// every worker exits its `recv` loop, then joins each worker thread.
+    ///
+    /// Must be called from `deinitialize()` before the module's `.so` is
+    /// `dlclose`'d on `MODULE UNLOAD`: Rust does not run `Drop` on static
+    /// `OnceLock` values during dlclose, so without an explicit shutdown the
+    /// worker threads survive the unmap and SIGSEGV when they next wake.
+    ///
+    /// Safe to call more than once (subsequent calls are no-ops).
+    pub fn shutdown(&self) {
+        if let Ok(mut s) = self.sender.lock() {
+            s.take();
+        }
+        if let Ok(mut workers) = self.workers.lock() {
+            for h in workers.drain(..) {
+                let _ = h.join();
+            }
         }
     }
 
@@ -91,7 +117,8 @@ impl AsyncThreadPool {
         handle: Box<dyn CompletionHandle>,
         task: impl FnOnce() -> StorageResult<Vec<u8>> + Send + 'static,
     ) -> Result<(), PoolError> {
-        self.sender
+        let sender = self.clone_sender().ok_or(PoolError::Closed)?;
+        sender
             .try_send((handle, Box::new(task)))
             .map_err(|e| match e {
                 TrySendError::Full(_) => PoolError::Full,
@@ -110,7 +137,15 @@ impl AsyncThreadPool {
         handle: Box<dyn CompletionHandle>,
         task: impl FnOnce() -> StorageResult<Vec<u8>> + Send + 'static,
     ) {
-        match self.sender.try_send((handle, Box::new(task))) {
+        let task: Task = Box::new(task);
+        let sender = match self.clone_sender() {
+            Some(s) => s,
+            None => {
+                handle.complete(Err(StorageError::Other(PoolError::Closed.to_string())));
+                return;
+            }
+        };
+        match sender.try_send((handle, task)) {
             Ok(_) => {}
             Err(TrySendError::Full((handle, _))) => {
                 handle.complete(Err(StorageError::Other(PoolError::Full.to_string())));
@@ -119,6 +154,13 @@ impl AsyncThreadPool {
                 handle.complete(Err(StorageError::Other(PoolError::Closed.to_string())));
             }
         }
+    }
+
+    /// Clone the sender out from under the mutex so the actual send happens
+    /// outside the lock. Cloning a `crossbeam_channel::Sender` is cheap (ref
+    /// count bump) and means concurrent submits don't serialize on the mutex.
+    fn clone_sender(&self) -> Option<Sender<IoTask>> {
+        self.sender.lock().ok()?.clone()
     }
 }
 
@@ -303,6 +345,49 @@ mod tests {
 
         // Release the worker so threads can clean up.
         let _ = release_tx.send(());
+    }
+
+    // ── shutdown_drops_sender_and_joins_workers ───────────────────────────
+    // `shutdown()` must close the channel (workers exit their `recv` loop)
+    // and join the worker threads. Subsequent submits must fail cleanly
+    // rather than hang or panic — this protects MODULE UNLOAD from a SIGSEGV
+    // on a worker still alive after dlclose.
+    #[test]
+    fn shutdown_drops_sender_and_joins_workers() {
+        let pool = AsyncThreadPool::new(2);
+
+        // Sanity: a pre-shutdown submit works.
+        let (h, rx) = make_handle();
+        pool.submit(h, || Ok(b"pre".to_vec())).unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(),
+            b"pre".to_vec()
+        );
+
+        pool.shutdown();
+
+        // After shutdown the sender is gone — submit must return Closed.
+        let (h, _rx) = make_handle();
+        let err = pool.submit(h, || Ok(vec![]));
+        assert!(
+            matches!(err, Err(PoolError::Closed)),
+            "submit after shutdown must return PoolError::Closed, got {err:?}"
+        );
+
+        // submit_or_complete must surface the error via the handle rather
+        // than return — the client-already-blocked contract.
+        let (h, rx) = make_handle();
+        pool.submit_or_complete(h, || Ok(vec![]));
+        let result = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("submit_or_complete must complete the handle synchronously post-shutdown");
+        assert!(
+            result.is_err(),
+            "expected Err via completion handle after shutdown"
+        );
+
+        // shutdown is idempotent: a second call must be a no-op, not a panic.
+        pool.shutdown();
     }
 }
 

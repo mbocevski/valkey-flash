@@ -385,6 +385,12 @@ fn deinitialize(_ctx: &Context) -> Status {
     if let Some(h) = handle {
         let _ = h.join();
     }
+    // Shut down the async I/O pool. Rust doesn't run Drop on static OnceLock
+    // values during dlclose, so without this workers survive MODULE UNLOAD
+    // and SIGSEGV when they next wake into unmapped .so text.
+    if let Some(pool) = POOL.get() {
+        pool.shutdown();
+    }
     // Flush LLVM coverage profraw before dlclose() removes our atexit handler.
     // dlclose() would otherwise make the registered atexit a dangling pointer,
     // silently dropping all integration-test coverage data.

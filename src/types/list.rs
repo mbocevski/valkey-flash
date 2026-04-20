@@ -137,7 +137,10 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
             if let Some(storage) = crate::STORAGE.get() {
                 storage.release_cold_blocks(backend_offset, num_blocks);
             }
-            if let Some(wal) = crate::WAL.get() {
+            // See `types::string::free` for the LOADING-gate rationale.
+            if !crate::replication::is_loading()
+                && let Some(wal) = crate::WAL.get()
+            {
                 let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
             }
             if let Ok(mut map) = crate::TIERING_MAP.lock() {

@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use valkey_module::{Context, ContextFlags};
-use valkey_module_macros::role_changed_event_handler;
+use valkey_module_macros::{loading_event_handler, role_changed_event_handler};
 
-use valkey_module::server_events::ServerRole;
+use valkey_module::server_events::{LoadingSubevent, ServerRole};
 
 /// `true` when this instance is currently operating as a Valkey replica.
 ///
@@ -16,6 +16,47 @@ pub static IS_REPLICA: AtomicBool = AtomicBool::new(false);
 #[inline]
 pub fn is_replica() -> bool {
     IS_REPLICA.load(Ordering::Acquire)
+}
+
+/// `true` while the server is replaying RDB / AOF / replication stream.
+///
+/// Set on `LoadingSubevent::{RdbStarted, ReplStarted, AofStarted}`, cleared on
+/// `{Ended, Failed}`. Queryable without a `Context`, which is important for
+/// callbacks like `free` that Valkey invokes without one — unlike
+/// `ContextFlags::LOADING` which requires a live context.
+pub static IS_LOADING: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` if the server is in RDB / AOF / replication load.
+#[inline]
+pub fn is_loading() -> bool {
+    IS_LOADING.load(Ordering::Acquire)
+}
+
+/// Server-event callback fired on every phase of the loading lifecycle.
+///
+/// During LOADING, the module must not append to its operational WAL — the
+/// events observed are replay side-effects of the existing state, not fresh
+/// mutations. Writing them would produce a WAL that records deletions the
+/// next recovery pass shouldn't see, corrupting subsequent restarts.
+#[loading_event_handler]
+fn on_loading_event(_ctx: &Context, sub: LoadingSubevent) {
+    apply_loading_subevent(sub);
+}
+
+/// Pure-Rust helper that applies a `LoadingSubevent` to `IS_LOADING`.
+/// Factored out of `on_loading_event` so unit tests can exercise the
+/// transition table without needing to construct a `Context`.
+fn apply_loading_subevent(sub: LoadingSubevent) {
+    match sub {
+        LoadingSubevent::RdbStarted
+        | LoadingSubevent::AofStarted
+        | LoadingSubevent::ReplStarted => {
+            IS_LOADING.store(true, Ordering::Release);
+        }
+        LoadingSubevent::Ended | LoadingSubevent::Failed => {
+            IS_LOADING.store(false, Ordering::Release);
+        }
+    }
 }
 
 /// Returns `true` if the command must be obeyed unconditionally — i.e., it
@@ -141,6 +182,83 @@ mod tests {
         // (This test would fail if someone accidentally changed the initial value.)
         let fresh = AtomicBool::new(false);
         assert!(!fresh.load(Ordering::SeqCst));
+    }
+
+    // ── IS_LOADING / apply_loading_subevent ──────────────────────────────────
+    //
+    // The #[loading_event_handler] wrapper `on_loading_event` takes &Context
+    // which userland can't construct; the transition table lives in
+    // `apply_loading_subevent` so these tests exercise it directly.
+
+    fn reset_loading() {
+        IS_LOADING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn is_loading_starts_false() {
+        reset_loading();
+        assert!(!is_loading(), "IS_LOADING should start false");
+    }
+
+    #[test]
+    fn rdb_started_sets_is_loading_true() {
+        reset_loading();
+        apply_loading_subevent(LoadingSubevent::RdbStarted);
+        assert!(is_loading());
+        reset_loading();
+    }
+
+    #[test]
+    fn aof_started_sets_is_loading_true() {
+        reset_loading();
+        apply_loading_subevent(LoadingSubevent::AofStarted);
+        assert!(is_loading());
+        reset_loading();
+    }
+
+    #[test]
+    fn repl_started_sets_is_loading_true() {
+        reset_loading();
+        apply_loading_subevent(LoadingSubevent::ReplStarted);
+        assert!(is_loading());
+        reset_loading();
+    }
+
+    #[test]
+    fn ended_clears_is_loading() {
+        IS_LOADING.store(true, Ordering::SeqCst);
+        apply_loading_subevent(LoadingSubevent::Ended);
+        assert!(!is_loading());
+    }
+
+    #[test]
+    fn failed_clears_is_loading() {
+        IS_LOADING.store(true, Ordering::SeqCst);
+        apply_loading_subevent(LoadingSubevent::Failed);
+        assert!(!is_loading());
+    }
+
+    #[test]
+    fn loading_lifecycle_round_trip() {
+        // Simulate a full AOF replay cycle: start → end.
+        reset_loading();
+        apply_loading_subevent(LoadingSubevent::AofStarted);
+        assert!(is_loading(), "flag must be set while loading");
+        apply_loading_subevent(LoadingSubevent::Ended);
+        assert!(!is_loading(), "flag must be cleared when loading completes");
+    }
+
+    #[test]
+    fn loading_failed_clears_flag_same_as_ended() {
+        // A failed load must leave IS_LOADING false so the module doesn't
+        // permanently suppress WAL writes after an interrupted replay.
+        reset_loading();
+        apply_loading_subevent(LoadingSubevent::RdbStarted);
+        apply_loading_subevent(LoadingSubevent::Failed);
+        assert!(
+            !is_loading(),
+            "LoadingSubevent::Failed must clear IS_LOADING (not leave it stuck)"
+        );
     }
 }
 

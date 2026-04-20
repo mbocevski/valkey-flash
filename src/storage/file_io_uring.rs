@@ -206,9 +206,25 @@ impl FileIoUringBackend {
     // ── Free-list management (public for compaction command + aux persistence) ──
 
     /// Run one compaction tick: coalesce adjacent/overlapping free ranges.
+    ///
+    /// Sorts and merges the range vec *outside* the `free_list` mutex so
+    /// `alloc_blocks` / `release_cold_blocks` on the main thread don't block
+    /// on the O(N log N) sort. The vec is swapped out under the lock (cheap —
+    /// just a pointer move), coalesced on the compaction worker, then merged
+    /// back with any ranges released during the unlock window.
     pub fn run_compaction_tick(&self) {
+        let mut ranges = match self.free_list.lock() {
+            Ok(mut fl) => std::mem::take(&mut *fl),
+            Err(_) => return,
+        };
+        coalesce_ranges(&mut ranges);
         if let Ok(mut fl) = self.free_list.lock() {
-            coalesce_ranges(&mut fl);
+            // `fl` may contain ranges released while the compaction worker was
+            // sorting. Merge them in and re-coalesce — cheap because the
+            // unlock window was short, so |fl| is typically small.
+            ranges.append(&mut fl);
+            coalesce_ranges(&mut ranges);
+            *fl = ranges;
         }
         COMPACTION_RUNS.fetch_add(1, Ordering::Relaxed);
     }
