@@ -346,11 +346,12 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
 ///
 /// Emit a `FLASH.SET key value [PXAT <ms>]` command into the AOF rewrite buffer.
 ///
-/// Cold-tier limitation (v1): `aof_rewrite` receives no key bytes and no NVMe
-/// offset, so cold objects cannot be reconstructed. Unlike `rdb_save` (which
-/// has the byte offset in `Tier::Cold` and can call `read_at_offset`), AOF
-/// rewrite has no equivalent hook. Keys demoted via `FLASH.DEBUG.DEMOTE` will
-/// reach this branch — a warning is logged and the key is skipped.
+/// Hot tier: the value is already in memory; emit it directly.
+///
+/// Cold tier: materialize from NVMe via the fork-safe `pread_at_offset` path,
+/// then emit the same `FLASH.SET`. Using `pread` rather than `read_at_offset`
+/// avoids touching the parent's io_uring ring from inside the BGREWRITEAOF
+/// forked child.
 pub unsafe extern "C" fn aof_rewrite(
     aof: *mut raw::RedisModuleIO,
     key: *mut raw::RedisModuleString,
@@ -359,15 +360,28 @@ pub unsafe extern "C" fn aof_rewrite(
     unsafe {
         let obj = &*value.cast::<FlashStringObject>();
 
-        let bytes = match &obj.tier {
+        let cold_buf: Vec<u8>;
+        let bytes: &[u8] = match &obj.tier {
             Tier::Hot(v) => v.as_slice(),
-            Tier::Cold { .. } => {
-                logging::log_warning(
-                    "flash: aof_rewrite on Tier::Cold object — cannot fetch from NVMe without key; \
-                 skipping key",
-                );
-                return;
-            }
+            Tier::Cold {
+                backend_offset,
+                value_len,
+                ..
+            } => match crate::STORAGE
+                .get()
+                .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
+            {
+                Some(b) => {
+                    cold_buf = b;
+                    &cold_buf
+                }
+                None => {
+                    logging::log_warning(
+                        "flash: aof_rewrite on Tier::Cold string: NVMe read failed; skipping key",
+                    );
+                    return;
+                }
+            },
         };
 
         let cmd = match CString::new("FLASH.SET") {

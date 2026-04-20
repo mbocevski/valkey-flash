@@ -282,6 +282,72 @@ impl FileIoUringBackend {
         }
     }
 
+    /// Fork-safe cousin of [`read_at_offset`]: reads via `pread(2)` against
+    /// the file descriptor directly, bypassing the io_uring ring.
+    ///
+    /// Use this from any path that runs in a forked child — `rdb_save` and
+    /// `aof_rewrite` in particular. The parent's io_uring ring is not fork-
+    /// safe (SQ/CQ buffers are kernel-shared and the `ring` mutex, if locked
+    /// at fork time, is inherited in a poisoned state). `pread` touches only
+    /// the inherited fd and process-local memory, so it is always safe.
+    ///
+    /// Advises `POSIX_FADV_WILLNEED` on the block range before the read so
+    /// the kernel can pre-populate the page cache. The buffer alignment
+    /// guarantees satisfy the `O_DIRECT` requirement (same `AlignedBuf`
+    /// used by the io_uring path). Slower than io_uring — which is fine,
+    /// as persistence-child throughput isn't on the hot path.
+    ///
+    /// Callers on the parent process should keep using [`read_at_offset`].
+    pub fn pread_at_offset(&self, backend_offset: u64, value_len: u32) -> StorageResult<Vec<u8>> {
+        let num_blocks = Self::blocks_needed(value_len as usize);
+        let buf_size = num_blocks as usize * BLOCK_SIZE;
+        let buf = AlignedBuf::new(buf_size)?;
+        let fd = self.file.as_raw_fd();
+
+        // Hint the kernel; advice failures are non-fatal.
+        unsafe {
+            libc::posix_fadvise(
+                fd,
+                backend_offset as libc::off_t,
+                buf_size as libc::off_t,
+                libc::POSIX_FADV_WILLNEED,
+            );
+        }
+
+        // SAFETY: buf.ptr is a live `buf_size`-byte allocation, BLOCK_SIZE-aligned
+        // (so the O_DIRECT constraints on the fd are satisfied); backend_offset
+        // is already block-aligned by the allocator; fd is the module's own
+        // owned NVMe file descriptor inherited into the forked child.
+        let ret = unsafe {
+            libc::pread(
+                fd,
+                buf.ptr as *mut c_void,
+                buf_size,
+                backend_offset as libc::off_t,
+            )
+        };
+        if ret < 0 {
+            return Err(StorageError::Io(std::io::Error::last_os_error()));
+        }
+        if (ret as usize) < buf_size {
+            return Err(StorageError::Other(format!(
+                "pread short read: {ret} < {buf_size}"
+            )));
+        }
+
+        let slice = buf.as_slice();
+        let len_bytes: [u8; 8] = slice[..8]
+            .try_into()
+            .map_err(|_| StorageError::Other("corrupt record: header too short".into()))?;
+        let stored_len = u64::from_le_bytes(len_bytes) as usize;
+        if stored_len != value_len as usize {
+            return Err(StorageError::Other(format!(
+                "header len {stored_len} != expected len {value_len}"
+            )));
+        }
+        Ok(slice[8..8 + stored_len].to_vec())
+    }
+
     /// Read `value_len` bytes from NVMe starting at byte offset `backend_offset`.
     /// Used by the cold-tier read path (FLASH.GET) and rdb_save for cold objects.
     pub fn read_at_offset(&self, backend_offset: u64, value_len: u32) -> StorageResult<Vec<u8>> {
@@ -600,6 +666,52 @@ mod tests {
         b.put(b"y", b"world").unwrap();
         assert_eq!(b.get(b"x").unwrap(), Some(b"hello".to_vec()));
         assert_eq!(b.get(b"y").unwrap(), Some(b"world".to_vec()));
+    }
+
+    // ── pread_at_offset ────────────────────────────────────────────────────────
+    //
+    // pread is the fork-safe cousin of read_at_offset used by rdb_save /
+    // aof_rewrite inside the BGSAVE/BGREWRITEAOF child. These tests verify
+    // it recovers the same bytes as the io_uring path.
+
+    #[test]
+    fn pread_at_offset_roundtrip_matches_put() {
+        let (b, _tmp) = open_backend();
+        let payload = b"hello pread world";
+        let offset = b.put(b"k", payload).unwrap();
+        let recovered = b
+            .pread_at_offset(offset, payload.len() as u32)
+            .expect("pread must succeed");
+        assert_eq!(recovered, payload);
+    }
+
+    #[test]
+    fn pread_at_offset_matches_read_at_offset() {
+        let (b, _tmp) = open_backend();
+        let payload = b"matching-both-read-paths";
+        let offset = b.put(b"k", payload).unwrap();
+        let via_pread = b
+            .pread_at_offset(offset, payload.len() as u32)
+            .expect("pread path");
+        let via_ring = b
+            .read_at_offset(offset, payload.len() as u32)
+            .expect("ring path");
+        assert_eq!(
+            via_pread, via_ring,
+            "pread and io_uring must return identical bytes"
+        );
+        assert_eq!(via_pread, payload);
+    }
+
+    #[test]
+    fn pread_at_offset_multi_block_value() {
+        // Force a multi-block payload (8 KiB > 4 KiB block size) so the
+        // pread call covers more than one NVMe block.
+        let (b, _tmp) = open_backend();
+        let payload: Vec<u8> = (0..8192u32).map(|i| (i % 251) as u8).collect();
+        let offset = b.put(b"multi", &payload).unwrap();
+        let recovered = b.pread_at_offset(offset, payload.len() as u32).unwrap();
+        assert_eq!(recovered, payload);
     }
 
     #[test]

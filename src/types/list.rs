@@ -345,9 +345,12 @@ pub unsafe extern "C" fn aof_rewrite(
                 value_len,
                 ..
             } => {
+                // Use `pread` (not `read_at_offset`) — aof_rewrite runs in the
+                // forked BGREWRITEAOF child where the parent's io_uring ring is
+                // fork-unsafe.
                 match crate::STORAGE
                     .get()
-                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
                     .and_then(|b| list_deserialize(&b))
                 {
                     Some(items) => {
