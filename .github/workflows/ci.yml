@@ -697,17 +697,21 @@ jobs:
       # Always emit partial coverage, even on test failure, so codecov gets
       # data on every run (deltas stay useful on red builds). Gate-check is
       # a separate step below that only runs when tests pass.
+      #
+      # cargo llvm-cov report picks up instrumented objects from
+      # target/llvm-cov-target/ automatically — the integration tests run
+      # with MODULE_PATH pointing at debug/libvalkey_flash.so inside that
+      # dir and the profraw files land alongside it. Passing an explicit
+      # --object is rejected by cargo-llvm-cov 0.8.5's report subcommand.
       if: always()
       run: |
         cargo llvm-cov report \
           --lcov \
           --output-path lcov.info \
-          --object target/llvm-cov-target/debug/libvalkey_flash.so \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
     - name: Enforce coverage gate
       run: |
         cargo llvm-cov report \
-          --object target/llvm-cov-target/debug/libvalkey_flash.so \
           --fail-under-lines 79 \
           --fail-under-functions 82 \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
