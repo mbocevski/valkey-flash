@@ -40,30 +40,50 @@ impl BandwidthThrottle {
         self.limit_bps == 0
     }
 
+    /// Record `bytes` transferred and return how long the caller should pause
+    /// before the next transfer to stay within the configured rate limit.
+    /// Returns `Duration::ZERO` when unlimited or within budget.
+    ///
+    /// Non-blocking variant of [`account`]: useful when the caller is running
+    /// inside an event-loop tick and can't afford to sleep on the main thread
+    /// (e.g. the migration pre-warm scheduler, which reschedules itself via
+    /// `RedisModule_CreateTimer` using the returned duration as the delay).
+    ///
+    /// Single-call cap: 100 ms. Any remaining deficit is picked up on the
+    /// next call, same as [`account`].
+    pub fn deficit(&mut self, bytes: u64) -> Duration {
+        if self.limit_bps == 0 {
+            return Duration::ZERO;
+        }
+        self.bytes_this_window += bytes;
+
+        let expected_us = self.bytes_this_window * 1_000_000 / self.limit_bps;
+        let actual_us = self.window_start.elapsed().as_micros() as u64;
+
+        let wait = if expected_us > actual_us {
+            Duration::from_micros((expected_us - actual_us).min(100_000))
+        } else {
+            Duration::ZERO
+        };
+
+        // Reset window after ~1 s to prevent u64 overflow and stale credit build-up.
+        if self.window_start.elapsed().as_secs() >= 1 {
+            self.window_start = Instant::now();
+            self.bytes_this_window = 0;
+        }
+
+        wait
+    }
+
     /// Record `bytes` transferred and sleep if the cumulative rate exceeds the
     /// configured limit. Returns immediately when unlimited.
     ///
     /// Single-call sleep is capped at 100 ms to keep individual key promotions
     /// responsive; the next call compensates for any remaining deficit.
     pub fn account(&mut self, bytes: u64) {
-        if self.limit_bps == 0 {
-            return;
-        }
-        self.bytes_this_window += bytes;
-
-        // How long should it take to transfer bytes_this_window at limit_bps?
-        let expected_us = self.bytes_this_window * 1_000_000 / self.limit_bps;
-        let actual_us = self.window_start.elapsed().as_micros() as u64;
-
-        if expected_us > actual_us {
-            let wait_us = (expected_us - actual_us).min(100_000); // cap at 100 ms
-            std::thread::sleep(Duration::from_micros(wait_us));
-        }
-
-        // Reset window after ~1 s to prevent u64 overflow and stale credit build-up.
-        if self.window_start.elapsed().as_secs() >= 1 {
-            self.window_start = Instant::now();
-            self.bytes_this_window = 0;
+        let wait = self.deficit(bytes);
+        if !wait.is_zero() {
+            std::thread::sleep(wait);
         }
     }
 }

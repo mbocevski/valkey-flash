@@ -5,7 +5,7 @@ use valkey_module::{InfoContext, ValkeyResult};
 use crate::cluster::{
     IS_CLUSTER, MIGRATION_BYTES_RECEIVED, MIGRATION_BYTES_SENT, MIGRATION_ERRORS,
     MIGRATION_KEYS_MIGRATED, MIGRATION_KEYS_REJECTED, MIGRATION_LAST_DURATION_MS,
-    MIGRATION_SLOTS_IN_PROGRESS,
+    MIGRATION_SCAN_CHUNKS_TOTAL, MIGRATION_SCAN_YIELDED_KEYS_TOTAL, MIGRATION_SLOTS_IN_PROGRESS,
 };
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
@@ -78,6 +78,9 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     let migration_bandwidth_mbps = FLASH_MIGRATION_BANDWIDTH_MBPS.load(Ordering::Relaxed);
     let migration_keys_migrated = MIGRATION_KEYS_MIGRATED.load(Ordering::Relaxed);
     let migration_keys_rejected = MIGRATION_KEYS_REJECTED.load(Ordering::Relaxed);
+    let migration_scan_chunks_total = MIGRATION_SCAN_CHUNKS_TOTAL.load(Ordering::Relaxed);
+    let migration_scan_yielded_keys_total =
+        MIGRATION_SCAN_YIELDED_KEYS_TOTAL.load(Ordering::Relaxed);
 
     ctx.builder()
         .add_section("flash")
@@ -121,6 +124,14 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .field(
             "migration_keys_rejected",
             migration_keys_rejected.to_string(),
+        )?
+        .field(
+            "migration_scan_chunks_total",
+            migration_scan_chunks_total.to_string(),
+        )?
+        .field(
+            "migration_scan_yielded_keys_total",
+            migration_scan_yielded_keys_total.to_string(),
         )?
         .build_section()?
         .build_info()?;
