@@ -25,4 +25,9 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
     - name: Run loom tests
-      run: RUSTFLAGS='--cfg loom' cargo test --features enable-system-alloc -- loom_tests::
+      # Block scalar (not plain): the trailing `::` in the test-filter arg
+      # trips YAML's plain-scalar parser ("mapping values are not allowed
+      # here" — `:` followed by end-of-line closes the scalar and looks
+      # like a key).
+      run: |
+        RUSTFLAGS='--cfg loom' cargo test --features enable-system-alloc -- loom_tests::

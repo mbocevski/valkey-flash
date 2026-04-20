@@ -197,7 +197,8 @@ pub unsafe extern "C" fn mem_usage2(
 ///   [u64 encoding_version = 1][u64 shape_tag = 0x02][i64 ttl_ms|-1][hash_bytes]
 ///
 /// `hash_bytes` is the `hash_serialize` encoding (same format used for NVMe/cache).
-/// For Cold objects, the bytes are fetched from NVMe via `read_at_offset`.
+/// For Cold objects, the bytes are fetched from NVMe via `pread_at_offset` —
+/// the fork-safe path (`rdb_save` runs inside the forked BGSAVE child).
 pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
     unsafe {
         let obj = &*value.cast::<FlashHashObject>();
@@ -220,7 +221,7 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
             } => {
                 match crate::STORAGE
                     .get()
-                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
                 {
                     Some(bytes) => raw::save_slice(io, &bytes),
                     None => {
