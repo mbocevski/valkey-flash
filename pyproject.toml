@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "valkey>=6.1,<7",
     "pytest>=8,<10",
+    "pytest-rerunfailures>=15,<17",
     "python-on-whales>=0.81,<1",
 ]
 

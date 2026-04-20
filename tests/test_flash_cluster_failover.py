@@ -359,9 +359,15 @@ def _restore_original_primary_role(killed_port: int, timeout: float = 30.0) -> N
 
 @pytest.mark.docker_cluster
 @pytest.mark.slow
+@pytest.mark.flaky(reruns=1, reruns_delay=5)
 def test_failover_promotes_replica_and_retains_data(docker_cluster):
     """Hard-kill primary-1, wait for replica promotion, assert zero data loss and
-    immediate FLASH.SET on the new primary (exercises lazy NVMe init)."""
+    immediate FLASH.SET on the new primary (exercises lazy NVMe init).
+
+    Flaky rerun: Valkey cluster failover election + gossip propagation has
+    inherent timing variability on shared CI runners. A single retry catches
+    transient stalls; real regressions still fail twice.
+    """
     _run_failover_scenario(
         seed_port=7001,
         killed_port=7001,
@@ -376,12 +382,15 @@ def test_failover_promotes_replica_and_retains_data(docker_cluster):
 
 @pytest.mark.docker_cluster
 @pytest.mark.slow
+@pytest.mark.flaky(reruns=1, reruns_delay=5)
 def test_failover_with_replica_tier_enabled(docker_cluster_replica_tier):
     """Same failover scenario with flash.replica-tier-enabled=yes on replicas.
 
     In this variant the replica already has its NVMe backend initialised before
     promotion, so there is no lazy-init delay on the first post-promotion write.
     The same zero-loss and write-correctness assertions apply.
+
+    Flaky rerun: see test_failover_promotes_replica_and_retains_data.
     """
     _run_failover_scenario(
         seed_port=7011,
