@@ -39,11 +39,21 @@ Use cases where valkey-flash fits well:
 
 It is not the right fit if every request is latency-critical at tail percentiles and the working set comfortably fits in RAM — native Valkey is cheaper and simpler.
 
+## Will it help my workload? — `flash-sizer`
+
+Before installing anything, point [`flash-sizer`](https://github.com/mbocevski/valkey-flash-sizer) at an existing Valkey and find out. The tool is read-only (only `SCAN` + `MEMORY USAGE` + `OBJECT IDLETIME`), samples up to 100 000 keys, and prints a Markdown report with a 95 % Wilson-score confidence interval on the fraction of your working set that's cold enough to tier.
+
+```
+uvx valkey-flash-sizer valkey://my-host:6379
+```
+
+No install, no write path, no phone-home. Sample output: [`tests/golden/report.md`](https://github.com/mbocevski/valkey-flash-sizer/blob/main/tests/golden/report.md).
+
 ## Installation
 
 ### Pre-built binaries
 
-Releases publish `.so` artifacts for linux-x86_64, linux-aarch64, and macos-arm64. Download from [GitHub Releases](https://github.com/mbocevski/valkey-flash/releases) and load with:
+Releases publish `.so` artifacts for linux-x86_64 and linux-aarch64. Download from [GitHub Releases](https://github.com/mbocevski/valkey-flash/releases) and load with:
 
 ```
 valkey-server --loadmodule /path/to/libvalkey_flash.so \
@@ -267,7 +277,7 @@ securityContext:
 | Valkey | unstable, 8.1, 9.0 |
 | Rust (build) | ≥1.90 (edition 2024) |
 | Linux kernel | ≥5.6 (io_uring), ≥5.11 recommended for rootless containers |
-| Platforms (shipped binaries) | linux-x86_64, linux-aarch64, macos-arm64 |
+| Platforms (shipped binaries) | linux-x86_64, linux-aarch64 |
 | Clients | Any RESP-compliant client; cluster-mode required for cluster deployments (tested against valkey-py) |
 
 ## Stability and versioning
