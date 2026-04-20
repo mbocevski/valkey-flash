@@ -1,5 +1,5 @@
 """
-3-node cluster basic integration suite (Task #83).
+3-node cluster basic integration suite.
 
 Two test layers:
   A. @pytest.mark.docker_cluster — happy-path against the real 6-node Docker cluster

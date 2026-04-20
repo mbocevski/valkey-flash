@@ -64,7 +64,9 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         import shutil
         import tempfile
 
-        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_int_", dir=self.testdir)
+        self._flash_dir = os.path.abspath(
+            tempfile.mkdtemp(prefix="flash_repl_int_", dir=self.testdir)
+        )
         flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",
@@ -117,7 +119,7 @@ class TestFlashReplicationIntegration(ReplicationTestCase):
         assert r.client.execute_command("FLASH.HGET", "rep_hash", "f2") == b"v2"
 
     # -------------------------------------------------------------------------
-    # Scenario 2 — post-promotion writes (lazy NVMe init, fix #64)
+    # Scenario 2 — post-promotion writes (lazy NVMe init)
     # -------------------------------------------------------------------------
     def test_post_promotion_writes(self):
         """Promoted replica initialises NVMe backend on REPLICAOF NO ONE and accepts writes."""

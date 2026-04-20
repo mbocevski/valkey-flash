@@ -10,7 +10,7 @@
 # This override:
 #   1. Remaps ports to 7011-7016 so it can run alongside the default cluster.
 #   2. Sets FLASH_REPLICA_TIER_ENABLED=yes on replica nodes so they open their
-#      own NVMe backend (task #82 / spec #68).
+#      own NVMe backend.
 #
 # The `!override` YAML tag on `ports` REPLACES the base compose's ports list
 # instead of appending to it — otherwise both 7001-7006 and 7011-7016 get

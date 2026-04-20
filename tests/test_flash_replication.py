@@ -21,7 +21,7 @@ class TestFlashReplication(ReplicationTestCase):
         import shutil
         import tempfile
 
-        self._flash_dir = tempfile.mkdtemp(prefix="flash_repl_", dir=self.testdir)
+        self._flash_dir = os.path.abspath(tempfile.mkdtemp(prefix="flash_repl_", dir=self.testdir))
         flash_path = os.path.join(self._flash_dir, "primary.bin")
         self.args = {
             "enable-debug-command": "yes",

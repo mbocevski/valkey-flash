@@ -1,5 +1,5 @@
 """
-Redirect-safe dispatch verification for all FLASH.* commands (Task #81).
+Redirect-safe dispatch verification for all FLASH.* commands.
 
 Valkey core handles MOVED/ASK redirects for module commands automatically as long
 as each command's key_spec (first_key, last_key, step) is registered correctly.

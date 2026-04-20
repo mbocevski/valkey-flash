@@ -21,7 +21,7 @@ pub enum Tier<T> {
         backend_offset: u64,
         /// Number of contiguous 4 KiB NVMe blocks occupied.
         num_blocks: u32,
-        /// Serialised byte length of the value, for NVMe reads (task #57).
+        /// Serialised byte length of the value, for NVMe reads.
         value_len: u32,
     },
 }

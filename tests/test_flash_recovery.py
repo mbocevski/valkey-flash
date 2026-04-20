@@ -212,7 +212,7 @@ class TestFlashRecovery(ValkeyFlashTestCase):
         self.server.verify_string_in_logfile("flash: recovery complete: 3 records applied")
 
     # NOTE: stale-cursor integration test (cursor skips records already in RDB)
-    # is deferred to the WAL-wiring task (#58). The cursor-skipping logic is
+    # is deferred to the WAL-wiring work. The cursor-skipping logic is
     # verified by the unit test `recovery::tests::cursor_skips_earlier_records`.
     # Only once FLASH.SET/DEL write WAL records does `current_offset()` naturally
     # advance past them at BGSAVE time, making the integration assertion reliable.

@@ -61,6 +61,10 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 
 - `flash.migration-bandwidth-mbps = 0` now means "unlimited" (previously rejected; minimum was 1).
 - Dependabot now tracks Python test-suite deps via `package-ecosystem: uv` on `pyproject.toml` + `uv.lock` (alongside the existing Cargo, GitHub Actions, and Docker entries).
+- Minimum Python for the integration test suite bumped from 3.11 to 3.12. Python 3.11's `tempfile.mkdtemp(dir=<relative>)` returns a relative path (bpo-44836, fixed in 3.12); our fixtures passed the result to a Popen'd `valkey-server` that was started with `cwd=test-data`, so the double-relative path made the module's WAL open fail with ENOENT on first-test setup. `pyproject.toml` requires-python and ruff target-version both raised; CI runners pinned to 3.12.
+- `Cargo.lock` and `fuzz/Cargo.lock` are now tracked in git (removed from `.gitignore`) for reproducible builds and so the Dockerfile `COPY Cargo.lock` step resolves.
+- Test harness self-bootstraps: `tests/conftest.py` auto-detects `MODULE_PATH` (→ `target/release/libvalkey_flash.so`) and prepends `tests/build/binaries/$SERVER_VERSION/` to `LD_LIBRARY_PATH` when unset. `SERVER_VERSION=9.0 uv run pytest tests/` now works without going through `build.sh` first. CI unchanged (env still set explicitly).
+- macOS CI job removed: `io-uring` is Linux-only and can't compile on macOS; the job was architecturally unsound.
 
 ### Fixed
 
@@ -83,6 +87,7 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 - `FLASH.MIGRATE.PROBE` now accepts hostnames, not just literal IP:port addresses. The old `SocketAddr::parse` path rejected `host.docker.internal` or any DNS name with `ERR FLASH-MIGRATE target ... invalid address`. Connections now go through `ToSocketAddrs`, which resolves hostnames before dialing.
 - `FLASH.DEL` now works on every FLASH.* type (string, hash, list, zset) instead of only flash-strings. Previously a hash / list / zset key rejected FLASH.DEL with WRONGTYPE, even though the module owned the key; callers had to dispatch to a type-specific command to delete. Behaviour now matches Valkey's own `DEL`, which is type-agnostic.
 - Replication of FLASH.LIST and FLASH.ZSET writes (`LPUSH`/`RPUSH`/`LPOP`/`LSET`/`ZADD`/`ZREM`/`ZINCRBY`, …) now has integration coverage and passes end-to-end. The underlying write path was correct — the tests that previously `xfail`'d were spawning a second server via `self.create_server(replicaof=...)` instead of using the framework's `ReplicationTestCase`, which meant the replica got no logfile, no port tracker, and no sync-wait helper, so `FLASH.LRANGE` on the replica was consistently racing the primary's command. The test harness is now correct and all 6 cases pass.
+- Server restart crash after a `BGSAVE` with any `FLASH.ZSET` key present: `zset::rdb_load` called `VM_SignalKeyAsReady` with the IO-time context returned by `VM_GetContextFromIO`, which has no attached client during RDB load. Valkey core then dereferenced `ctx->client->db` — SIGSEGV at `VM_SignalKeyAsReady+0x2b`, server aborted before accepting connections. The signal was only useful for waking `BZPOPMIN`/`BZPOPMAX` clients across a `DEBUG RELOAD` (an edge case those clients handle via their own timer anyway); removed from the load path. Real write paths (`FLASH.ZADD`, `FLASH.ZPOPMIN`, `FLASH.ZUNIONSTORE`, etc.) still signal correctly from their command handlers.
 
 ### Security
 

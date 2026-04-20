@@ -1,5 +1,5 @@
 """
-Cluster-aware module init tests (Task #77).
+Cluster-aware module init tests.
 
 Verifies that the flash module:
   1. Loads successfully on all 6 cluster nodes (3 primaries + 3 replicas).

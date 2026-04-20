@@ -80,8 +80,8 @@ pub struct AuxState {
 
 // ── Module-global loaded aux state ────────────────────────────────────────────
 
-/// Populated by `aux_load` during RDB restore; consumed by the recovery flow
-/// (task #39). Initialised lazily on first access.
+/// Populated by `aux_load` during RDB restore; consumed by the recovery flow.
+/// Initialised lazily on first access.
 pub static LOADED_AUX_STATE: LazyLock<Mutex<Option<AuxState>>> = LazyLock::new(|| Mutex::new(None));
 
 // ── aux_save ──────────────────────────────────────────────────────────────────

@@ -2,9 +2,9 @@
 
 <!-- What changed and why. No line/file count stats. -->
 
-## Related tasks
+## Related issues
 
-<!-- Backlog task IDs, e.g. backlog #42, #108 -->
+<!-- GitHub issue / PR links, e.g. closes #42 -->
 
 ## Checklist
 

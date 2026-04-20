@@ -1,5 +1,5 @@
 """
-Integration tests for FLASH.MIGRATE.PROBE (Task #78).
+Integration tests for FLASH.MIGRATE.PROBE.
 
 Run: pytest tests/test_flash_migrate.py -v
 

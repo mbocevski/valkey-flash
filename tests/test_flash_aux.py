@@ -45,8 +45,8 @@ class TestFlashAux(ValkeyFlashTestCase):
             self.client.execute_command("FLASH.SET", f"aux:{i}", f"v{i}")
         _bgsave_and_restart(self.server)
         info = _aux_info(self.client)
-        # Tiering map is always empty in this version (task #39 will populate it),
-        # but aux state is present and parseable.
+        # Tiering map is always empty in this version; aux state is still
+        # present and parseable.
         assert info.get(b"before.entries") == 0
         assert info.get(b"before.version") == 1
         # Flash keys should still be readable via rdb_load.

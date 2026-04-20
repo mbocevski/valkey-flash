@@ -1,5 +1,5 @@
 """
-Integration tests for flash.replica-tier-enabled (Task #82).
+Integration tests for flash.replica-tier-enabled.
 
 Scenarios 1–4 use bare valkey-server binaries (no Docker required).
 Run: pytest tests/test_flash_replica_tier.py -v

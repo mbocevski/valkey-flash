@@ -5,11 +5,46 @@ import sys
 import pytest
 
 _tests_dir = os.path.abspath(os.path.dirname(__file__))
+_repo_root = os.path.dirname(_tests_dir)
 
 # Make test helpers and the vendored test framework importable
 sys.path.insert(0, _tests_dir)
 sys.path.insert(0, os.path.join(_tests_dir, "build"))
 sys.path.insert(0, os.path.join(_tests_dir, "build/valkeytestframework"))
+
+
+def _autodetect_test_env() -> None:
+    """Populate MODULE_PATH / LD_LIBRARY_PATH from the repo layout when unset.
+
+    CI exports both explicitly, so this is a no-op there. Locally, running
+    `uv run pytest tests/` without going through build.sh is easy to get
+    wrong — a missing MODULE_PATH becomes the literal string 'None' in the
+    loadmodule arg, so valkey-server fails to start and tests fail with an
+    opaque 'server not ready' after a 90-second timeout. Auto-detecting
+    avoids that footgun.
+
+    SERVER_VERSION must be set explicitly (we don't guess which matrix entry
+    the user wants); we only resolve paths that depend on it.
+    """
+    if not os.environ.get("MODULE_PATH"):
+        candidate = os.path.join(_repo_root, "target", "release", "libvalkey_flash.so")
+        if os.path.exists(candidate):
+            os.environ["MODULE_PATH"] = candidate
+
+    server_version = os.environ.get("SERVER_VERSION")
+    if server_version:
+        binaries_dir = os.path.join(_tests_dir, "build", "binaries", server_version)
+        if os.path.isdir(binaries_dir):
+            existing = os.environ.get("LD_LIBRARY_PATH", "")
+            # Prepend if not already present so valkey-server finds its
+            # shared libs (libvalkey.so etc.) without LD_LIBRARY_PATH tricks.
+            if binaries_dir not in existing.split(":"):
+                os.environ["LD_LIBRARY_PATH"] = (
+                    f"{binaries_dir}:{existing}" if existing else binaries_dir
+                )
+
+
+_autodetect_test_env()
 
 # resource_port_tracker is defined in the vendored testframework's conftest.py, which
 # lives in a subdirectory and therefore isn't automatically visible to tests in tests/.

@@ -1,6 +1,6 @@
 # valkey-flash Architecture
 
-This document consolidates the architectural decisions behind valkey-flash. Each section cites the backlog spec and implementation tasks that made the relevant choice; the backlog remains the source of truth for detailed rationale and trade-off analysis.
+This document captures the architectural decisions behind valkey-flash.
 
 ## 1. Overview
 
@@ -50,7 +50,7 @@ valkey-flash is a Valkey module that tiers key/value data to NVMe storage, letti
 
 Background threads: a compaction worker reclaims freed blocks; the WAL flusher thread handles `everysec` fsync; the async I/O thread pool serves cache-miss reads and cold writes via `BlockClient` / `ThreadSafeContext`.
 
-## 3. Data types (spec #10)
+## 3. Data types
 
 **Per-shape types, not a unified type.** Each shape registers its own `ValkeyType` with its own module-type-id, encoding version, and callback set:
 
@@ -59,9 +59,9 @@ Background threads: a compaction worker reclaims freed blocks; the WAL flusher t
 
 Rationale: clean command dispatch, separate RDB layouts (simpler forward-compat when a shape gains features), per-type defrag cursor. The Tier enum is the single source of truth for whether a value is in RAM or NVMe; every callback dispatches on it.
 
-`FlashList` and `FlashZSet` are deferred (`#35` captures the scope decision for a future release).
+`FlashList` and `FlashZSet` are deferred to a future release.
 
-## 4. Storage backend (spec #7, tasks #15 + #18)
+## 4. Storage backend
 
 **File-backed `io_uring`** via the `io-uring` crate. Single backing file at `flash.path`, pre-allocated with `fallocate` to `flash.capacity-bytes`, 4 KiB-aligned blocks with `O_DIRECT`.
 
@@ -72,18 +72,18 @@ Rationale: clean command dispatch, separate RDB layouts (simpler forward-compat 
 
 On-disk record format per value: `[u64 value_len][value bytes][zero padding to 4 KiB boundary]`.
 
-## 5. Cache layer (spec #8, task #19)
+## 5. Cache layer
 
 **S3-FIFO via `quick_cache`** (`quick_cache::sync::Cache`).
 
-- Originally specified as W-TinyLFU; `quick_cache` actually implements S3-FIFO internally. Both are scan-resistant with equivalent hit ratios. Spec #8 was updated in place.
+- Originally specified as W-TinyLFU; `quick_cache` actually implements S3-FIFO internally. Both are scan-resistant with equivalent hit ratios.
 - Interior sharding; no external Mutex needed.
 - Cache decisions are local to each node (primary and replica each maintain their own).
-- Capacity knob: `flash.cache-size-bytes` — mutable at runtime via `CONFIG SET` (handler from `#33`). Shrinking evicts eagerly.
+- Capacity knob: `flash.cache-size-bytes` — mutable at runtime via `CONFIG SET`. Shrinking evicts eagerly.
 
 Hot/cold integration: `FlashCache::get()` is the fast path for `FLASH.GET` (inline reply, no `BlockClient`). On miss, the command hands off to the async I/O pool, reads from `FileIoUringBackend`, promotes the result back to Hot, and replies via `UnblockClient`.
 
-## 6. Async I/O (task #16)
+## 6. Async I/O
 
 A fixed-size thread pool (`src/async_io.rs`) services operations that might block on NVMe.
 
@@ -91,15 +91,15 @@ A fixed-size thread pool (`src/async_io.rs`) services operations that might bloc
 - Task submission via `crossbeam-channel`; workers pull tasks and execute on behalf of a `ValkeyModuleBlockedClient*`.
 - Each worker creates a `ThreadSafeContext` for its reply, calls `UnblockClient` on completion, and frees the context.
 - `catch_unwind` wraps every task body; a panic in one task does not poison the worker thread or leak the blocked client.
-- Command handlers wrap `handle.complete()` in `catch_unwind` too (reviewer advisory from `#16`) — even the completion dispatch can't hang a client.
+- Command handlers wrap `handle.complete()` in `catch_unwind` too — even the completion dispatch can't hang a client.
 
-Loom tests (`#36`) validate the handoff, the race between concurrent `put`/`evict_candidate`/`delete`, WAL append concurrency, and role-change during in-flight writes.
+Loom tests validate the handoff, the race between concurrent `put`/`evict_candidate`/`delete`, WAL append concurrency, and role-change during in-flight writes.
 
-## 7. Durability: WAL + Valkey persistence (specs #9 + #13)
+## 7. Durability: WAL + Valkey persistence
 
 valkey-flash operates two complementary durability layers.
 
-### 7.1 Flash WAL (task #28)
+### 7.1 Flash WAL
 
 A module-local append-only log covering NVMe-side mutations.
 
@@ -116,17 +116,17 @@ A module-local append-only log covering NVMe-side mutations.
 
 **Torn-tail handling:** records that fail CRC on replay truncate the WAL at that offset; prior records apply. Data-file partial 4 KiB writes are detected during recovery by comparing against the WAL post-image for that block.
 
-### 7.2 Valkey RDB + AOF (tasks #25, #26, #27, #51)
+### 7.2 Valkey RDB + AOF
 
-**Per-key `rdb_save`/`rdb_load`** (inline per spec #13). Format: `[u8 encoding_version][u8 shape_tag][i64 ttl_ms (-1=None)][shape-specific payload]`. Loader rejects unknown `encoding_version` (widened-cast check from `#25` to prevent bypass).
+**Per-key `rdb_save`/`rdb_load`**, inline. Format: `[u8 encoding_version][u8 shape_tag][i64 ttl_ms (-1=None)][shape-specific payload]`. Loader rejects unknown `encoding_version` (widened-cast check to prevent bypass).
 
-**`aux_save`/`aux_load`** (task #27) — module-level metadata at `BEFORE_RDB` and `AFTER_RDB`:
+**`aux_save`/`aux_load`** — module-level metadata at `BEFORE_RDB` and `AFTER_RDB`:
 - BEFORE_RDB: tiering map (`key_hash → {Hot | Cold, bytes}`), backend config snapshot, WAL cursor
 - AFTER_RDB: `{saved_at_unix_ms, rdb_crc}` marker
 
 **`aof_rewrite`** emits `FLASH.SET` / `FLASH.HSET` per key with `PXAT <absolute_ms>` for TTL preservation across restart.
 
-### 7.3 Recovery flow (task #39)
+### 7.3 Recovery flow
 
 On module load:
 1. Open the backing file + WAL.
@@ -146,54 +146,52 @@ On module load:
 | `everysec` | ≤ 1 s loss | ≤ 1 s loss |
 | `no` | OS-dependent | OS-dependent on module state; AOF still durable per AOF's config |
 
-## 8. Replication (spec #11, task #29)
+## 8. Replication
 
-**Primary-only tiering by default (v1).** Replicas keep all FLASH keys in RAM; no flash tier on the replica side.
+**Primary-only tiering by default.** Replicas keep all FLASH keys in RAM; no flash tier on the replica side.
 
 - No wire protocol changes — `ctx.replicate("FLASH.SET", full_args)` sends byte-identical commands to replicas.
 - PSYNC / diskless resync compatible — replica materializes every value into RAM as writes arrive.
-- Failover (replica → primary): `on_role_changed` promotes the node. If `flash.replica-tier-enabled=false`, the primary initializes its NVMe backend at promotion time (task `#64`). If `flash.replica-tier-enabled=true`, the backend was already open — no initialization step at all.
+- Failover (replica → primary): `on_role_changed` promotes the node. If `flash.replica-tier-enabled=false`, the primary initializes its NVMe backend at promotion time. If `flash.replica-tier-enabled=true`, the backend was already open — no initialization step at all.
 
-**Opt-in symmetric tiering** (`flash.replica-tier-enabled`, task #82) — immutable config. Each node with it enabled opens its own flash backing file; tier decisions remain local to the node. Required constraint: **each node must have a unique `flash.path`**; there is no file locking.
+**Opt-in symmetric tiering** (`flash.replica-tier-enabled`) — immutable config. Each node with it enabled opens its own flash backing file; tier decisions remain local to the node. Required constraint: **each node must have a unique `flash.path`**; there is no file locking.
 
-## 9. Cluster (spec #12, tasks #77–#82)
+## 9. Cluster
 
-v1 ships full cluster support.
-
-### 9.1 Cluster-aware init (task #77)
+### 9.1 Cluster-aware init
 
 On load: detect cluster mode via `CTX_FLAGS_CLUSTER`. Config knob `flash.cluster-mode-enabled` accepts `auto` (default), `yes`, `no`. Subscribes to `ValkeyModuleEvent_AtomicSlotMigration` (subevent id 19; hardcoded with a graceful-degrade path for pre-9.0 servers whose module crate header hasn't caught up).
 
-### 9.2 Slot migration (spec #67, tasks #78 + #79)
+### 9.2 Slot migration
 
-**Per-key atomic** for v1. Not chunked streaming.
+**Per-key atomic.** Not chunked streaming.
 
-- Source probes target via `FLASH.MIGRATE.PROBE` before migration — verifies flash module loaded, `flash.path` configured, and target has sufficient `free_bytes` for the specific key being migrated (task #96). Probe result cached for 60 s (`flash.migration-probe-cache-sec`).
+- Source probes target via `FLASH.MIGRATE.PROBE` before migration — verifies flash module loaded, `flash.path` configured, and target has sufficient `free_bytes` for the specific key being migrated. Probe result cached for 60 s (`flash.migration-probe-cache-sec`).
 - Keys larger than `flash.migration-max-key-bytes` (default 64 MiB) are skipped from the Phase 1 pre-warm and migrated via the NVMe-read path during the standard MIGRATE — no rejection, just a different code path that avoids doubling RAM pressure.
 - `DUMP/RESTORE` extension uses the same on-disk format as `rdb_save` (encoding_version + shape_tag + ttl_ms + value bytes).
 - **Atomicity:** source keeps ownership until target ACKs the RESTORE. On failure, source retains; nothing is migrated partially.
-- **Throttle** (task #79): `flash.migration-bandwidth-mbps` (default 100, `0` = unlimited, mutable at runtime). Cumulative expected-vs-actual bytes algorithm with microsecond precision — correct even when individual key migrations take sub-millisecond.
+- **Throttle:** `flash.migration-bandwidth-mbps` (default 100, `0` = unlimited, mutable at runtime). Cumulative expected-vs-actual bytes algorithm with microsecond precision — correct even when individual key migrations take sub-millisecond.
 - **Timeout** (`flash.migration-chunk-timeout-sec`, default 30): migration aborted on timeout, source retains.
 
 Error surface (all exact strings in code):
 - `ERR FLASH-MIGRATE target <addr> does not have flash-module loaded`
 - `ERR FLASH-MIGRATE target <addr> has flash-module but flash.path not configured`
-- `ERR FLASH-MIGRATE target <addr> insufficient flash capacity (need N bytes free, has M)` — triggered by the per-key capacity probe (task #96) comparing the key's serialized size against the target's probe-reported `free_bytes` before MIGRATE.
+- `ERR FLASH-MIGRATE target <addr> insufficient flash capacity (need N bytes free, has M)` — triggered by the per-key capacity probe comparing the key's serialized size against the target's probe-reported `free_bytes` before MIGRATE.
 - `ERR FLASH-MIGRATE timeout after Ns`
 
-### 9.3 Redirect-safe dispatch (task #81)
+### 9.3 Redirect-safe dispatch
 
-Valkey core's MOVED/ASK handling works natively for module commands whose `key_spec` is correctly declared. `#81` audited and verified key_specs for all 10 key-bearing FLASH.* commands; cluster-aware clients (valkey-py in cluster mode) transparently follow redirects.
+Valkey core's MOVED/ASK handling works natively for module commands whose `key_spec` is correctly declared. An audit verified key_specs for all 10 key-bearing FLASH.* commands; cluster-aware clients (valkey-py in cluster mode) transparently follow redirects.
 
-### 9.4 Resharding correctness (spec #69, task #84)
+### 9.4 Resharding correctness
 
 Validated under stress: 4 concurrent clients, mixed SET/GET/HSET/HDEL, 1 or 16 simultaneous slot migrations. Zero ACKed data loss, zero stale reads post-migration. Source ownership retained until target ACKs; no torn reads during the migration window.
 
-### 9.5 Failover in cluster (task #86)
+### 9.5 Failover in cluster
 
-`docker kill` on a primary → replica promotes within cluster-node-timeout (5 s). Promoted node immediately serves FLASH.SET (validates #64 lazy init or #82 eager init depending on `replica-tier-enabled`). No data loss for ACKed writes; new writes propagate to remaining replica for that shard.
+`docker kill` on a primary → replica promotes within cluster-node-timeout (5 s). Promoted node immediately serves FLASH.SET (lazy NVMe init when `replica-tier-enabled=false`; already initialized when `true`). No data loss for ACKed writes; new writes propagate to remaining replica for that shard.
 
-## 10. Operational observability (tasks #30 + #80)
+## 10. Operational observability
 
 `INFO flash` section exposes 23 fields. Partial list:
 
@@ -204,31 +202,13 @@ Validated under stress: 4 concurrent clients, mixed SET/GET/HSET/HDEL, 1 or 16 s
 - Cluster: `cluster_mode`, `migration_slots_in_progress`, `migration_bytes_sent`, `migration_bytes_received`, `migration_keys_migrated`, `migration_keys_rejected`, `migration_last_duration_ms`, `migration_errors`, `migration_bandwidth_mbps`
 - State: `module_state` (`recovering|ready|error`)
 
-Keyspace notifications (task #31): `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
+Keyspace notifications: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
 
-ACL (task #32): `@flash` category scopes every FLASH.* command; admin/debug commands are `@admin @dangerous @flash`.
+ACL: `@flash` category scopes every FLASH.* command; admin/debug commands are `@admin @dangerous @flash`.
 
-## 11. Known v1 limitations
+## 11. Known limitations
 
-- **Cold-tier keyed-lookup during RDB save** for very large cold values: inline inclusion in RDB inflates file size (documented tradeoff; v2 can use `aux_save`-based shared backing).
-- **Migration key-size cap**: keys > `flash.migration-max-key-bytes` (default 64 MiB) must be drained manually before reshard; v1.1 will add chunked streaming.
-- **FLASH.HSET TTL on cold hash materialization**: `obj.ttl_ms` round-trips correctly through RDB/AOF (task #62 fix), but `rdb_save` on a Cold hash reconstructs from NVMe blocks — `backend_offset` must be set. Tested.
-- **AOF under instrumented debug builds**: integration-coverage (`#91`) disables AOF tests because debug-speed instrumentation slows server restart enough to race NVMe reinit. Production (release) builds are unaffected.
-
-## 12. Reference matrix
-
-| Topic | Spec task | Primary impl task |
-|---|---|---|
-| Storage backend | `#7` | `#18` |
-| Cache policy | `#8` | `#19` |
-| Crash consistency | `#9` | `#28` (WAL) + `#39` (recovery) |
-| Data type granularity | `#10` | `#20` (registration) |
-| Replication | `#11` | `#29` |
-| Cluster | `#12` | `#77–#82` |
-| RDB/AOF | `#13` | `#25` (RDB) + `#26` (AOF) + `#27` (aux) + `#51` (hash) |
-| Slot migration | `#67` | `#78` + `#79` |
-| Cross-shard replication | `#68` | `#82` |
-| Resharding correctness | `#69` | `#84` |
-| Target-no-flash | `#70` | `#78` (probe) + `#96` (per-key capacity gate) |
-
-For detailed rationale on each decision, read the spec task's attached document.
+- **Cold-tier keyed-lookup during RDB save** for very large cold values: inline inclusion in RDB inflates file size (documented tradeoff; a future revision can use `aux_save`-based shared backing).
+- **Migration key-size cap**: keys > `flash.migration-max-key-bytes` (default 64 MiB) must be drained manually before reshard; chunked streaming is planned.
+- **FLASH.HSET TTL on cold hash materialization**: `obj.ttl_ms` round-trips correctly through RDB/AOF, but `rdb_save` on a Cold hash reconstructs from NVMe blocks — `backend_offset` must be set. Tested.
+- **AOF under instrumented debug builds**: integration-coverage disables AOF tests because debug-speed instrumentation slows server restart enough to race NVMe reinit. Production (release) builds are unaffected.

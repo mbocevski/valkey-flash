@@ -1,5 +1,5 @@
 """
-Resharding-under-load stress suite (Task #84).
+Resharding-under-load stress suite.
 
 Two tests, both @slow and @docker_cluster:
 

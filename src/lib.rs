@@ -155,7 +155,7 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
     //
     // Read the knob first; fall back to flag-based auto-detection for "auto".
     // IS_CLUSTER is set before the SLAVE early-exit so replicas also carry the
-    // correct value (downstream tasks like #82 read it from replica context).
+    // correct value — downstream code reads it from the replica context.
     let cluster_setting = match FLASH_CLUSTER_MODE_ENABLED.lock() {
         Ok(g) => g.clone(),
         Err(e) => {
@@ -391,7 +391,7 @@ fn deinitialize(_ctx: &Context) -> Status {
     // Only compiled when --cfg=coverage is set (cargo llvm-cov --no-report).
     #[cfg(coverage)]
     {
-        extern "C" {
+        unsafe extern "C" {
             fn __llvm_profile_write_file() -> std::os::raw::c_int;
         }
         // SAFETY: __llvm_profile_write_file is internally synchronized per LLVM docs.
