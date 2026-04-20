@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::JoinHandle;
 
-use io_uring::{IoUring, opcode, types};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, bounded};
+use io_uring::{IoUring, opcode, squeue, types};
 use libc::{c_void, fallocate, ftruncate64, posix_memalign};
 
 use super::BlockRange;
@@ -90,11 +92,53 @@ struct IndexEntry {
     num_blocks: u32,
 }
 
+// ── Reactor plumbing ──────────────────────────────────────────────────────────
+//
+// A dedicated reactor thread owns the io_uring ring and drives both halves.
+// Workers (the AsyncThreadPool) and command handlers post `SubmitRequest`s
+// over `submit_tx`; the reactor batches them into SQEs, calls
+// `submit_and_wait(1)` once per batch, and dispatches each CQE back to the
+// requester via a per-request oneshot channel.
+//
+// This replaces the previous `Mutex<IoUring>` that serialised every single
+// NVMe op to queue-depth 1 — now the SQ fills up to `io_uring_entries`
+// concurrently-in-flight and `flash.io-uring-entries` is the real knob.
+
+/// Per-request message from a worker to the reactor.
+///
+/// The `buf` travels with the request so it outlives the in-flight SQE:
+/// the kernel holds a raw pointer to `buf.ptr` between `submit_and_wait`
+/// and the matching CQE, and Rust ownership of the `AlignedBuf` stays
+/// inside the reactor's `in_flight` map for that entire window.
+struct SubmitRequest {
+    kind: RequestKind,
+    byte_offset: u64,
+    buf: AlignedBuf,
+    completion: Sender<StorageResult<AlignedBuf>>,
+}
+
+#[derive(Copy, Clone)]
+enum RequestKind {
+    Read,
+    Write,
+}
+
+/// Reactor-side bookkeeping for each SQE in flight.
+struct InFlight {
+    buf: AlignedBuf,
+    completion: Sender<StorageResult<AlignedBuf>>,
+}
+
 // ── FileIoUringBackend ────────────────────────────────────────────────────────
 
 pub struct FileIoUringBackend {
     file: File,
-    ring: Mutex<IoUring>,
+    /// Inbox into the reactor thread. `None` means the backend is being
+    /// torn down (see `Drop`) — closing the channel tells the reactor to
+    /// finish in-flight work and exit.
+    submit_tx: Option<Sender<SubmitRequest>>,
+    /// Reactor join handle, taken during `Drop`.
+    reactor: Option<JoinHandle<()>>,
     index: Mutex<HashMap<Vec<u8>, IndexEntry>>,
     next_block: AtomicU64,
     capacity_blocks: u64,
@@ -114,10 +158,22 @@ impl FileIoUringBackend {
             ))
         })?;
 
+        // Bounded queue depth: twice the SQ capacity so producers can
+        // enqueue a little past the in-flight window without blocking,
+        // but not so deep that backpressure disappears.
+        let (submit_tx, submit_rx) = bounded::<SubmitRequest>(io_uring_entries as usize * 2);
+        let fd = file.as_raw_fd();
+        let sq_capacity = io_uring_entries as usize;
+        let reactor = std::thread::Builder::new()
+            .name("flash-io-reactor".into())
+            .spawn(move || reactor_loop(submit_rx, ring, fd, sq_capacity))
+            .map_err(|e| StorageError::Other(format!("spawn flash-io-reactor: {e}")))?;
+
         let capacity_blocks = capacity_bytes / BLOCK_SIZE as u64;
         Ok(FileIoUringBackend {
             file,
-            ring: Mutex::new(ring),
+            submit_tx: Some(submit_tx),
+            reactor: Some(reactor),
             index: Mutex::new(HashMap::new()),
             next_block: AtomicU64::new(0),
             capacity_blocks,
@@ -353,8 +409,8 @@ impl FileIoUringBackend {
     pub fn read_at_offset(&self, backend_offset: u64, value_len: u32) -> StorageResult<Vec<u8>> {
         let num_blocks = Self::blocks_needed(value_len as usize);
         let buf_size = num_blocks as usize * BLOCK_SIZE;
-        let mut buf = AlignedBuf::new(buf_size)?;
-        self.do_read(backend_offset, &mut buf)?;
+        let buf = AlignedBuf::new(buf_size)?;
+        let buf = self.do_read(backend_offset, buf)?;
         let slice = buf.as_slice();
         let len_bytes: [u8; 8] = slice[..8]
             .try_into()
@@ -368,54 +424,42 @@ impl FileIoUringBackend {
         Ok(slice[8..8 + stored_len].to_vec())
     }
 
-    /// Submit one sqe and wait for its cqe; return `cqe.result()`.
-    fn submit_and_await(ring: &mut IoUring, entry: io_uring::squeue::Entry) -> StorageResult<i32> {
-        // SAFETY: the buffer referenced by `entry` must outlive this call.
-        // All callers keep the AlignedBuf alive for the duration.
-        unsafe { ring.submission().push(&entry) }
-            .map_err(|e| StorageError::Other(format!("sqe push failed: {e}")))?;
-        ring.submit_and_wait(1)
-            .map_err(|e| StorageError::Other(format!("io_uring submit: {e}")))?;
-        let cqe = ring
-            .completion()
-            .next()
-            .ok_or_else(|| StorageError::Other("no cqe returned".into()))?;
-        Ok(cqe.result())
+    /// Submit a read to the reactor and block until the matching CQE
+    /// returns. The buffer round-trips through the reactor so the kernel's
+    /// raw pointer stays valid for the full SQE lifetime.
+    fn do_read(&self, byte_offset: u64, buf: AlignedBuf) -> StorageResult<AlignedBuf> {
+        self.submit_blocking(RequestKind::Read, byte_offset, buf)
     }
 
-    fn do_read(&self, byte_offset: u64, buf: &mut AlignedBuf) -> StorageResult<()> {
-        let fd = types::Fd(self.file.as_raw_fd());
-        let entry = opcode::Read::new(fd, buf.ptr, buf.size as u32)
-            .offset(byte_offset)
-            .build()
-            .user_data(0);
-        let mut ring = self
-            .ring
-            .lock()
-            .map_err(|e| StorageError::Other(format!("ring lock poisoned: {e}")))?;
-        let result = Self::submit_and_await(&mut ring, entry)?;
-        if result < 0 {
-            return Err(StorageError::Io(std::io::Error::from_raw_os_error(-result)));
-        }
-        Ok(())
+    /// Submit a write. Ownership of the buffer moves into the reactor; it
+    /// comes back through the completion channel so callers can free it or
+    /// reuse it after confirmation.
+    fn do_write(&self, byte_offset: u64, buf: AlignedBuf) -> StorageResult<AlignedBuf> {
+        self.submit_blocking(RequestKind::Write, byte_offset, buf)
     }
 
-    fn do_write(&self, byte_offset: u64, buf: &AlignedBuf) -> StorageResult<()> {
-        let fd = types::Fd(self.file.as_raw_fd());
-        // SAFETY: buf lives for the duration of submit_and_await.
-        let entry = opcode::Write::new(fd, buf.ptr, buf.size as u32)
-            .offset(byte_offset)
-            .build()
-            .user_data(0);
-        let mut ring = self
-            .ring
-            .lock()
-            .map_err(|e| StorageError::Other(format!("ring lock poisoned: {e}")))?;
-        let result = Self::submit_and_await(&mut ring, entry)?;
-        if result < 0 {
-            return Err(StorageError::Io(std::io::Error::from_raw_os_error(-result)));
-        }
-        Ok(())
+    fn submit_blocking(
+        &self,
+        kind: RequestKind,
+        byte_offset: u64,
+        buf: AlignedBuf,
+    ) -> StorageResult<AlignedBuf> {
+        let (completion_tx, completion_rx) = bounded::<StorageResult<AlignedBuf>>(1);
+        let submit_tx = self
+            .submit_tx
+            .as_ref()
+            .ok_or_else(|| StorageError::Other("io_uring reactor is closed".into()))?;
+        submit_tx
+            .send(SubmitRequest {
+                kind,
+                byte_offset,
+                buf,
+                completion: completion_tx,
+            })
+            .map_err(|_| StorageError::Other("io_uring reactor is gone".into()))?;
+        completion_rx
+            .recv()
+            .map_err(|_| StorageError::Other("io_uring reactor dropped completion".into()))?
     }
 
     /// Encode and write `value` at block `block_offset`.
@@ -428,15 +472,18 @@ impl FileIoUringBackend {
         slice[..8].copy_from_slice(&(value.len() as u64).to_le_bytes());
         slice[8..8 + value.len()].copy_from_slice(value);
         let byte_offset = block_offset * BLOCK_SIZE as u64;
-        self.do_write(byte_offset, &buf)
+        // Buffer ownership moves into the reactor and comes back via the
+        // completion channel; we drop it here once the write is durable.
+        self.do_write(byte_offset, buf)?;
+        Ok(())
     }
 
     /// Read value stored at `entry`.
     fn read_value_at(&self, entry: &IndexEntry) -> StorageResult<Vec<u8>> {
         let buf_size = entry.num_blocks as usize * BLOCK_SIZE;
-        let mut buf = AlignedBuf::new(buf_size)?;
+        let buf = AlignedBuf::new(buf_size)?;
         let byte_offset = entry.block_offset * BLOCK_SIZE as u64;
-        self.do_read(byte_offset, &mut buf)?;
+        let buf = self.do_read(byte_offset, buf)?;
         let slice = buf.as_slice();
         let len_bytes: [u8; 8] = slice[..8]
             .try_into()
@@ -449,6 +496,129 @@ impl FileIoUringBackend {
             )));
         }
         Ok(slice[8..8 + stored_len].to_vec())
+    }
+}
+
+impl Drop for FileIoUringBackend {
+    fn drop(&mut self) {
+        // Close the submit channel so the reactor drains in-flight work
+        // and exits cleanly. Then join to guarantee the thread is gone
+        // before our fields (file, etc.) drop.
+        self.submit_tx.take();
+        if let Some(handle) = self.reactor.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+// ── io_uring reactor thread ───────────────────────────────────────────────────
+//
+// Owns the `IoUring`. Workers post `SubmitRequest`s through the bounded
+// `inbox` channel; each tick the reactor drains as many as fit in the SQ,
+// pushes SQEs (user_data = in_flight map key), calls `submit_and_wait(1)`,
+// and dispatches every ready CQE back through the per-request completion.
+//
+// `user_data` never collides: we wrap the id at u64::MAX (a realistic
+// never-in-practice bound) and skip 0, which the crate reserves as a
+// "cancelled / no-data" sentinel.
+fn reactor_loop(inbox: Receiver<SubmitRequest>, mut ring: IoUring, fd: RawFd, sq_capacity: usize) {
+    let fd_t = types::Fd(fd);
+    let mut in_flight: HashMap<u64, InFlight> = HashMap::new();
+    let mut next_id: u64 = 1;
+
+    loop {
+        // Fill the SQ with as many requests as we have backpressure for.
+        while in_flight.len() < sq_capacity {
+            let req = if in_flight.is_empty() {
+                // Nothing in flight — block for work; exit on shutdown.
+                match inbox.recv() {
+                    Ok(r) => r,
+                    Err(_) => return,
+                }
+            } else {
+                match inbox.try_recv() {
+                    Ok(r) => r,
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break, // drain remaining in-flight
+                }
+            };
+
+            let id = next_id;
+            next_id = next_id.wrapping_add(1).max(1); // skip 0
+
+            let entry: squeue::Entry = match req.kind {
+                RequestKind::Read => opcode::Read::new(fd_t, req.buf.ptr, req.buf.size as u32)
+                    .offset(req.byte_offset)
+                    .build()
+                    .user_data(id),
+                RequestKind::Write => opcode::Write::new(fd_t, req.buf.ptr, req.buf.size as u32)
+                    .offset(req.byte_offset)
+                    .build()
+                    .user_data(id),
+            };
+
+            // SAFETY: req.buf lives in the in_flight map until the CQE
+            // returns, so the raw pointer in the SQE remains valid for
+            // the kernel's DMA window.
+            if unsafe { ring.submission().push(&entry) }.is_err() {
+                // SQ reported full despite our capacity check — shouldn't
+                // happen, but handle it gracefully rather than panic. Let
+                // the caller retry by surfacing an error.
+                let _ = req.completion.send(Err(StorageError::Other(
+                    "io_uring SQ push failed (full?)".into(),
+                )));
+                continue;
+            }
+            in_flight.insert(
+                id,
+                InFlight {
+                    buf: req.buf,
+                    completion: req.completion,
+                },
+            );
+        }
+
+        if in_flight.is_empty() {
+            // Channel closed and every SQE has completed — reactor done.
+            return;
+        }
+
+        match ring.submit_and_wait(1) {
+            Ok(_) => {}
+            Err(e) if e.raw_os_error() == Some(libc::EINTR) => continue,
+            Err(e) => {
+                // Unrecoverable: fail every in-flight request so callers
+                // don't hang, then exit. A fresh backend is needed.
+                let msg = format!("io_uring submit_and_wait: {e}");
+                for (_, entry) in in_flight.drain() {
+                    let _ = entry.completion.send(Err(StorageError::Other(msg.clone())));
+                }
+                return;
+            }
+        }
+
+        let cq = ring.completion();
+        for cqe in cq {
+            let id = cqe.user_data();
+            let Some(entry) = in_flight.remove(&id) else {
+                continue;
+            };
+            let result = cqe.result();
+            let payload = if result < 0 {
+                Err(StorageError::Io(std::io::Error::from_raw_os_error(-result)))
+            } else if (result as usize) < entry.buf.size {
+                // Partial I/O is impossible on O_DIRECT aligned reads/
+                // writes against a regular file, but surface it as an
+                // error rather than silently truncating the buffer.
+                Err(StorageError::Other(format!(
+                    "io_uring short io: {result} < {}",
+                    entry.buf.size
+                )))
+            } else {
+                Ok(entry.buf)
+            };
+            let _ = entry.completion.send(payload);
+        }
     }
 }
 
