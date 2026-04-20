@@ -693,11 +693,20 @@ jobs:
             --ignore=tests/test_flash_aof.py \
             --maxfail=5 \
             -q --tb=short
-    - name: Generate lcov report and enforce coverage gate
+    - name: Generate lcov report
+      # Always emit partial coverage, even on test failure, so codecov gets
+      # data on every run (deltas stay useful on red builds). Gate-check is
+      # a separate step below that only runs when tests pass.
+      if: always()
       run: |
         cargo llvm-cov report \
           --lcov \
           --output-path lcov.info \
+          --object target/llvm-cov-target/debug/libvalkey_flash.so \
+          --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
+    - name: Enforce coverage gate
+      run: |
+        cargo llvm-cov report \
           --object target/llvm-cov-target/debug/libvalkey_flash.so \
           --fail-under-lines 79 \
           --fail-under-functions 82 \
