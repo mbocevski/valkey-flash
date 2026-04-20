@@ -74,7 +74,12 @@ pub unsafe extern "C" fn free(value: *mut c_void) {
                 storage.release_cold_blocks(backend_offset, num_blocks);
             }
             // WAL tombstone: prevents recovery from re-promoting this key after a crash.
-            if let Some(wal) = crate::WAL.get() {
+            // Skip during LOADING — Valkey frees intermediate values while replaying
+            // AOF/RDB (e.g. AOF repeats SET k v1 then SET k v2 → v1 is freed), and
+            // appending Deletes for those would corrupt the WAL for the next restart.
+            if !crate::replication::is_loading()
+                && let Some(wal) = crate::WAL.get()
+            {
                 let _ = wal.append(crate::storage::wal::WalOp::Delete { key_hash });
             }
             // Remove from TIERING_MAP so recovery is not confused by a stale entry.

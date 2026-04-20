@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use valkey_module::{Context, ContextFlags};
-use valkey_module_macros::role_changed_event_handler;
+use valkey_module_macros::{loading_event_handler, role_changed_event_handler};
 
-use valkey_module::server_events::ServerRole;
+use valkey_module::server_events::{LoadingSubevent, ServerRole};
 
 /// `true` when this instance is currently operating as a Valkey replica.
 ///
@@ -16,6 +16,40 @@ pub static IS_REPLICA: AtomicBool = AtomicBool::new(false);
 #[inline]
 pub fn is_replica() -> bool {
     IS_REPLICA.load(Ordering::Acquire)
+}
+
+/// `true` while the server is replaying RDB / AOF / replication stream.
+///
+/// Set on `LoadingSubevent::{RdbStarted, ReplStarted, AofStarted}`, cleared on
+/// `{Ended, Failed}`. Queryable without a `Context`, which is important for
+/// callbacks like `free` that Valkey invokes without one — unlike
+/// `ContextFlags::LOADING` which requires a live context.
+pub static IS_LOADING: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` if the server is in RDB / AOF / replication load.
+#[inline]
+pub fn is_loading() -> bool {
+    IS_LOADING.load(Ordering::Acquire)
+}
+
+/// Server-event callback fired on every phase of the loading lifecycle.
+///
+/// During LOADING, the module must not append to its operational WAL — the
+/// events observed are replay side-effects of the existing state, not fresh
+/// mutations. Writing them would produce a WAL that records deletions the
+/// next recovery pass shouldn't see, corrupting subsequent restarts.
+#[loading_event_handler]
+fn on_loading_event(_ctx: &Context, sub: LoadingSubevent) {
+    match sub {
+        LoadingSubevent::RdbStarted
+        | LoadingSubevent::AofStarted
+        | LoadingSubevent::ReplStarted => {
+            IS_LOADING.store(true, Ordering::Release);
+        }
+        LoadingSubevent::Ended | LoadingSubevent::Failed => {
+            IS_LOADING.store(false, Ordering::Release);
+        }
+    }
 }
 
 /// Returns `true` if the command must be obeyed unconditionally — i.e., it
