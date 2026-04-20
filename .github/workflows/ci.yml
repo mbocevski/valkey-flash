@@ -698,8 +698,6 @@ jobs:
           MODULE_PATH="$PWD/target/llvm-cov-target/debug/libvalkey_flash.so" \
           uv run pytest tests/ \
             --ignore=tests/test_docker_smoke.py \
-            --ignore=tests/test_flash_acl.py \
-            --ignore=tests/test_flash_aof.py \
             --maxfail=5 \
             -q --tb=short
     - name: Generate lcov report
@@ -719,17 +717,20 @@ jobs:
           --output-path lcov.info \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
     - name: Enforce coverage gate
-      # Thresholds dropped to match current reality (~47% lines / ~62%
-      # functions on the main branch). Previously at 79/82, achieved at
-      # commit 11b36c5 with ~10.5k LOC; src/ is now ~18.7k LOC after the
-      # list/zset types and zrange/zpop/zstore commands landed without
-      # proportional test growth, plus metrics.rs registers 0% which is
-      # likely a measurement bug, not missing tests. Tracked for follow-up
-      # in the backlog — this gate is a floor, not a target.
+      # Integration-test coverage used to be silently dropped: the test
+      # fixture reached teardown by SIGKILLing the server, which killed
+      # the process before the module's `deinitialize` hook could flush
+      # LLVM profile counters. Issuing a graceful SHUTDOWN NOSAVE first
+      # restores integration coverage for every file only reached via a
+      # running server (metrics.rs went from 0% → 88%). Thresholds set
+      # ~2pp below the observed combined unit+integration numbers to
+      # absorb run-to-run variance. CLAUDE.md still targets ≥85% — the
+      # remaining gap is mostly cluster-migration paths that the
+      # Coverage job skips (docker-cluster runs elsewhere).
       run: |
         cargo llvm-cov report \
-          --fail-under-lines 45 \
-          --fail-under-functions 60 \
+          --fail-under-lines 78 \
+          --fail-under-functions 82 \
           --ignore-filename-regex '(src/wrapper/|/fuzz/|tests/build/)'
     - name: Upload to Codecov
       if: always()
@@ -737,6 +738,7 @@ jobs:
       with:
         files: lcov.info
         fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
     - name: Capture valkey-server logs on failure
       if: failure()
       run: |
