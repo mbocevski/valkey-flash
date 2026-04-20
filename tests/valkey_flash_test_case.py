@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shutil
 import tempfile
@@ -50,18 +51,24 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # Drop the per-test flash directory so test-data/ doesn't balloon by
         # `capacity-bytes` for every test the session runs.
         shutil.rmtree(self.flash_dir, ignore_errors=True)
-        # Force-kill the server if the framework's shutdown failed: leaked
-        # valkey-server processes accumulate io_uring rings, and a long suite
-        # run eventually hits per-user kernel limits ("io_uring unavailable:
-        # Cannot allocate memory"). ValkeyTestCase only logs "SHUTDOWN was
-        # unsuccessful" and moves on.
+        # Graceful shutdown first: issues `SHUTDOWN NOSAVE` and waits for the
+        # process to exit. This lets the module's `deinitialize` hook run —
+        # which joins background threads, closes the io_uring, and (when the
+        # module is built with `--cfg=coverage`) flushes LLVM profile counters
+        # to `LLVM_PROFILE_FILE`. Without this the Coverage CI job had 0%
+        # reported for any code path only reachable via a running server
+        # (notably INFO flash in `metrics.rs`).
+        with contextlib.suppress(Exception):
+            self.server.exit()
+        # Force-kill fallback if graceful shutdown didn't reap the process:
+        # leaked valkey-server processes accumulate io_uring rings, and a long
+        # suite run eventually hits per-user kernel limits ("io_uring
+        # unavailable: Cannot allocate memory").
         server_proc = getattr(self.server, "server", None)
         if server_proc is not None and server_proc.poll() is None:
-            try:
+            with contextlib.suppress(Exception):
                 server_proc.kill()
                 server_proc.wait(timeout=5)
-            except Exception:
-                pass
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
