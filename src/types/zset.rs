@@ -277,9 +277,11 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
                 value_len,
                 ..
             } => {
+                // rdb_save runs inside the forked BGSAVE child; use the
+                // fork-safe pread path to avoid touching the parent's ring.
                 match crate::STORAGE
                     .get()
-                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
                     .and_then(|b| zset_deserialize(&b))
                 {
                     Some(z) => {

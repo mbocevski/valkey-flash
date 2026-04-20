@@ -116,10 +116,10 @@ pub unsafe extern "C" fn mem_usage2(
 /// Wire format (v1):
 ///   [u64 encoding_version = 1][u64 shape_tag = 0x01][i64 ttl_ms|-1][string_buffer value]
 ///
-/// Cold-tier objects: NVMe fetch is not possible here because `rdb_save` does not
-/// receive the key. No code currently transitions keys to `Tier::Cold`, so this
-/// branch is unreachable today. If reached, an empty value is written with a
-/// warning — future work (demotion) must store the key in `Tier::Cold`.
+/// Cold tier: materialize the value from NVMe using the offset + length stored
+/// in the Cold variant, then emit it the same as a Hot value. Uses the fork-
+/// safe `pread_at_offset` path — `rdb_save` runs inside the forked BGSAVE
+/// child, where the parent's io_uring ring is not safe to share.
 pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_void) {
     unsafe {
         // SAFETY: value was allocated by Box::into_raw(Box::new(FlashStringObject {...}))
@@ -141,10 +141,9 @@ pub unsafe extern "C" fn rdb_save(io: *mut raw::RedisModuleIO, value: *mut c_voi
                 value_len,
                 ..
             } => {
-                // Fetch the value from NVMe using the offset stored in the Cold variant.
                 match crate::STORAGE
                     .get()
-                    .and_then(|s| s.read_at_offset(*backend_offset, *value_len).ok())
+                    .and_then(|s| s.pread_at_offset(*backend_offset, *value_len).ok())
                 {
                     Some(bytes) => raw::save_slice(io, &bytes),
                     None => {
