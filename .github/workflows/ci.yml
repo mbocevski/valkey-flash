@@ -595,6 +595,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       SERVER_VERSION: unstable
     steps:

@@ -429,33 +429,11 @@ pub unsafe extern "C" fn rdb_load(io: *mut raw::RedisModuleIO, encver: i32) -> *
         Some(ttl_raw)
     };
 
-    let obj = Box::into_raw(Box::new(FlashZSetObject {
+    Box::into_raw(Box::new(FlashZSetObject {
         tier: Tier::Hot(inner),
         ttl_ms,
     }))
-    .cast::<c_void>();
-
-    // Signal key-ready so BZPOPMIN/BZPOPMAX clients waiting on this key
-    // wake up. Relevant for DEBUG RELOAD / live in-process RDB round-trips.
-    // Only signal non-empty sets — empty sets can't unblock a pop.
-    #[cfg(not(test))]
-    unsafe {
-        if count > 0
-            && let (Some(get_key_fn), Some(get_ctx_fn), Some(signal_fn)) = (
-                raw::RedisModule_GetKeyNameFromIO,
-                raw::RedisModule_GetContextFromIO,
-                raw::RedisModule_SignalKeyAsReady,
-            )
-        {
-            let ctx = get_ctx_fn(io);
-            let key_name = get_key_fn(io);
-            if !ctx.is_null() && !key_name.is_null() {
-                signal_fn(ctx, key_name as *mut _);
-            }
-        }
-    }
-
-    obj
+    .cast::<c_void>()
 }
 
 /// # Safety
