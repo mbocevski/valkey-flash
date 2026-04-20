@@ -346,6 +346,49 @@ mod tests {
         // Release the worker so threads can clean up.
         let _ = release_tx.send(());
     }
+
+    // ── shutdown_drops_sender_and_joins_workers ───────────────────────────
+    // `shutdown()` must close the channel (workers exit their `recv` loop)
+    // and join the worker threads. Subsequent submits must fail cleanly
+    // rather than hang or panic — this protects MODULE UNLOAD from a SIGSEGV
+    // on a worker still alive after dlclose.
+    #[test]
+    fn shutdown_drops_sender_and_joins_workers() {
+        let pool = AsyncThreadPool::new(2);
+
+        // Sanity: a pre-shutdown submit works.
+        let (h, rx) = make_handle();
+        pool.submit(h, || Ok(b"pre".to_vec())).unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap(),
+            b"pre".to_vec()
+        );
+
+        pool.shutdown();
+
+        // After shutdown the sender is gone — submit must return Closed.
+        let (h, _rx) = make_handle();
+        let err = pool.submit(h, || Ok(vec![]));
+        assert!(
+            matches!(err, Err(PoolError::Closed)),
+            "submit after shutdown must return PoolError::Closed, got {err:?}"
+        );
+
+        // submit_or_complete must surface the error via the handle rather
+        // than return — the client-already-blocked contract.
+        let (h, rx) = make_handle();
+        pool.submit_or_complete(h, || Ok(vec![]));
+        let result = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("submit_or_complete must complete the handle synchronously post-shutdown");
+        assert!(
+            result.is_err(),
+            "expected Err via completion handle after shutdown"
+        );
+
+        // shutdown is idempotent: a second call must be a no-op, not a panic.
+        pool.shutdown();
+    }
 }
 
 // ── Loom concurrency model tests ──────────────────────────────────────────────
