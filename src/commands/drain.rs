@@ -1,0 +1,274 @@
+//! `FLASH.DRAIN [MATCH pattern] [COUNT n] [FORCE]` — scans the keyspace and
+//! converts every matching FLASH.* key to its native counterpart via
+//! `FLASH.CONVERT`. The entry point for operators preparing to
+//! `MODULE UNLOAD flash`: Valkey refuses unload while custom-type keys exist,
+//! so DRAIN is run first to clear the flash tier.
+//!
+//! Semantics:
+//!   - Without options: one synchronous sweep, returns summary counts.
+//!   - `MATCH <glob>` filters candidate keys by name (same glob syntax as SCAN).
+//!   - `COUNT <n>` caps converted keys per invocation (operators script the loop).
+//!   - `FORCE` bypasses the headroom guard which otherwise refuses when
+//!     projected post-conversion RAM exceeds `maxmemory`.
+//!
+//! Reply shape: array `[converted, skipped, errors, scanned]` so callers get a
+//! structured breakdown without parsing strings.
+
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use valkey_module::{
+    Context, KeysCursor, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue, logging,
+};
+
+use crate::commands::convert::{self, CONVERT_TOTAL};
+use crate::commands::zset_common::glob_match;
+
+// ── Observable state ──────────────────────────────────────────────────────────
+
+/// Set while a drain is in flight. Visible via `INFO flash` as
+/// `flash_drain_in_progress`.
+pub static DRAIN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+/// Outcome counters from the last completed DRAIN. Useful for post-mortem
+/// inspection via `INFO flash` after a drain returns.
+pub static DRAIN_LAST_CONVERTED: AtomicU64 = AtomicU64::new(0);
+pub static DRAIN_LAST_SKIPPED: AtomicU64 = AtomicU64::new(0);
+pub static DRAIN_LAST_ERRORS: AtomicU64 = AtomicU64::new(0);
+pub static DRAIN_LAST_SCANNED: AtomicU64 = AtomicU64::new(0);
+
+// ── Parsing ───────────────────────────────────────────────────────────────────
+
+struct Opts {
+    pattern: Option<Vec<u8>>,
+    count: Option<u64>,
+    force: bool,
+}
+
+fn parse_opts(args: &[ValkeyString]) -> Result<Opts, ValkeyError> {
+    let mut pattern: Option<Vec<u8>> = None;
+    let mut count: Option<u64> = None;
+    let mut force = false;
+    let mut i = 1usize;
+
+    while i < args.len() {
+        let tok = args[i].as_slice();
+        if tok.eq_ignore_ascii_case(b"MATCH") {
+            if i + 1 >= args.len() {
+                return Err(ValkeyError::WrongArity);
+            }
+            pattern = Some(args[i + 1].as_slice().to_vec());
+            i += 2;
+        } else if tok.eq_ignore_ascii_case(b"COUNT") {
+            if i + 1 >= args.len() {
+                return Err(ValkeyError::WrongArity);
+            }
+            let raw = std::str::from_utf8(args[i + 1].as_slice()).map_err(|_| {
+                ValkeyError::Str("ERR FLASH.DRAIN: COUNT must be a non-negative integer")
+            })?;
+            let n: u64 = raw.parse().map_err(|_| {
+                ValkeyError::Str("ERR FLASH.DRAIN: COUNT must be a non-negative integer")
+            })?;
+            count = Some(n);
+            i += 2;
+        } else if tok.eq_ignore_ascii_case(b"FORCE") {
+            force = true;
+            i += 1;
+        } else {
+            return Err(ValkeyError::Str("ERR FLASH.DRAIN: unknown option"));
+        }
+    }
+
+    Ok(Opts {
+        pattern,
+        count,
+        force,
+    })
+}
+
+// ── Command handler ───────────────────────────────────────────────────────────
+
+pub fn flash_drain_command(ctx: &Context, args: Vec<ValkeyString>) -> ValkeyResult {
+    let opts = parse_opts(&args)?;
+
+    // Defensive: FLASH.DRAIN runs on the main event-loop thread, so nothing else
+    // can execute concurrently. The flag is primarily an observability signal.
+    if DRAIN_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        return Err(ValkeyError::Str(
+            "ERR FLASH.DRAIN: drain already in progress",
+        ));
+    }
+
+    let result = run_drain(ctx, opts);
+
+    DRAIN_IN_PROGRESS.store(false, Ordering::Release);
+
+    result
+}
+
+// ── Drain loop ────────────────────────────────────────────────────────────────
+
+fn run_drain(ctx: &Context, opts: Opts) -> ValkeyResult {
+    if !opts.force
+        && let Err(e) = check_headroom(ctx)
+    {
+        return Err(e);
+    }
+
+    // Pass 1 — SCAN the keyspace, collect names matching the pattern.
+    // We intentionally defer the FLASH-type check to pass 2: the scan callback
+    // receives `Option<&ValkeyKey>` but inspecting the type here inside the
+    // scan would hold the internal key lock longer than needed and conflict
+    // with pass-2 mutations. Filtering in pass 2 also gracefully handles keys
+    // that evaporate between passes.
+    let candidates = scan_keys(ctx, opts.pattern.as_deref());
+
+    // Pass 2 — convert each candidate. Stop at COUNT.
+    let limit = opts.count.unwrap_or(u64::MAX);
+    let mut converted: u64 = 0;
+    let mut skipped: u64 = 0;
+    let mut errors: u64 = 0;
+    let mut scanned: u64 = 0;
+
+    for name_bytes in candidates {
+        if converted >= limit {
+            break;
+        }
+        scanned += 1;
+        let key = ctx.create_string(name_bytes);
+
+        match convert::extract_payload(ctx, &key) {
+            Ok(None) => {
+                // Key vanished, is native, or is another module's type — all
+                // valid "nothing to do" cases.
+                skipped += 1;
+            }
+            Ok(Some(payload)) => match convert::apply_conversion(ctx, &key, payload) {
+                Ok(()) => {
+                    converted += 1;
+                    CONVERT_TOTAL.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    errors += 1;
+                    logging::log_warning(
+                        format!(
+                            "flash: FLASH.DRAIN: convert failed on key {}: {}",
+                            String::from_utf8_lossy(key.as_slice()),
+                            e
+                        )
+                        .as_str(),
+                    );
+                }
+            },
+            Err(e) => {
+                errors += 1;
+                logging::log_warning(
+                    format!(
+                        "flash: FLASH.DRAIN: extract failed on key {}: {}",
+                        String::from_utf8_lossy(key.as_slice()),
+                        e
+                    )
+                    .as_str(),
+                );
+            }
+        }
+    }
+
+    // Publish summary so operators can correlate DRAIN outcomes via INFO flash
+    // after the command returns.
+    DRAIN_LAST_CONVERTED.store(converted, Ordering::Relaxed);
+    DRAIN_LAST_SKIPPED.store(skipped, Ordering::Relaxed);
+    DRAIN_LAST_ERRORS.store(errors, Ordering::Relaxed);
+    DRAIN_LAST_SCANNED.store(scanned, Ordering::Relaxed);
+
+    Ok(ValkeyValue::Array(vec![
+        ValkeyValue::Integer(converted as i64),
+        ValkeyValue::Integer(skipped as i64),
+        ValkeyValue::Integer(errors as i64),
+        ValkeyValue::Integer(scanned as i64),
+    ]))
+}
+
+fn scan_keys(ctx: &Context, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+    let cursor = KeysCursor::new();
+    let collected: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
+
+    let cb = |_ctx: &Context, name: ValkeyString, _k: Option<&valkey_module::key::ValkeyKey>| {
+        let bytes = name.as_slice().to_vec();
+        if let Some(p) = pattern
+            && !glob_match(p, &bytes)
+        {
+            return;
+        }
+        collected.borrow_mut().push(bytes);
+    };
+
+    while cursor.scan(ctx, &cb) {}
+    collected.into_inner()
+}
+
+// ── Headroom guard ────────────────────────────────────────────────────────────
+
+/// Refuse the drain if a complete Cold-tier materialisation would push
+/// `used_memory` past `maxmemory`.
+///
+/// The guard is intentionally pessimistic: it assumes every NVMe byte will
+/// become a live RAM byte, which overestimates when the operator used
+/// `MATCH` to target a subset. That's the safer bias — false refusals cost
+/// an operator one `FORCE` flag, a silent OOM costs a cluster.
+fn check_headroom(ctx: &Context) -> Result<(), ValkeyError> {
+    let info = ctx.server_info("memory");
+    let Some(used) = info
+        .field("used_memory")
+        .and_then(|s| s.try_as_str().ok().and_then(|t| t.parse::<u64>().ok()))
+    else {
+        logging::log_warning(
+            "flash: FLASH.DRAIN: could not read used_memory; skipping headroom guard",
+        );
+        return Ok(());
+    };
+    let Some(maxmem) = info
+        .field("maxmemory")
+        .and_then(|s| s.try_as_str().ok().and_then(|t| t.parse::<u64>().ok()))
+    else {
+        // No maxmemory field → treat as unlimited.
+        return Ok(());
+    };
+    if maxmem == 0 {
+        // maxmemory=0 is the "no limit" sentinel.
+        return Ok(());
+    }
+
+    let storage_used = crate::STORAGE
+        .get()
+        .map(|s| {
+            const BLOCK: u64 = 4096;
+            s.next_block_snapshot() * BLOCK
+        })
+        .unwrap_or(0);
+
+    let projected = used.saturating_add(storage_used);
+    if projected > maxmem {
+        return Err(ValkeyError::String(format!(
+            "ERR FLASH.DRAIN would exceed maxmemory \
+             (used_memory={used} + projected_cold={storage_used} > maxmemory={maxmem}); \
+             pass FORCE to override"
+        )));
+    }
+    Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drain_counters_are_readable() {
+        let _ = DRAIN_IN_PROGRESS.load(Ordering::Relaxed);
+        let _ = DRAIN_LAST_CONVERTED.load(Ordering::Relaxed);
+        let _ = DRAIN_LAST_SKIPPED.load(Ordering::Relaxed);
+        let _ = DRAIN_LAST_ERRORS.load(Ordering::Relaxed);
+        let _ = DRAIN_LAST_SCANNED.load(Ordering::Relaxed);
+    }
+}
