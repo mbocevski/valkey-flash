@@ -45,7 +45,12 @@ import valkey
 
 BASE_CACHE_BYTES = 16 * 1024 * 1024  # flash.cache-size-bytes for every combo
 VALUE_BYTES = 1024  # 1 KiB per key
-FLASH_CAPACITY_BYTES = 512 * 1024 * 1024  # 512 MiB flash file per combo
+# The NVMe backend allocates in 4 KiB blocks, so a 1 KiB value still consumes
+# one full block. At ratio 16× the populate phase alone writes n_keys=262,144
+# × 4 KiB = 1 GiB; the measurement phase then churns more blocks faster than
+# the compaction tick reclaims them. 4 GiB gives ~4× headroom over the worst
+# combo's live-set footprint.
+FLASH_CAPACITY_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB flash file per combo
 
 OPS = 5_000  # measurement ops per combo
 WARMUP = 200  # warmup ops per combo (not measured)
