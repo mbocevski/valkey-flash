@@ -200,13 +200,53 @@ Validated under stress: 4 concurrent clients, mixed SET/GET/HSET/HDEL, 1 or 16 s
 - Compaction: `compaction_runs`, `compaction_bytes_reclaimed`
 - Tiering: `tiered_keys`, `eviction_count`
 - Cluster: `cluster_mode`, `migration_slots_in_progress`, `migration_bytes_sent`, `migration_bytes_received`, `migration_keys_migrated`, `migration_keys_rejected`, `migration_last_duration_ms`, `migration_errors`, `migration_bandwidth_mbps`
+- Drain: `convert_total`, `drain_in_progress`, `drain_last_converted`, `drain_last_skipped`, `drain_last_errors`, `drain_last_scanned`
 - State: `module_state` (`recovering|ready|error`)
 
-Keyspace notifications: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
+Keyspace notifications: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`, `flash.convert`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
 
 ACL: `@flash` category scopes every FLASH.* command; admin/debug commands are `@admin @dangerous @flash`.
 
-## 11. Known limitations
+## 11. Unloading the module
+
+`MODULE UNLOAD flash` is refused by Valkey while any custom-type key exists, so `FLASH.DRAIN` must run first to convert the tier back to native types.
+
+### 11.1 `FLASH.CONVERT key`
+
+Per-key primitive. Replies `:1` when a `FLASH.*` key is converted to its native counterpart, `:0` when the key is missing, already native, or belongs to a different module (idempotent). The execution path:
+
+1. Open the key; inspect `key_type()`. Reject early if not a `FLASH.*` module type.
+2. Materialise the payload into owned Rust values. Cold-tier payloads are synchronously read from NVMe via `read_at_offset` (same pattern as `FLASH.HDEL` / `promote_cold_list` / `promote_cold_zset`).
+3. Capture TTL via `util_expire::preserve_ttl` so expiries set via native `EXPIRE` are preserved alongside `obj.ttl_ms`.
+4. Drop the key handle, then issue sub-calls via `ctx.call_ext` with `CallOptions::replicate()` set:
+   - `DEL key` — removes the flash key (triggers our `free` callback, which emits the WAL `Delete` and releases NVMe blocks for Cold entries).
+   - `SET` / `HSET` / `RPUSH` / `ZADD` — reconstructs the native key.
+   - `PEXPIREAT key ttl_ms` — restores the absolute TTL.
+5. Emit a `flash.convert` `GENERIC` keyspace event on the key.
+
+The `FLASH.CONVERT` command itself is **not** replicated. Only its sub-calls propagate via the `!` flag, so the AOF and replication stream contain only native commands. AOF replay after a subsequent `MODULE UNLOAD flash` succeeds.
+
+### 11.2 `FLASH.DRAIN [MATCH pattern] [COUNT n] [FORCE]`
+
+Scan-driven wrapper. Reply is an array `[converted, skipped, errors, scanned]`.
+
+- **Pass 1** — `KeysCursor::new()` full scan, filtered in-process by `glob_match(pattern)`. Candidate names are collected into a `Vec<Vec<u8>>`.
+- **Pass 2** — iterate candidates, call `extract_payload` + `apply_conversion`. Keys that vanish between passes or changed to a native type count toward `skipped`.
+- **Headroom guard** — before pass 1, read `used_memory` and `maxmemory` via `ctx.server_info("memory")`. If `used_memory + storage_used > maxmemory` (and `maxmemory > 0`), refuse unless `FORCE`. The projection is worst-case (all Cold bytes become Hot).
+- **COUNT** — caps pass-2 conversions per invocation. Operators loop externally for chunked drains.
+- **`DRAIN_IN_PROGRESS` atomic** — surfaced as `flash_drain_in_progress`. The command runs synchronously on the event-loop thread; the flag exists primarily for `INFO flash` observability.
+
+### 11.3 Failure semantics
+
+`FLASH.CONVERT` is fail-forward, not transactional. After the internal `DEL` succeeds, the flash copy is gone; if the native create fails (e.g. OOM), the key is lost. Mitigations:
+
+- `deny-oom` on the command → Valkey rejects the command up front when `maxmemory` is already exceeded.
+- The materialised payload is constructed fully in pass 2 before the `DEL`, so deserialisation errors land pre-delete.
+- Cold-tier NVMe read errors surface as `ValkeyError` pre-delete.
+
+Operators should watch `flash_drain_last_errors` after a `FORCE` drain on a tightly-sized node.
+
+## 12. Known limitations
 
 - **Cold-tier keyed-lookup during RDB save** for very large cold values: inline inclusion in RDB inflates file size (documented tradeoff; a future revision can use `aux_save`-based shared backing).
 - **Migration key-size cap**: keys > `flash.migration-max-key-bytes` (default 64 MiB) must be drained manually before reshard; chunked streaming is planned.

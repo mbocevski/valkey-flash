@@ -148,6 +148,8 @@ All FLASH.* commands are opt-in per key — existing native Valkey data types ar
 | `FLASH.COMPACTION.STATS` | Current free-list state |
 | `FLASH.MIGRATE.PROBE [host port]` | Query local or remote node state, capacity, path |
 | `FLASH.MIGRATE` | Extended MIGRATE hook for FLASH.* keys — bundles DUMP/RESTORE with tier state, capacity-probe gated |
+| `FLASH.CONVERT key` | Convert one `FLASH.*` key to its native Valkey counterpart in-place, preserving TTL. Prerequisite for `MODULE UNLOAD flash` |
+| `FLASH.DRAIN [MATCH pat] [COUNT n] [FORCE]` | Scan the keyspace and `FLASH.CONVERT` every matching `FLASH.*` key. Reply array `[converted, skipped, errors, scanned]`. See [Unloading the module](#unloading-the-module) |
 
 ## Configuration
 
@@ -182,8 +184,97 @@ Immutable knobs reject `CONFIG SET` with a clear error identifying the restart r
 - **[Single-node deployment](#installation)** — the default; see the Quick start above.
 - **[Cluster deployment](docs/cluster.md)** — sizing, unique `flash.path` constraint per node, replica topologies, slot migration, failover, and troubleshooting.
 - **[Migration runbook](docs/cluster-migration-runbook.md)** — operator step-by-step for resharding a live cluster.
+- **[Unloading the module](#unloading-the-module)** — `FLASH.DRAIN` to native types, then `MODULE UNLOAD`.
 - **[Running in containers](#running-in-containers)** — Docker, Podman, Kubernetes with the io_uring seccomp profile.
 - **[Developer workflow with Docker](docs/docker-tests.md)** — local Compose stacks and integration test runner.
+
+## Unloading the module
+
+`MODULE UNLOAD flash` is refused by Valkey while any `FLASH.*` custom-type
+keys exist. To unload cleanly, convert the flash tier back to native types
+first with `FLASH.DRAIN`:
+
+```
+> FLASH.DRAIN
+1) (integer) 1234     # converted
+2) (integer) 0        # skipped (non-flash / already native)
+3) (integer) 0        # errors
+4) (integer) 1234     # scanned
+> MODULE UNLOAD flash
+OK
+```
+
+After `FLASH.DRAIN`, each former `FLASH.*` key is a native Valkey value
+with its original name and TTL. The AOF and replication stream only ever
+see plain native commands (`DEL` / `SET` / `HSET` / `RPUSH` / `ZADD` /
+`PEXPIREAT`), so AOF replay and replica state stay module-independent.
+
+### Draining a large flash tier
+
+A naive `FLASH.DRAIN` materialises every Cold-tier value into RAM before
+writing it as a native key. If the NVMe tier is larger than free RAM this
+will OOM. The default guard refuses the command when
+`used_memory + storage_used_bytes > maxmemory`:
+
+```
+> FLASH.DRAIN
+(error) ERR FLASH.DRAIN would exceed maxmemory (used_memory=... + projected_cold=... > maxmemory=...); pass FORCE to override
+```
+
+Recover with one of:
+
+- **`FLASH.DRAIN COUNT <n>`** — chunk the work. Each invocation converts up
+  to `n` keys, so you can loop externally:
+
+  ```
+  while true; do
+      N=$(valkey-cli FLASH.DRAIN COUNT 1000 | head -1)
+      [[ "$N" == "0" ]] && break
+  done
+  ```
+
+- **`FLASH.DRAIN MATCH <pat>`** — drain a subset first. Useful for draining
+  in priority order, or for targeting only one key-prefix per host.
+
+- **`FLASH.DRAIN FORCE`** — bypass the guard. Use only when you know the
+  materialised working set fits in RAM, or when `maxmemory=0` isn't
+  configured but you're confident.
+
+Progress after each invocation is visible in `INFO flash`:
+
+```
+flash_drain_in_progress:no
+flash_drain_last_converted:1000
+flash_drain_last_skipped:0
+flash_drain_last_errors:0
+flash_drain_last_scanned:1000
+flash_convert_total:42000
+```
+
+### Cluster-wide drain
+
+In a cluster, `FLASH.DRAIN` runs per-node on the connected primary. Each
+primary's sub-calls replicate to its replicas as native commands, so after
+the primary returns you can `MODULE UNLOAD` on both primary and replicas
+once they've caught up:
+
+1. `FLASH.DRAIN` on every primary (loop or parallelise).
+2. Wait for replication offsets to catch up (`INFO replication`).
+3. `MODULE UNLOAD flash` on each replica, then on each primary.
+
+If you unload asymmetrically (primary keeps the module, replicas drop it),
+new `FLASH.*` writes on the primary can't be applied on a replica that no
+longer knows the custom type — the replication stream will stall. Unload
+everywhere, or not at all.
+
+### Post-drain caveat
+
+`FLASH.CONVERT` is not transactional. After the internal `DEL` of the
+flash key, if the native create sub-call fails (e.g. the server hits
+`maxmemory` mid-convert) the key is lost. The `deny-oom` flag causes
+Valkey to refuse the command up front when `maxmemory` is already
+exceeded, which is the dominant failure mode. When running `FORCE` on a
+tightly-sized node, watch for `flash_drain_last_errors > 0` in INFO.
 
 ## Running in containers
 

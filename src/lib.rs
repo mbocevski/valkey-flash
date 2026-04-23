@@ -60,9 +60,11 @@ use crate::commands::bzpop::{flash_bzpopmax_command, flash_bzpopmin_command};
 use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
 };
+use crate::commands::convert::flash_convert_command;
 use crate::commands::debug_demote::flash_debug_demote_command;
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
+use crate::commands::drain::flash_drain_command;
 use crate::commands::get::flash_get_command;
 use crate::commands::hdel::flash_hdel_command;
 use crate::commands::hexists::flash_hexists_command;
@@ -591,6 +593,8 @@ valkey_module! {
         ["FLASH.HEXISTS", flash_hexists_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HLEN", flash_hlen_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.AUX.INFO", flash_aux_info_command, "readonly admin", 0, 0, 0, "admin flash"],
+        ["FLASH.CONVERT", flash_convert_command, "write deny-oom", 1, 1, 1, "write slow flash"],
+        ["FLASH.DRAIN", flash_drain_command, "write deny-oom admin", 0, 0, 0, "admin write slow dangerous flash"],
         ["FLASH.DEBUG.DEMOTE", flash_debug_demote_command, "write admin", 1, 1, 1, "admin dangerous flash"],
         ["FLASH.DEBUG.STATE", flash_debug_state_command, "readonly no-auth allow-busy", 0, 0, 0, "admin flash"],
         ["FLASH.COMPACTION.STATS", flash_compaction_stats_command, "readonly admin", 0, 0, 0, "admin dangerous flash"],

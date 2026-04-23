@@ -7,9 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FLASH.CONVERT key` — atomically converts a single `FLASH.*` key (string / hash / list / zset) to its native Valkey counterpart in-place, preserving name and TTL. Sub-calls (`DEL`, `SET`/`HSET`/`RPUSH`/`ZADD`, `PEXPIREAT`) run with the replicate flag so AOF and replicas see only native commands, keeping the persisted log module-independent after conversion. Replies `:1` on conversion, `:0` when the key is missing or already native (idempotent).
+- `FLASH.DRAIN [MATCH pattern] [COUNT n] [FORCE]` — scans the keyspace and calls `FLASH.CONVERT` on every matching `FLASH.*` key. Reply is an array `[converted, skipped, errors, scanned]`. The prerequisite for `MODULE UNLOAD flash`, which Valkey refuses while custom-type keys exist. The default headroom guard refuses when `used_memory + storage_used > maxmemory`; `FORCE` overrides. See the [Unloading the module](README.md#unloading-the-module) section for operator guidance.
+- `INFO flash` fields: `flash_convert_total`, `flash_drain_in_progress`, `flash_drain_last_converted`, `flash_drain_last_skipped`, `flash_drain_last_errors`, `flash_drain_last_scanned`.
+- Keyspace event: `flash.convert` fires after a successful conversion, alongside the native sub-calls' standard `del` / `set` / `hset` / `rpush` / `zadd` / `expire` events.
+
 ### Fixed
 
-- Session-start reaper in `tests/conftest.py` clears `test-data/` and kills any lingering `valkey-server` processes rooted there before the first test runs. When a prior session was interrupted (Ctrl-C, SIGKILL, CI timeout), the framework's per-test `exit()` cleanup was skipped, leaking thousands of per-port logfile/rdb/aof artefacts. Once `test-data/` accumulated past ~7k entries, `TestFlashMigrateProbeNoFlash` (two-server fixture) hit the framework's 90-second `wait_for_ready_to_accept_connections` timeout twice in a row for a 181s ERROR — reliably reproducible. Set `KEEP_TEST_DATA=1` to preserve state for debugging.
+- `FLASH.BLPOP` heap-use-after-free in the `do_blpop` fast path — a dangling borrow into a freed list object could surface as an ASAN failure under contention. Rust ASAN is now exercised in a nightly CI job (#9).
+- `bench`: module-state readiness probe now consumes `info()` as a dict rather than parsing the legacy flat-string form (#10).
+- Session-start reaper in `tests/conftest.py` clears `test-data/` and kills any lingering `valkey-server` processes rooted there before the first test runs. When a prior session was interrupted (Ctrl-C, SIGKILL, CI timeout), the framework's per-test `exit()` cleanup was skipped, leaking thousands of per-port logfile/rdb/aof artefacts. Once `test-data/` accumulated past ~7k entries, `TestFlashMigrateProbeNoFlash` (two-server fixture) hit the framework's 90-second `wait_for_ready_to_accept_connections` timeout twice in a row for a 181s ERROR — reliably reproducible. Set `KEEP_TEST_DATA=1` to preserve state for debugging (#13).
+
+### Tests
+
+- Replication assertions now wait for applied-offset parity (`slave_repl_offset ≥ master_repl_offset`) rather than just the `master_link_status=up` link indicator. Closes a class of flaky reads where follow-up reads on the replica could miss the primary's last write (#11).
 
 ## [1.0.0] - 2026-04-20
 

@@ -7,6 +7,11 @@ use crate::cluster::{
     MIGRATION_KEYS_MIGRATED, MIGRATION_KEYS_REJECTED, MIGRATION_LAST_DURATION_MS,
     MIGRATION_SCAN_CHUNKS_TOTAL, MIGRATION_SCAN_YIELDED_KEYS_TOTAL, MIGRATION_SLOTS_IN_PROGRESS,
 };
+use crate::commands::convert::CONVERT_TOTAL;
+use crate::commands::drain::{
+    DRAIN_IN_PROGRESS, DRAIN_LAST_CONVERTED, DRAIN_LAST_ERRORS, DRAIN_LAST_SCANNED,
+    DRAIN_LAST_SKIPPED,
+};
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
@@ -82,6 +87,18 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     let migration_scan_yielded_keys_total =
         MIGRATION_SCAN_YIELDED_KEYS_TOTAL.load(Ordering::Relaxed);
 
+    // ── Drain progress ────────────────────────────────────────────────────────
+    let convert_total = CONVERT_TOTAL.load(Ordering::Relaxed);
+    let drain_in_progress = if DRAIN_IN_PROGRESS.load(Ordering::Relaxed) {
+        "yes"
+    } else {
+        "no"
+    };
+    let drain_last_converted = DRAIN_LAST_CONVERTED.load(Ordering::Relaxed);
+    let drain_last_skipped = DRAIN_LAST_SKIPPED.load(Ordering::Relaxed);
+    let drain_last_errors = DRAIN_LAST_ERRORS.load(Ordering::Relaxed);
+    let drain_last_scanned = DRAIN_LAST_SCANNED.load(Ordering::Relaxed);
+
     ctx.builder()
         .add_section("flash")
         .field("cache_hits", hits.to_string())?
@@ -133,6 +150,12 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
             "migration_scan_yielded_keys_total",
             migration_scan_yielded_keys_total.to_string(),
         )?
+        .field("convert_total", convert_total.to_string())?
+        .field("drain_in_progress", drain_in_progress.to_string())?
+        .field("drain_last_converted", drain_last_converted.to_string())?
+        .field("drain_last_skipped", drain_last_skipped.to_string())?
+        .field("drain_last_errors", drain_last_errors.to_string())?
+        .field("drain_last_scanned", drain_last_scanned.to_string())?
         .build_section()?
         .build_info()?;
 
