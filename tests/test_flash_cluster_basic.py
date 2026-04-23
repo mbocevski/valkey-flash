@@ -113,24 +113,36 @@ def test_flash_get_from_replicas(docker_cluster):
     owning primary must observe the value; other replicas respond with MOVED.
     """
     key = "{repl}probe"
-    # Issue the write through the cluster client, then use WAIT to block until
-    # the primary has pushed the command to ≥1 replica (up to 500 ms). This
-    # makes the test deterministic regardless of replication-stream buffering.
+    # Issue the write through the cluster client.
     with _cluster_rw() as c:
         c.execute_command("FLASH.SET", key, "replica-check")
-        # Route WAIT to the slot's primary so we're asking the correct node.
+        # Grab the slot's primary handle so we can read its replication offset.
         slot = c.execute_command("CLUSTER", "KEYSLOT", key)
         owner_node = c.nodes_manager.get_node_from_slot(int(slot), read_from_replicas=False)
         owner = c.get_valkey_connection(owner_node)
+        # `WAIT N T` returns once N replicas have advanced their replication
+        # offset past the current write — ack-based, independent of when the
+        # replica actually applies the module command to its keyspace. In a
+        # freshly-bootstrapped cluster the owning replica may still be
+        # catching up, so follow WAIT with a short keyspace poll to avoid a
+        # race against the stream-apply lag.
         owner.execute_command("WAIT", 1, 500)
 
     # Read directly from each replica node.
     for port in _REPLICA_PORTS:
         client = _node(port)
         try:
-            # READONLY allows read commands on replica.
+            # READONLY lets the replica serve reads for its primary's slots;
+            # reads for slots owned by a different primary still MOVED-redirect.
             client.execute_command("READONLY")
-            val = client.execute_command("FLASH.GET", key)
+            # Poll the key up to 2 s: covers both the owning replica's
+            # stream-apply lag and the tiny window between command dispatch
+            # and module dispatcher invocation on a non-owning reader.
+            val = _poll_until(
+                lambda c=client: c.execute_command("FLASH.GET", key),
+                predicate=lambda v: v == b"replica-check",
+                timeout_s=2.0,
+            )
             assert val == b"replica-check", f"replica port {port}: FLASH.GET returned {val!r}"
         except valkey.exceptions.ResponseError as e:
             # MOVED is acceptable: this replica doesn't own the slot.
@@ -141,6 +153,17 @@ def test_flash_get_from_replicas(docker_cluster):
 
     with _cluster_rw() as c:
         _cleanup(c, key)
+
+
+def _poll_until(fn, predicate, timeout_s=2.0, interval_s=0.05):
+    """Call fn() until predicate(result) returns True or timeout expires.
+    Returns the last value fn() returned."""
+    deadline = time.time() + timeout_s
+    val = fn()
+    while not predicate(val) and time.time() < deadline:
+        time.sleep(interval_s)
+        val = fn()
+    return val
 
 
 @pytest.mark.docker_cluster
