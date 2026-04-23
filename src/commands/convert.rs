@@ -23,6 +23,7 @@ use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_deserialize_or_w
 use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_deserialize_or_warn};
 use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, zset_deserialize_or_warn};
+use crate::util_expire::preserve_ttl;
 
 /// Count of successful `FLASH.CONVERT` operations on this node.
 /// Surfaced via `INFO flash` as `flash_convert_total`.
@@ -104,31 +105,23 @@ pub(crate) fn extract_payload(
 
     if let Ok(Some(obj)) = key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
         let bytes = materialize_string_bytes(&obj.tier)?;
-        return Ok(Some(ConvertPayload::String {
-            bytes,
-            ttl_ms: obj.ttl_ms,
-        }));
+        let ttl_ms = preserve_ttl(ctx, key, obj.ttl_ms);
+        return Ok(Some(ConvertPayload::String { bytes, ttl_ms }));
     }
     if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
         let flat = materialize_hash_flat(&obj.tier)?;
-        return Ok(Some(ConvertPayload::Hash {
-            flat,
-            ttl_ms: obj.ttl_ms,
-        }));
+        let ttl_ms = preserve_ttl(ctx, key, obj.ttl_ms);
+        return Ok(Some(ConvertPayload::Hash { flat, ttl_ms }));
     }
     if let Ok(Some(obj)) = key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
         let elems = materialize_list_elems(&obj.tier)?;
-        return Ok(Some(ConvertPayload::List {
-            elems,
-            ttl_ms: obj.ttl_ms,
-        }));
+        let ttl_ms = preserve_ttl(ctx, key, obj.ttl_ms);
+        return Ok(Some(ConvertPayload::List { elems, ttl_ms }));
     }
     if let Ok(Some(obj)) = key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
         let flat = materialize_zset_flat(&obj.tier)?;
-        return Ok(Some(ConvertPayload::ZSet {
-            flat,
-            ttl_ms: obj.ttl_ms,
-        }));
+        let ttl_ms = preserve_ttl(ctx, key, obj.ttl_ms);
+        return Ok(Some(ConvertPayload::ZSet { flat, ttl_ms }));
     }
 
     // KeyType::Module but not one of our four — some other module's key.
