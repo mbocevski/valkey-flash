@@ -7,7 +7,7 @@ import time
 
 import pytest
 from valkey import ResponseError
-from valkeytestframework.valkey_test_case import ValkeyTestCase
+from valkeytestframework.valkey_test_case import ReplicationTestCase, ValkeyTestCase
 
 # Tests only write tiny payloads, but the module's default capacity is 1 GiB
 # per flash.bin. Without an override every test would leave behind a 1 GiB
@@ -144,3 +144,51 @@ class ValkeyFlashTestCase(ValkeyTestCase):
                 return
             time.sleep(0.05)
         raise AssertionError(f"Key '{key}' did not expire within {timeout_s}s")
+
+
+def _repl_offset(client, field):
+    """Read one integer field from `INFO replication` (e.g. master_repl_offset,
+    slave_repl_offset). Returns -1 on missing key so callers can keep polling
+    until the field becomes readable."""
+    info = client.info("replication")
+    value = info.get(field)
+    if value is None:
+        return -1
+    return int(value)
+
+
+def wait_for_replica_caught_up(primary_client, replica_client, timeout_s=5.0):
+    """Block until the replica's applied offset matches the primary's current
+    offset.
+
+    The upstream `ReplicationTestCase.waitForReplicaToSyncUp` only checks that
+    the primary→replica TCP link is up (master_link_status=up), which is
+    established during the initial handshake and does not reflect whether a
+    post-link command has been streamed and applied. Under load that gap lets
+    a follow-up read on the replica miss the write that the test just
+    performed on the primary.
+
+    Poll both sides' `INFO replication` offsets: capture the primary's
+    `master_repl_offset` at call time and wait until the replica's
+    `slave_repl_offset` is at least that high. 50 ms poll interval keeps the
+    overhead negligible while still resolving sub-second races.
+    """
+    target = _repl_offset(primary_client, "master_repl_offset")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _repl_offset(replica_client, "slave_repl_offset") >= target >= 0:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"Replica did not catch up to offset {target} within {timeout_s}s")
+
+
+class FlashReplicationTestCase(ReplicationTestCase):
+    """ReplicationTestCase that waits for applied-offset parity, not just a
+    live link, in `waitForReplicaToSyncUp`. See `wait_for_replica_caught_up`
+    for the reason the upstream helper is insufficient."""
+
+    def waitForReplicaToSyncUp(self, server):
+        # First satisfy the upstream contract (link up), then upgrade to an
+        # offset-based wait using the replica's public client.
+        super().waitForReplicaToSyncUp(server)
+        wait_for_replica_caught_up(self.client, server.client)

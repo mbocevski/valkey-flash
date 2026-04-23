@@ -16,8 +16,8 @@ import tempfile
 
 import pytest
 from util.waiters import wait_for_true
+from valkey_flash_test_case import FlashReplicationTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 _MAX_SYNC_WAIT = 60
 
@@ -58,7 +58,7 @@ def _wait_for_replica_sync(primary_client, replica_client, timeout=_MAX_SYNC_WAI
 # ── Scenario 1 — default: replica is RAM-only ─────────────────────────────────
 
 
-class TestFlashReplicaTierDefault(ReplicationTestCase):
+class TestFlashReplicaTierDefault(FlashReplicationTestCase):
     """Default (flash.replica-tier-enabled=false): replica never opens NVMe storage."""
 
     @pytest.fixture(autouse=True)
@@ -94,7 +94,7 @@ class TestFlashReplicaTierDefault(ReplicationTestCase):
 # ── Scenarios 2–4: replica-tier-enabled=yes ───────────────────────────────────
 
 
-class TestFlashReplicaTierEnabled(ReplicationTestCase):
+class TestFlashReplicaTierEnabled(FlashReplicationTestCase):
     """flash.replica-tier-enabled=true: replica opens its own local NVMe backend."""
 
     @pytest.fixture(autouse=True)

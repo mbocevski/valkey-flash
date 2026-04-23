@@ -1,14 +1,14 @@
 import os
 
 import pytest
-from valkeytestframework.valkey_test_case import ReplicationTestCase
+from valkey_flash_test_case import FlashReplicationTestCase
 
 
 def _flash_loadmodule_arg(flash_path):
     return f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
 
 
-class TestFlashReplication(ReplicationTestCase):
+class TestFlashReplication(FlashReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         binaries_dir = (

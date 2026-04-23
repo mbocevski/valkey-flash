@@ -2,8 +2,7 @@ import os
 
 import pytest
 from valkey import ResponseError
-from valkey_flash_test_case import ValkeyFlashTestCase
-from valkeytestframework.valkey_test_case import ReplicationTestCase
+from valkey_flash_test_case import FlashReplicationTestCase, ValkeyFlashTestCase
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -132,7 +131,7 @@ class TestFlashDel(ValkeyFlashTestCase):
 # ── Replication test ──────────────────────────────────────────────────────────
 
 
-class TestFlashDelReplication(ReplicationTestCase):
+class TestFlashDelReplication(FlashReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _prepend_lib_path()
