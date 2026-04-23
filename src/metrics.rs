@@ -13,6 +13,7 @@ use crate::commands::drain::{
     DRAIN_LAST_SKIPPED,
 };
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
+use crate::demotion::AUTO_DEMOTIONS_TOTAL;
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
 
@@ -40,13 +41,29 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     };
 
     // ── Storage metrics ───────────────────────────────────────────────────────
+    //
+    // The NVMe backend uses a bump allocator: `next_block` is the watermark up
+    // to which blocks have *ever* been handed out. Blocks inside [0, next_block)
+    // that have been freed (via overwrite or `release_cold_blocks`) sit on the
+    // `free_list` for reuse.
+    //
+    // Reporting the raw `next_block * BLOCK` as "used" and `free_list * BLOCK`
+    // as "free" was wrong on both sides: "used" ignored reclamation, and "free"
+    // ignored the unallocated headroom at the tail of the file. Corrected
+    // below so `used + free ≈ capacity` always holds (small drift is possible
+    // across the two lock-free reads).
     let (storage_used, storage_free, storage_capacity) = STORAGE
         .get()
         .map(|s| {
             const BLOCK: u64 = 4096;
-            let used = s.next_block_snapshot() * BLOCK;
-            let free = s.free_block_count() * BLOCK;
             let cap = s.capacity_bytes();
+            let capacity_blocks = cap / BLOCK;
+            let next_block = s.next_block_snapshot();
+            let free_blocks = s.free_block_count();
+            let headroom_blocks = capacity_blocks.saturating_sub(next_block);
+            let live_blocks = next_block.saturating_sub(free_blocks);
+            let used = live_blocks * BLOCK;
+            let free = (headroom_blocks + free_blocks) * BLOCK;
             (used, free, cap)
         })
         .unwrap_or((0, 0, 0));
@@ -87,6 +104,9 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     let migration_scan_yielded_keys_total =
         MIGRATION_SCAN_YIELDED_KEYS_TOTAL.load(Ordering::Relaxed);
 
+    // ── Auto-demotion ─────────────────────────────────────────────────────────
+    let auto_demotions_total = AUTO_DEMOTIONS_TOTAL.load(Ordering::Relaxed);
+
     // ── Drain progress ────────────────────────────────────────────────────────
     let convert_total = CONVERT_TOTAL.load(Ordering::Relaxed);
     let drain_in_progress = if DRAIN_IN_PROGRESS.load(Ordering::Relaxed) {
@@ -117,6 +137,7 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
             compaction_bytes_reclaimed.to_string(),
         )?
         .field("tiered_keys", tiered_keys.to_string())?
+        .field("auto_demotions_total", auto_demotions_total.to_string())?
         .field("module_state", module_state)?
         .field("cluster_mode", cluster_mode.to_string())?
         .field("migration_slots_in_progress", migration_slots.to_string())?
