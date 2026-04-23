@@ -239,16 +239,22 @@ fn do_blpop(ctx: &Context, args: Vec<ValkeyString>, pop_left: bool) -> ValkeyRes
 
     // Fast path: check keys in order for an immediately available element.
     for key in keys {
-        let key_handle = ctx.open_key_writable(key);
-        let existing = match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
-            Err(_) => return Err(ValkeyError::WrongType),
-            Ok(None) => continue,
-            Ok(Some(obj)) => obj,
-        };
-
-        let has_data = match &existing.tier {
-            Tier::Hot(l) => !l.is_empty(),
-            Tier::Cold { .. } => true, // Cold means data exists on NVMe.
+        // Peek via a short-lived writable handle, then drop it before calling
+        // pop_one — pop_one opens the same key again and may delete (or
+        // set_value) it, which frees the underlying kv object; holding a
+        // second live handle across that path is a use-after-free when the
+        // outer handle drops (moduleCloseKey dereferences the freed entry).
+        let has_data = {
+            let key_handle = ctx.open_key_writable(key);
+            let existing = match key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
+                Err(_) => return Err(ValkeyError::WrongType),
+                Ok(None) => continue,
+                Ok(Some(obj)) => obj,
+            };
+            match &existing.tier {
+                Tier::Hot(l) => !l.is_empty(),
+                Tier::Cold { .. } => true, // Cold means data exists on NVMe.
+            }
         };
 
         if has_data {
