@@ -12,8 +12,8 @@ from contextlib import suppress
 import pytest
 import valkey
 from util.waiters import wait_for_true
+from valkey_flash_test_case import FlashReplicationTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-from valkeytestframework.valkey_test_case import ReplicationTestCase
 
 _MAX_SYNC_WAIT = 60
 
@@ -57,7 +57,7 @@ def _flash_loadmodule_arg(flash_path):
     return f"{os.getenv('MODULE_PATH')} path {flash_path} capacity-bytes 16777216"
 
 
-class TestFlashReplicationIntegration(ReplicationTestCase):
+class TestFlashReplicationIntegration(FlashReplicationTestCase):
     @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         _setup_ld_path()

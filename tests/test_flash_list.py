@@ -360,7 +360,7 @@ import os as _os
 import shutil as _shutil
 import tempfile as _tempfile
 
-from valkeytestframework.valkey_test_case import ReplicationTestCase as _ReplTC
+from valkey_flash_test_case import FlashReplicationTestCase as _ReplTC
 
 
 def _flash_loadmodule_arg(flash_path):
