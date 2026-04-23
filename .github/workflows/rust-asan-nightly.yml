@@ -123,13 +123,27 @@ jobs:
       run: mkdir -p /tmp/asan-logs
 
     - name: Run integration tests with Rust ASAN module
+      # abort_on_error=1: make ASAN's first heap violation SIGABRT the server
+      #   immediately. With abort_on_error=0 the server kept serving poisoned
+      #   memory, every subsequent test in the class crashed with "Connection
+      #   closed by server", and once the run ended an orphan server holding
+      #   the stdout pipe wedged `tee` until the 60-minute step budget
+      #   expired.
+      # timeout --signal=TERM --kill-after=30s 1500s: hard 25-minute cap on
+      #   the pytest pipeline (nominal run is ~8 min) so a runaway server can
+      #   never burn the whole step again. timeout's SIGTERM reaches the
+      #   whole process group; --kill-after=30s escalates to SIGKILL if pytest
+      #   is still holding fds after a graceful shutdown attempt.
+      # Ignored files:
+      #   test_flash_acl.py: requires ACL category registration that is not
+      #     wired up in the non-release debug build used here.
+      #   test_flash_aof.py: server-restart tests time out under ASAN overhead
+      #     because NVMe backend initialization is slower in debug builds.
       run: |
-        # test_flash_acl.py: requires ACL category registration that is not
-        #   wired up in the non-release debug build used here.
-        # test_flash_aof.py: server-restart tests time out under ASAN overhead
-        #   because NVMe backend initialization is slower in debug builds.
-        ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/asan-logs/asan:abort_on_error=0" \
-          MODULE_PATH="$MODULE_PATH" \
+        set +e
+        timeout --signal=TERM --kill-after=30s 1500s \
+          env ASAN_OPTIONS="detect_leaks=1:log_path=/tmp/asan-logs/asan:abort_on_error=1" \
+              MODULE_PATH="$MODULE_PATH" \
           uv run pytest --capture=sys --cache-clear -v tests/ \
             --ignore=tests/test_docker_smoke.py \
             --ignore=tests/test_flash_acl.py \
@@ -137,6 +151,10 @@ jobs:
             -m "not skip_for_asan" \
             --tb=short 2>&1 | tee pytest-output.log
         pytest_exit=${PIPESTATUS[0]}
+        if [ "$pytest_exit" -eq 124 ]; then
+          echo "::error::pytest step exceeded 25-minute timeout; runaway server likely"
+          exit 1
+        fi
         if [ "$pytest_exit" -ne 0 ]; then
           echo "::warning::pytest exited $pytest_exit — test failures may be unrelated to ASAN (see pytest-output.log)"
         fi
