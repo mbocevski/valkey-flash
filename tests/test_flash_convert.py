@@ -191,9 +191,12 @@ class TestFlashConvertCold(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.ZADD", "cz", "1", "a", "2", "b")
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "cz")
         assert self.client.execute_command("FLASH.CONVERT", "cz") == 1
-        assert self.client.execute_command(
-            "ZRANGE", "cz", "0", "-1", "WITHSCORES"
-        ) == [b"a", b"1", b"b", b"2"]
+        assert self.client.execute_command("ZRANGE", "cz", "0", "-1", "WITHSCORES") == [
+            b"a",
+            b"1",
+            b"b",
+            b"2",
+        ]
 
     def test_convert_cold_string_preserves_ttl(self):
         self.client.execute_command("FLASH.SET", "cts", "hot", "EX", "200")
@@ -237,9 +240,9 @@ class TestFlashConvertEvents(ValkeyFlashTestCase):
         # Collect a handful: DEL + SET + flash.convert will all fire.
         messages = self._collect(ps, 6)
         keyevent_ch = b"__keyevent@0__:flash.convert"
-        assert any(
-            m["channel"] == keyevent_ch and m["data"] == b"evk" for m in messages
-        ), f"flash.convert event missing; saw {messages}"
+        assert any(m["channel"] == keyevent_ch and m["data"] == b"evk" for m in messages), (
+            f"flash.convert event missing; saw {messages}"
+        )
 
     def test_convert_emits_native_set_event(self):
         # The native SET sub-call auto-emits `set`; that's what makes the
@@ -249,9 +252,9 @@ class TestFlashConvertEvents(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.CONVERT", "ns")
         messages = self._collect(ps, 6)
         keyevent_ch = b"__keyevent@0__:set"
-        assert any(
-            m["channel"] == keyevent_ch and m["data"] == b"ns" for m in messages
-        ), f"native 'set' event missing after CONVERT; saw {messages}"
+        assert any(m["channel"] == keyevent_ch and m["data"] == b"ns" for m in messages), (
+            f"native 'set' event missing after CONVERT; saw {messages}"
+        )
 
 
 # ── INFO flash metrics ────────────────────────────────────────────────────────
@@ -427,9 +430,7 @@ class TestFlashDrainForce(ValkeyFlashTestCase):
     def test_drain_force_combines_with_match_and_count(self):
         for i in range(3):
             self.client.execute_command("FLASH.SET", f"fc:{i}", str(i))
-        reply = self.client.execute_command(
-            "FLASH.DRAIN", "MATCH", "fc:*", "COUNT", "2", "FORCE"
-        )
+        reply = self.client.execute_command("FLASH.DRAIN", "MATCH", "fc:*", "COUNT", "2", "FORCE")
         assert reply[0] == 2
 
 
