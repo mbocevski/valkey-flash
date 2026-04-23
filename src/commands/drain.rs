@@ -38,6 +38,7 @@ pub static DRAIN_LAST_SCANNED: AtomicU64 = AtomicU64::new(0);
 
 // ── Parsing ───────────────────────────────────────────────────────────────────
 
+#[cfg_attr(test, derive(Debug))]
 struct Opts {
     pattern: Option<Vec<u8>>,
     count: Option<u64>,
@@ -45,24 +46,31 @@ struct Opts {
 }
 
 fn parse_opts(args: &[ValkeyString]) -> Result<Opts, ValkeyError> {
+    let bytes: Vec<&[u8]> = args.iter().map(ValkeyString::as_slice).collect();
+    parse_opts_bytes(&bytes)
+}
+
+/// Byte-slice variant of [`parse_opts`] — split out so unit tests can exercise
+/// the parser without a live Valkey context.
+fn parse_opts_bytes(args: &[&[u8]]) -> Result<Opts, ValkeyError> {
     let mut pattern: Option<Vec<u8>> = None;
     let mut count: Option<u64> = None;
     let mut force = false;
     let mut i = 1usize;
 
     while i < args.len() {
-        let tok = args[i].as_slice();
+        let tok = args[i];
         if tok.eq_ignore_ascii_case(b"MATCH") {
             if i + 1 >= args.len() {
                 return Err(ValkeyError::WrongArity);
             }
-            pattern = Some(args[i + 1].as_slice().to_vec());
+            pattern = Some(args[i + 1].to_vec());
             i += 2;
         } else if tok.eq_ignore_ascii_case(b"COUNT") {
             if i + 1 >= args.len() {
                 return Err(ValkeyError::WrongArity);
             }
-            let raw = std::str::from_utf8(args[i + 1].as_slice()).map_err(|_| {
+            let raw = std::str::from_utf8(args[i + 1]).map_err(|_| {
                 ValkeyError::Str("ERR FLASH.DRAIN: COUNT must be a non-negative integer")
             })?;
             let n: u64 = raw.parse().map_err(|_| {
@@ -319,5 +327,128 @@ mod tests {
         let _ = DRAIN_LAST_SKIPPED.load(Ordering::Relaxed);
         let _ = DRAIN_LAST_ERRORS.load(Ordering::Relaxed);
         let _ = DRAIN_LAST_SCANNED.load(Ordering::Relaxed);
+    }
+
+    // ── parse_opts_bytes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_bare_command_returns_all_defaults() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN"]).unwrap();
+        assert_eq!(opts.pattern, None);
+        assert_eq!(opts.count, None);
+        assert!(!opts.force);
+    }
+
+    #[test]
+    fn parse_match_captures_pattern_bytes_verbatim() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"MATCH", b"user:*"]).unwrap();
+        assert_eq!(opts.pattern.as_deref(), Some(b"user:*".as_ref()));
+    }
+
+    #[test]
+    fn parse_match_is_case_insensitive() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"match", b"p"]).unwrap();
+        assert_eq!(opts.pattern.as_deref(), Some(b"p".as_ref()));
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"MaTcH", b"p"]).unwrap();
+        assert_eq!(opts.pattern.as_deref(), Some(b"p".as_ref()));
+    }
+
+    #[test]
+    fn parse_count_accepts_u64_max() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"18446744073709551615"]).unwrap();
+        assert_eq!(opts.count, Some(u64::MAX));
+    }
+
+    #[test]
+    fn parse_count_zero_is_accepted() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"0"]).unwrap();
+        assert_eq!(opts.count, Some(0));
+    }
+
+    #[test]
+    fn parse_count_negative_rejected() {
+        // u64::parse rejects the leading '-'.
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"-1"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::Str(_)));
+    }
+
+    #[test]
+    fn parse_count_overflow_rejected() {
+        let err =
+            parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"99999999999999999999"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::Str(_)));
+    }
+
+    #[test]
+    fn parse_count_non_numeric_rejected() {
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"abc"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::Str(_)));
+    }
+
+    #[test]
+    fn parse_count_with_non_utf8_rejected() {
+        // Half a multi-byte codepoint — not valid UTF-8.
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", &[0xff, 0xfe][..]]).unwrap_err();
+        assert!(matches!(err, ValkeyError::Str(_)));
+    }
+
+    #[test]
+    fn parse_force_flag_toggles_on() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"FORCE"]).unwrap();
+        assert!(opts.force);
+    }
+
+    #[test]
+    fn parse_force_is_case_insensitive() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"force"]).unwrap();
+        assert!(opts.force);
+    }
+
+    #[test]
+    fn parse_match_without_value_is_wrong_arity() {
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"MATCH"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::WrongArity));
+    }
+
+    #[test]
+    fn parse_count_without_value_is_wrong_arity() {
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::WrongArity));
+    }
+
+    #[test]
+    fn parse_unknown_option_rejected() {
+        let err = parse_opts_bytes(&[b"FLASH.DRAIN", b"ZOMBIES"]).unwrap_err();
+        assert!(matches!(err, ValkeyError::Str(_)));
+    }
+
+    #[test]
+    fn parse_all_three_options_any_order() {
+        let a = parse_opts_bytes(&[b"FLASH.DRAIN", b"MATCH", b"k*", b"COUNT", b"10", b"FORCE"])
+            .unwrap();
+        let b = parse_opts_bytes(&[b"FLASH.DRAIN", b"COUNT", b"10", b"FORCE", b"MATCH", b"k*"])
+            .unwrap();
+        let c = parse_opts_bytes(&[b"FLASH.DRAIN", b"FORCE", b"MATCH", b"k*", b"COUNT", b"10"])
+            .unwrap();
+        for o in [a, b, c] {
+            assert_eq!(o.pattern.as_deref(), Some(b"k*".as_ref()));
+            assert_eq!(o.count, Some(10));
+            assert!(o.force);
+        }
+    }
+
+    #[test]
+    fn parse_repeated_match_last_wins() {
+        // Not explicitly contracted, but documenting existing behaviour so a
+        // refactor that changes it requires updating the test.
+        let opts =
+            parse_opts_bytes(&[b"FLASH.DRAIN", b"MATCH", b"first", b"MATCH", b"second"]).unwrap();
+        assert_eq!(opts.pattern.as_deref(), Some(b"second".as_ref()));
+    }
+
+    #[test]
+    fn parse_binary_safe_pattern_preserves_null_bytes() {
+        let opts = parse_opts_bytes(&[b"FLASH.DRAIN", b"MATCH", b"pre\x00post*"]).unwrap();
+        assert_eq!(opts.pattern.as_deref(), Some(b"pre\x00post*".as_ref()));
     }
 }

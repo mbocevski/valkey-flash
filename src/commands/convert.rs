@@ -22,7 +22,9 @@ use crate::types::Tier;
 use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_deserialize_or_warn};
 use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_deserialize_or_warn};
 use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
-use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, zset_deserialize_or_warn};
+use crate::types::zset::{
+    FLASH_ZSET_TYPE, FlashZSetObject, format_score, zset_deserialize_or_warn,
+};
 use crate::util_expire::preserve_ttl;
 
 /// Count of successful `FLASH.CONVERT` operations on this node.
@@ -217,28 +219,6 @@ fn materialize_zset_flat(
     Ok(flat)
 }
 
-/// Render an `f64` score the same way Valkey does on the wire: avoid trailing
-/// `.0` for integer-valued scores and preserve `inf` / `-inf`. This keeps
-/// round-tripped ZADD payloads byte-identical to what native ZADD would accept.
-fn format_score(score: f64) -> String {
-    if score.is_infinite() {
-        return if score.is_sign_negative() {
-            "-inf".to_string()
-        } else {
-            "inf".to_string()
-        };
-    }
-    // %.17g is the Redis/Valkey convention (d2string in util.c). Rust's
-    // default f64 Display rounds to the shortest round-trippable form, which
-    // matches %.17g output for the vast majority of scores; emitting `17` for
-    // non-integer cases guarantees a lossless round-trip.
-    if score.fract() == 0.0 && score.abs() < 1e17 {
-        format!("{}", score as i64)
-    } else {
-        format!("{score:.17}")
-    }
-}
-
 /// Apply a materialised `ConvertPayload` by replacing the key with its native
 /// equivalent. All sub-calls are issued with the replicate flag so the AOF
 /// and replicas observe plain native commands.
@@ -339,25 +319,31 @@ fn call_checked(
 mod tests {
     use super::*;
 
+    // format_score is provided by `types::zset::format_score` and tested
+    // there; we only assert the handful of properties that the convert
+    // path specifically relies on, so a refactor of the shared helper
+    // that breaks round-tripping gets caught at this layer too.
+
     #[test]
-    fn format_score_integers_omit_fraction() {
-        assert_eq!(format_score(0.0), "0");
-        assert_eq!(format_score(1.0), "1");
-        assert_eq!(format_score(-5.0), "-5");
-        assert_eq!(format_score(42.0), "42");
+    fn format_score_round_trips_through_zadd_compatible_strings() {
+        for v in [0.0_f64, 1.5, -3.5, 1e-300, 0.1 + 0.2, -0.0, 1e17] {
+            let s = format_score(v);
+            let back: f64 = s.parse().unwrap_or_else(|_| panic!("unparseable: {s}"));
+            assert_eq!(
+                back.to_bits(),
+                v.to_bits(),
+                "round-trip mismatch for {v}: formatted as {s}, parsed back as {back}"
+            );
+        }
     }
 
     #[test]
-    fn format_score_fractional_roundtrips() {
-        let s = format_score(1.5);
-        let back: f64 = s.parse().unwrap();
-        assert_eq!(back, 1.5);
-    }
-
-    #[test]
-    fn format_score_infinity() {
-        assert_eq!(format_score(f64::INFINITY), "inf");
-        assert_eq!(format_score(f64::NEG_INFINITY), "-inf");
+    fn format_score_infinity_variants_accept_as_zadd_scores() {
+        // Native ZADD accepts both "+inf" / "inf" for positive infinity.
+        let pos: f64 = format_score(f64::INFINITY).parse().unwrap();
+        let neg: f64 = format_score(f64::NEG_INFINITY).parse().unwrap();
+        assert!(pos.is_infinite() && pos.is_sign_positive());
+        assert!(neg.is_infinite() && neg.is_sign_negative());
     }
 
     #[test]
@@ -378,5 +364,53 @@ mod tests {
     #[test]
     fn convert_total_counter_is_readable() {
         let _ = CONVERT_TOTAL.load(Ordering::Relaxed);
+    }
+
+    #[test]
+    fn convert_payload_ttl_accessor_across_all_variants() {
+        for p in [
+            ConvertPayload::String {
+                bytes: vec![],
+                ttl_ms: Some(1),
+            },
+            ConvertPayload::Hash {
+                flat: vec![],
+                ttl_ms: Some(2),
+            },
+            ConvertPayload::List {
+                elems: vec![],
+                ttl_ms: Some(3),
+            },
+            ConvertPayload::ZSet {
+                flat: vec![],
+                ttl_ms: Some(4),
+            },
+        ] {
+            assert!(p.ttl_ms().is_some());
+        }
+    }
+
+    #[test]
+    fn convert_payload_ttl_is_none_when_absent_across_variants() {
+        for p in [
+            ConvertPayload::String {
+                bytes: vec![],
+                ttl_ms: None,
+            },
+            ConvertPayload::Hash {
+                flat: vec![],
+                ttl_ms: None,
+            },
+            ConvertPayload::List {
+                elems: vec![],
+                ttl_ms: None,
+            },
+            ConvertPayload::ZSet {
+                flat: vec![],
+                ttl_ms: None,
+            },
+        ] {
+            assert!(p.ttl_ms().is_none());
+        }
     }
 }

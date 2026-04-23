@@ -374,6 +374,170 @@ class TestFlashDrain(ValkeyFlashTestCase):
         assert info["flash_drain_last_scanned"] == 4
         assert info["flash_drain_in_progress"] == "no"
 
+    def test_drain_skips_native_keys_without_error(self):
+        # Native keys are counted as "skipped", not "errors". DRAIN must
+        # tolerate a mixed keyspace gracefully.
+        self.client.execute_command("SET", "native:1", "v")
+        self.client.execute_command("HSET", "native:2", "f", "v")
+        self.client.execute_command("FLASH.SET", "flash:1", "v")
+        reply = self.client.execute_command("FLASH.DRAIN")
+        # scanned counts only the SCAN-visited keys that passed the pattern
+        # filter. Pass-2 then filters out non-flash via extract_payload
+        # returning Ok(None) → skipped. So scanned == total keys visited.
+        assert reply[0] == 1  # converted (the flash key)
+        assert reply[1] == 2  # skipped (two native)
+        assert reply[2] == 0  # errors
+        assert reply[3] == 3  # scanned
+        # Native keys untouched.
+        assert self.client.execute_command("GET", "native:1") == b"v"
+        assert self.client.execute_command("HGET", "native:2", "f") == b"v"
+
+    def test_drain_accepts_options_in_any_order(self):
+        for i in range(4):
+            self.client.execute_command("FLASH.SET", f"o:{i}", str(i))
+        reply_a = self.client.execute_command("FLASH.DRAIN", "MATCH", "o:*", "COUNT", "2", "FORCE")
+        # Undo so next sub-test has flash keys to drain.
+        for i in range(4):
+            self.client.execute_command("DEL", f"o:{i}")
+            self.client.execute_command("FLASH.SET", f"o:{i}", str(i))
+        reply_b = self.client.execute_command("FLASH.DRAIN", "COUNT", "2", "FORCE", "MATCH", "o:*")
+        for i in range(4):
+            self.client.execute_command("DEL", f"o:{i}")
+            self.client.execute_command("FLASH.SET", f"o:{i}", str(i))
+        reply_c = self.client.execute_command("FLASH.DRAIN", "FORCE", "MATCH", "o:*", "COUNT", "2")
+        assert reply_a[0] == reply_b[0] == reply_c[0] == 2
+
+    def test_drain_match_with_no_matches_is_noop(self):
+        self.client.execute_command("FLASH.SET", "only", "v")
+        reply = self.client.execute_command("FLASH.DRAIN", "MATCH", "unreachable:*")
+        assert reply[0] == 0
+        assert reply[3] == 0
+        # `only` still a flash key.
+        assert self.client.execute_command("TYPE", "only") != b"string"
+
+    def test_drain_match_with_literal_colon_pattern(self):
+        self.client.execute_command("FLASH.SET", "a:1", "x")
+        self.client.execute_command("FLASH.SET", "a:2", "y")
+        self.client.execute_command("FLASH.SET", "b:1", "z")
+        reply = self.client.execute_command("FLASH.DRAIN", "MATCH", "a:?")
+        # `?` matches exactly one char → a:1 and a:2, not b:1.
+        assert reply[0] == 2
+        assert self.client.execute_command("TYPE", "b:1") != b"string"
+
+
+# ── Binary-safe payloads ──────────────────────────────────────────────────────
+
+
+class TestFlashConvertBinarySafe(ValkeyFlashTestCase):
+    """FLASH.* keys can hold arbitrary bytes. CONVERT must preserve them
+    exactly — no assumption of UTF-8, no stripping of NUL bytes."""
+
+    def test_string_value_with_nul_survives(self):
+        payload = b"before\x00after\xff\xfe"
+        self.client.execute_command("FLASH.SET", "bin:s", payload)
+        assert self.client.execute_command("FLASH.CONVERT", "bin:s") == 1
+        assert self.client.execute_command("GET", "bin:s") == payload
+
+    def test_hash_field_and_value_with_nul_survive(self):
+        f = b"field\x00with\x00nul"
+        v = b"val\r\nwith\nctrl"
+        self.client.execute_command("FLASH.HSET", "bin:h", f, v)
+        self.client.execute_command("FLASH.CONVERT", "bin:h")
+        assert self.client.execute_command("HGET", "bin:h", f) == v
+
+    def test_list_elements_with_nul_preserve_order(self):
+        elems = [b"a\x00b", b"\xff\xff", b"", b"normal"]
+        self.client.execute_command("FLASH.RPUSH", "bin:l", *elems)
+        self.client.execute_command("FLASH.CONVERT", "bin:l")
+        assert self.client.execute_command("LRANGE", "bin:l", "0", "-1") == elems
+
+    def test_zset_member_with_nul_survives(self):
+        m = b"member\x00with\x00nul"
+        self.client.execute_command("FLASH.ZADD", "bin:z", "1.5", m)
+        self.client.execute_command("FLASH.CONVERT", "bin:z")
+        # valkey-py auto-decodes ZSCORE to float.
+        assert self.client.execute_command("ZSCORE", "bin:z", m) == 1.5
+
+    def test_key_name_with_nul_byte_survives(self):
+        k = b"key\x00name"
+        self.client.execute_command("FLASH.SET", k, "v")
+        self.client.execute_command("FLASH.CONVERT", k)
+        assert self.client.execute_command("GET", k) == b"v"
+
+
+# ── Score formatting edge cases (via real commands) ───────────────────────────
+
+
+class TestFlashConvertScoreFormatting(ValkeyFlashTestCase):
+    """`format_score` decides how f64 scores render into ZADD arguments. The
+    unit tests cover the formatter in isolation; these tests drive it through
+    the full CONVERT path to catch any integration surprises."""
+
+    def test_convert_zset_with_negative_infinity_score(self):
+        self.client.execute_command("FLASH.ZADD", "inf:1", "-inf", "a")
+        self.client.execute_command("FLASH.CONVERT", "inf:1")
+        # valkey-py decodes ZSCORE to a float.
+        got = self.client.execute_command("ZSCORE", "inf:1", "a")
+        assert got == float("-inf")
+
+    def test_convert_zset_with_positive_infinity_score(self):
+        self.client.execute_command("FLASH.ZADD", "inf:2", "inf", "a")
+        self.client.execute_command("FLASH.CONVERT", "inf:2")
+        got = self.client.execute_command("ZSCORE", "inf:2", "a")
+        assert got == float("inf")
+
+    def test_convert_zset_with_large_integer_score(self):
+        # 10^15 is comfortably below the 1e17 threshold — integer fast-path.
+        big = 10**15
+        self.client.execute_command("FLASH.ZADD", "big:1", str(big), "m")
+        self.client.execute_command("FLASH.CONVERT", "big:1")
+        assert int(self.client.execute_command("ZSCORE", "big:1", "m")) == big
+
+    def test_convert_zset_with_very_small_float_score(self):
+        # 1e-300 is well inside normal f64 range; must round-trip byte-exact
+        # through format_score's %.17 branch.
+        v = 1e-300
+        self.client.execute_command("FLASH.ZADD", "tiny:1", repr(v), "m")
+        self.client.execute_command("FLASH.CONVERT", "tiny:1")
+        assert self.client.execute_command("ZSCORE", "tiny:1", "m") == v
+
+    def test_convert_zset_ordered_members_preserve_score_ordering(self):
+        # Members sorted by score after CONVERT must match the pre-CONVERT
+        # order reported by FLASH.ZRANGE.
+        pairs = [(-1.5, "a"), (0, "b"), (1e15, "c"), (float("inf"), "d")]
+        for s, m in pairs:
+            self.client.execute_command("FLASH.ZADD", "ord:1", repr(s), m)
+        self.client.execute_command("FLASH.CONVERT", "ord:1")
+        result = self.client.execute_command("ZRANGE", "ord:1", "0", "-1")
+        assert result == [b"a", b"b", b"c", b"d"]
+
+
+# ── Cold-tier TTL round-trip ──────────────────────────────────────────────────
+
+
+class TestFlashConvertColdTTL(ValkeyFlashTestCase):
+    """TTL preservation combined with Cold-tier materialisation. `preserve_ttl`
+    must consult both `obj.ttl_ms` and the native-key expiry, and that path
+    must survive a demote + promote round-trip."""
+
+    def test_cold_hash_with_native_expire_before_demote(self):
+        self.client.execute_command("FLASH.HSET", "cth", "a", "1", "b", "2")
+        self.client.execute_command("EXPIRE", "cth", "300")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "cth")
+        assert self.client.execute_command("FLASH.CONVERT", "cth") == 1
+        ttl = self.client.execute_command("TTL", "cth")
+        assert ttl > 0 and abs(ttl - 300) <= 10
+        assert self.client.execute_command("HGETALL", "cth") == {b"a": b"1", b"b": b"2"}
+
+    def test_cold_list_with_native_expire_before_demote(self):
+        self.client.execute_command("FLASH.RPUSH", "ctl", "x", "y", "z")
+        self.client.execute_command("EXPIRE", "ctl", "300")
+        self.client.execute_command("FLASH.DEBUG.DEMOTE", "ctl")
+        assert self.client.execute_command("FLASH.CONVERT", "ctl") == 1
+        ttl = self.client.execute_command("TTL", "ctl")
+        assert ttl > 0 and abs(ttl - 300) <= 10
+        assert self.client.execute_command("LRANGE", "ctl", "0", "-1") == [b"x", b"y", b"z"]
+
 
 class TestFlashConvertAof(ValkeyFlashTestCase):
     """After CONVERT, the AOF must contain only native commands for the key —
