@@ -1,5 +1,8 @@
+import contextlib
 import importlib
 import os
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -66,6 +69,72 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if any(m.name.startswith("docker_") for m in item.iter_markers()):
                 item.add_marker(skip_docker)
+
+
+def _reap_leftover_test_state() -> None:
+    """Remove stale test-data files and lingering valkey-server processes from
+    previously interrupted runs.
+
+    The valkeytestframework cleans up per-server artifacts (logfile, rdb, aof
+    directory) in `ValkeyServerHandle.exit()`, which only runs when pytest
+    unwinds the autouse fixtures cleanly. Ctrl-C, SIGKILL, CI timeouts, or any
+    crash before teardown leaves hundreds to thousands of stale files in
+    `test-data/` plus the server processes themselves (whose cwd remains that
+    directory).
+
+    When the next session starts, enough accumulated state in `test-data/`
+    manifests as 90-second `wait_for_ready_to_accept_connections` timeouts on
+    otherwise-healthy fixtures (observed on `TestFlashMigrateProbeNoFlash`
+    with its two-server setup: 2/3 runs hit the 181s timeout once test-data
+    grows past ~2k entries). Wiping at session start removes the class of
+    failure altogether.
+
+    Kept strictly at session scope: inside a session the framework's own
+    fixtures are authoritative. Runs only for the primary pytest process
+    (`PYTEST_XDIST_WORKER` absent); xdist workers must not race the wipe.
+
+    Set `KEEP_TEST_DATA=1` to preserve state across sessions for debugging.
+    """
+    if os.environ.get("KEEP_TEST_DATA") == "1":
+        return
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return
+
+    test_data_dir = os.path.join(_repo_root, "test-data")
+    if os.path.isdir(test_data_dir):
+        try:
+            entries = os.listdir(test_data_dir)
+        except OSError:
+            entries = []
+        if entries:
+            shutil.rmtree(test_data_dir, ignore_errors=True)
+            with contextlib.suppress(OSError):
+                os.makedirs(test_data_dir, exist_ok=True)
+
+    # Kill any orphaned valkey-server processes that have our test-data/ as
+    # cwd. A plain pgrep-all would kill a developer's local valkey:6379.
+    try:
+        pids = subprocess.run(
+            ["pgrep", "-f", "valkey-server"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout.split()
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+    for pid in pids:
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            continue
+        if os.path.abspath(cwd) == os.path.abspath(test_data_dir):
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pid), 9)
+
+
+_reap_leftover_test_state()
 
 
 @pytest.hookimpl(hookwrapper=True)

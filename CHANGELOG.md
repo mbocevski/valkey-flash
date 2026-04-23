@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Session-start reaper in `tests/conftest.py` clears `test-data/` and kills any lingering `valkey-server` processes rooted there before the first test runs. When a prior session was interrupted (Ctrl-C, SIGKILL, CI timeout), the framework's per-test `exit()` cleanup was skipped, leaking thousands of per-port logfile/rdb/aof artefacts. Once `test-data/` accumulated past ~7k entries, `TestFlashMigrateProbeNoFlash` (two-server fixture) hit the framework's 90-second `wait_for_ready_to_accept_connections` timeout twice in a row for a 181s ERROR — reliably reproducible. Set `KEEP_TEST_DATA=1` to preserve state for debugging.
+
 ## [1.0.0] - 2026-04-20
 
 First release.
