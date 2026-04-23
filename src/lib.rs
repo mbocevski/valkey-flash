@@ -13,6 +13,7 @@ pub mod async_io;
 pub mod cluster;
 pub mod commands;
 pub mod config;
+pub mod demotion;
 pub mod metrics;
 pub mod persistence;
 pub mod recovery;
@@ -362,6 +363,13 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
         *guard = Some(handle);
     }
 
+    // Event-loop timer that drains the cache's eviction queue to NVMe whenever
+    // the RAM hot tier exceeds capacity. This is the production trigger for
+    // the tiering behaviour advertised on the tin — without it the cache would
+    // silently overflow via quick_cache's internal S3-FIFO (correct but
+    // invisible at the module level, and keys would never reach Tier::Cold).
+    demotion::start(ctx);
+
     if let Ok(mut state) = MODULE_STATE.lock() {
         *state = ModuleState::Ready;
     }
@@ -370,6 +378,11 @@ fn initialize(ctx: &Context, _args: &[ValkeyString]) -> Status {
 }
 
 fn deinitialize(_ctx: &Context) -> Status {
+    // Stop the auto-demotion timer from re-arming. Any timer already scheduled
+    // will fire once more, observe the flag, and exit without work — so by the
+    // time dlclose() runs no demotion callback is still pending into our code.
+    demotion::shutdown();
+
     // Set the shutdown flag and wake the compaction thread immediately via the
     // condvar, then join it.  This guarantees the thread exits before
     // dlclose() unmaps the .so text segment.  The wait is bounded by one
@@ -440,7 +453,10 @@ fn compaction_worker() {
 /// Early-returns without error if STORAGE is already set — this handles the
 /// primary→replica→primary round-trip where the existing backend is still live.
 /// On failure, MODULE_STATE is set to Error and a warning is logged.
-pub(crate) fn init_nvme_backend() {
+///
+/// `ctx` is the role-change event context, forwarded to `demotion::start` so
+/// the auto-demotion timer is scheduled against the live event loop.
+pub(crate) fn init_nvme_backend(ctx: &Context) {
     if STORAGE.get().is_some() {
         logging::log_notice("flash: promotion: NVMe backend already present — resuming");
         return;
@@ -547,6 +563,10 @@ pub(crate) fn init_nvme_backend() {
     if let Ok(mut guard) = COMPACTION_THREAD.lock() {
         *guard = Some(handle);
     }
+
+    // Replica → primary promotion brings NVMe online; start the auto-demotion
+    // timer the same way we do on cold-start initialize().
+    demotion::start(ctx);
 
     if let Ok(mut state) = MODULE_STATE.lock() {
         *state = ModuleState::Ready;

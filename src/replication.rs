@@ -96,7 +96,7 @@ pub fn must_run_sync(ctx: &Context) -> bool {
 ///   NVMe backend (STORAGE, WAL, POOL, compaction thread) so that write commands
 ///   succeed immediately without a server restart.
 #[role_changed_event_handler]
-fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
+fn on_role_changed(ctx: &Context, new_role: ServerRole) {
     match new_role {
         ServerRole::Replica => {
             IS_REPLICA.store(true, Ordering::Release);
@@ -117,7 +117,7 @@ fn on_role_changed(_ctx: &Context, new_role: ServerRole) {
             valkey_module::logging::log_notice(
                 "flash: role changed to Primary — initiating NVMe backend",
             );
-            crate::init_nvme_backend();
+            crate::init_nvme_backend(ctx);
         }
     }
 }
