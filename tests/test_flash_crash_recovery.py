@@ -348,12 +348,20 @@ class TestFlashWalCorruption(_CrashTestBase):
         assert _recovery_count(self.server) == 0
 
     @pytest.mark.crash_recovery
+    @pytest.mark.skip_for_asan
     def test_corrupt_wal_magic_causes_module_load_failure(self):
         """Scenario 9: corrupt WAL magic — module refuses to load with a clear error.
 
         BadMagic is a fatal recovery error (unlike CRC corruption which is non-fatal).
         The server starts but the flash module fails to initialize; the log must
         contain 'flash: recovery failed' and 'bad magic'.
+
+        Skipped under ASAN: when `initialize()` returns Err, Valkey exits
+        without calling `deinitialize()`, so the core's `VM_CreateDataType`
+        and `VM_Alloc` allocations (registered during module load) remain
+        unfreed at process exit. LSAN reports these as leaks even though
+        they're server-owned memory. The previous tee-pipe hang masked this
+        until the teardown fix landed.
         """
         _sigkill(self.server)
 

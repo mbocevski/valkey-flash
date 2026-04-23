@@ -17,8 +17,8 @@ import tempfile
 
 import pytest
 from valkey import ResponseError
+from valkey_flash_test_case import ValkeyFlashTestCase as ValkeyTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 
 def _binaries_dir():
