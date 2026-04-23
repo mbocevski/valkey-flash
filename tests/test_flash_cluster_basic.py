@@ -28,8 +28,8 @@ from contextlib import suppress
 import pytest
 import valkey
 from valkey.cluster import ValkeyCluster
+from valkey_flash_test_case import ValkeyFlashTestCase as ValkeyTestCase
 from valkeytestframework.conftest import resource_port_tracker  # noqa: F401
-from valkeytestframework.valkey_test_case import ValkeyTestCase
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

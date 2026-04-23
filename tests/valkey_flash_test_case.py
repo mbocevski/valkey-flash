@@ -17,6 +17,45 @@ FLASH_TEST_CAPACITY_BYTES = 16 * 1024 * 1024
 
 class ValkeyFlashTestCase(ValkeyTestCase):
     @pytest.fixture(autouse=True)
+    def _flash_server_cleanup(self, setup):
+        """Always-runs per-test teardown for any ValkeyServerHandle the test
+        registered via `self.create_server(...)` or appended to
+        `self.server_list` / `self.replicas`.
+
+        The upstream framework exposes a `teardown()` method but never wires
+        it to a pytest hook, so it's dead code. Subclasses often override
+        `setup_test` to parameterise server args, and the overrides don't
+        always yield or replicate the primary's shutdown — leaking server
+        processes out of the test. Those processes inherit pytest's stdout
+        fd; under AddressSanitizer the LSAN atexit scan delays the leaked
+        process's death long enough to keep `tee` on the right of
+        `pytest ... 2>&1 | tee log` alive past the CI step budget.
+
+        This fixture declares a teardown that runs regardless of what the
+        subclass's `setup_test` does, graceful-shutdowns every tracked
+        server, and SIGKILL-falls-back on anything still alive so the
+        stdout fd is released before the step exits.
+        """
+        yield
+        # Teardown order matters: replicas first (they hold a link to the
+        # primary, whose graceful SHUTDOWN path waits for the link to drop),
+        # then the primary and any other tracked servers.
+        for replica in getattr(self, "replicas", []):
+            _shutdown_server_handle(replica)
+        if hasattr(self, "replicas"):
+            self.replicas = []
+        for server in getattr(self, "server_list", []):
+            _shutdown_server_handle(server)
+        if hasattr(self, "server_list"):
+            self.server_list = []
+        # `self.server` may be set to something not in server_list (e.g. a
+        # handle constructed by a subclass's custom helper); catch that too.
+        standalone = getattr(self, "server", None)
+        if standalone is not None:
+            _shutdown_server_handle(standalone)
+            self.server = None
+
+    @pytest.fixture(autouse=True)
     def setup_test(self, setup):
         binaries_dir = (
             f"{os.path.dirname(os.path.realpath(__file__))}"
@@ -49,26 +88,11 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         )
         yield
         # Drop the per-test flash directory so test-data/ doesn't balloon by
-        # `capacity-bytes` for every test the session runs.
+        # `capacity-bytes` for every test the session runs. Server shutdown
+        # happens in `_flash_server_cleanup` so subclasses that override
+        # `setup_test` (without re-implementing this yield side) still get
+        # clean teardown.
         shutil.rmtree(self.flash_dir, ignore_errors=True)
-        # Graceful shutdown first: issues `SHUTDOWN NOSAVE` and waits for the
-        # process to exit. This lets the module's `deinitialize` hook run —
-        # which joins background threads, closes the io_uring, and (when the
-        # module is built with `--cfg=coverage`) flushes LLVM profile counters
-        # to `LLVM_PROFILE_FILE`. Without this the Coverage CI job had 0%
-        # reported for any code path only reachable via a running server
-        # (notably INFO flash in `metrics.rs`).
-        with contextlib.suppress(Exception):
-            self.server.exit()
-        # Force-kill fallback if graceful shutdown didn't reap the process:
-        # leaked valkey-server processes accumulate io_uring rings, and a long
-        # suite run eventually hits per-user kernel limits ("io_uring
-        # unavailable: Cannot allocate memory").
-        server_proc = getattr(self.server, "server", None)
-        if server_proc is not None and server_proc.poll() is None:
-            with contextlib.suppress(Exception):
-                server_proc.kill()
-                server_proc.wait(timeout=5)
 
     def verify_error_response(self, client, cmd, expected_err_reply):
         try:
@@ -182,13 +206,38 @@ def wait_for_replica_caught_up(primary_client, replica_client, timeout_s=5.0):
     raise AssertionError(f"Replica did not catch up to offset {target} within {timeout_s}s")
 
 
-class FlashReplicationTestCase(ReplicationTestCase):
-    """ReplicationTestCase that waits for applied-offset parity, not just a
-    live link, in `waitForReplicaToSyncUp`. See `wait_for_replica_caught_up`
-    for the reason the upstream helper is insufficient."""
+class FlashReplicationTestCase(ReplicationTestCase, ValkeyFlashTestCase):
+    """ReplicationTestCase that waits for applied-offset parity (not just
+    link up) in `waitForReplicaToSyncUp`, and inherits
+    `ValkeyFlashTestCase`'s `_flash_server_cleanup` fixture so every replica
+    and primary it starts is torn down regardless of how subclasses override
+    `setup_test`. See `wait_for_replica_caught_up` for the offset reason and
+    `_flash_server_cleanup` for the teardown reason."""
+
+    @pytest.fixture(autouse=True)
+    def setup_test(self, setup):
+        # Replication subclasses always override this to stand up a primary
+        # with per-test module args. The no-op default here prevents
+        # ValkeyFlashTestCase's `setup_test` from silently creating a second
+        # primary when a subclass forgets to override.
+        yield
 
     def waitForReplicaToSyncUp(self, server):
         # First satisfy the upstream contract (link up), then upgrade to an
         # offset-based wait using the replica's public client.
         super().waitForReplicaToSyncUp(server)
         wait_for_replica_caught_up(self.client, server.client)
+
+
+def _shutdown_server_handle(handle):
+    """Best-effort teardown of a ValkeyServerHandle: graceful SHUTDOWN NOSAVE
+    (so the module's `deinitialize` can flush LLVM profile counters, join
+    background threads, and close the io_uring), then SIGKILL if the process
+    is still alive."""
+    with contextlib.suppress(Exception):
+        handle.exit()
+    proc = getattr(handle, "server", None)
+    if proc is not None and hasattr(proc, "poll") and proc.poll() is None:
+        with contextlib.suppress(Exception):
+            proc.kill()
+            proc.wait(timeout=5)
