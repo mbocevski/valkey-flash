@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-24
+
 ### Added
 
+- Automatic hot → cold tier demotion. A 100 ms event-loop timer drains the RAM cache's eviction queue to NVMe whenever `cache.approx_bytes() > cache.capacity_bytes()`, processing up to 128 keys per tick. Demotion mutates tier state on the event-loop thread through the same atomic NVMe-write + tiering-map + WAL + cache-eviction sequence `FLASH.DEBUG.DEMOTE` uses. Replica-mode nodes skip the tick and only demote after promotion. The tick re-arms itself at the end of each pass and is unconditionally shut down from `deinitialize()` so pending timers never fire into an unloading module.
+- `INFO flash` field `flash_auto_demotions_total` — monotonic count of successful auto-demotions since module load. Lets operators verify the demotion loop is firing against their workload.
 - `FLASH.CONVERT key` — atomically converts a single `FLASH.*` key (string / hash / list / zset) to its native Valkey counterpart in-place, preserving name and TTL. Sub-calls (`DEL`, `SET`/`HSET`/`RPUSH`/`ZADD`, `PEXPIREAT`) run with the replicate flag so AOF and replicas see only native commands, keeping the persisted log module-independent after conversion. Replies `:1` on conversion, `:0` when the key is missing or already native (idempotent).
 - `FLASH.DRAIN [MATCH pattern] [COUNT n] [FORCE]` — scans the keyspace and calls `FLASH.CONVERT` on every matching `FLASH.*` key. Reply is an array `[converted, skipped, errors, scanned]`. The prerequisite for `MODULE UNLOAD flash`, which Valkey refuses while custom-type keys exist. The default headroom guard refuses when `used_memory + storage_used > maxmemory`; `FORCE` overrides. See the [Unloading the module](README.md#unloading-the-module) section for operator guidance.
 - `INFO flash` fields: `flash_convert_total`, `flash_drain_in_progress`, `flash_drain_last_converted`, `flash_drain_last_skipped`, `flash_drain_last_errors`, `flash_drain_last_scanned`.
 - Keyspace event: `flash.convert` fires after a successful conversion, alongside the native sub-calls' standard `del` / `set` / `hset` / `rpush` / `zadd` / `expire` events.
+
+### Changed
+
+- `flash_storage_used_bytes` now reports live blocks (`next_block - reclaimed`) instead of the bump-allocator high-water mark. `flash_storage_free_bytes` now includes both the unallocated tail headroom *and* reclaimed free-list blocks. `used + free == capacity` always holds (modulo tiny drift across the two lock-free reads). The previous formula reported `storage_free_bytes = 0` as soon as any data was written, hiding the real headroom behind the bump pointer.
 
 ### Fixed
 
@@ -122,5 +130,6 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 - WAL record CRC32C framing detects and rejects corrupt or truncated records on recovery.
 - RDB version-byte guard widened to prevent integer overflow on untrusted input.
 
-[Unreleased]: https://github.com/mbocevski/valkey-flash/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mbocevski/valkey-flash/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mbocevski/valkey-flash/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mbocevski/valkey-flash/releases/tag/v1.0.0
