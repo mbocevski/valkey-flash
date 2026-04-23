@@ -216,21 +216,10 @@ fn scan_keys(ctx: &Context, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
 /// `MATCH` to target a subset. That's the safer bias — false refusals cost
 /// an operator one `FORCE` flag, a silent OOM costs a cluster.
 fn check_headroom(ctx: &Context) -> Result<(), ValkeyError> {
-    let info = ctx.server_info("memory");
-    let Some(used) = info
-        .field("used_memory")
-        .and_then(|s| s.try_as_str().ok().and_then(|t| t.parse::<u64>().ok()))
-    else {
+    let Some((used, maxmem)) = read_memory_section(ctx) else {
         logging::log_warning(
-            "flash: FLASH.DRAIN: could not read used_memory; skipping headroom guard",
+            "flash: FLASH.DRAIN: could not read INFO memory; skipping headroom guard",
         );
-        return Ok(());
-    };
-    let Some(maxmem) = info
-        .field("maxmemory")
-        .and_then(|s| s.try_as_str().ok().and_then(|t| t.parse::<u64>().ok()))
-    else {
-        // No maxmemory field → treat as unlimited.
         return Ok(());
     };
     if maxmem == 0 {
@@ -255,6 +244,66 @@ fn check_headroom(ctx: &Context) -> Result<(), ValkeyError> {
         )));
     }
     Ok(())
+}
+
+/// Fetch `(used_memory, maxmemory)` from `INFO memory` using the raw
+/// unsigned-variant FFI. Returns `None` if the API is unavailable or any
+/// field lookup fails.
+///
+/// The obvious implementation — `ctx.server_info("memory").field("used_memory")`
+/// — leaks 24 bytes per call: Valkey core allocates a `RedisModuleString`
+/// with refcount 1 inside `VM_ServerInfoGetField`, then the crate's
+/// `ValkeyString::new` wrapper calls `RedisModule_RetainString` (bumping to
+/// 2) before `Drop` calls `RedisModule_FreeString` (dropping back to 1).
+/// The original refcount set by `VM_ServerInfoGetField` is never released.
+/// ASAN caught this on the PR (48 bytes leaked per drain probe).
+///
+/// `RedisModule_ServerInfoGetFieldUnsigned` avoids the allocation entirely
+/// by returning `unsigned long long` directly.
+fn read_memory_section(ctx: &Context) -> Option<(u64, u64)> {
+    use std::ffi::CString;
+
+    let section = CString::new("memory").ok()?;
+
+    // SAFETY: ctx.ctx is valid for the duration of the command invocation
+    // (lifetime of &Context). `RedisModule_GetServerInfo` returns an owned
+    // `RedisModuleServerInfoData *` that must be released via
+    // `RedisModule_FreeServerInfo`; we do so unconditionally at the end.
+    let info_data = unsafe {
+        #[allow(static_mut_refs)]
+        let get = valkey_module::raw::RedisModule_GetServerInfo?;
+        get(ctx.ctx, section.as_ptr())
+    };
+    if info_data.is_null() {
+        return None;
+    }
+
+    let read_u64 = |name: &str| -> Option<u64> {
+        let cname = CString::new(name).ok()?;
+        let mut err: std::os::raw::c_int = 0;
+        // SAFETY: `info_data` is non-null and owned for the duration of this
+        // closure; `cname` outlives the call. `err` is a writable local.
+        let v = unsafe {
+            #[allow(static_mut_refs)]
+            let f = valkey_module::raw::RedisModule_ServerInfoGetFieldUnsigned?;
+            f(info_data, cname.as_ptr(), &mut err)
+        };
+        if err != 0 { None } else { Some(v) }
+    };
+
+    let used = read_u64("used_memory");
+    let maxmem = read_u64("maxmemory");
+
+    // SAFETY: `info_data` was returned by `RedisModule_GetServerInfo` above
+    // and has not been freed yet; this is the matching release call.
+    unsafe {
+        #[allow(static_mut_refs)]
+        if let Some(free) = valkey_module::raw::RedisModule_FreeServerInfo {
+            free(ctx.ctx, info_data);
+        }
+    }
+
+    Some((used?, maxmem?))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
