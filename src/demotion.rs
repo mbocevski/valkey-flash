@@ -285,34 +285,58 @@ fn tick(ctx: &Context, _data: ()) {
     }
     let phase1_us = phase1_start.elapsed().as_micros() as u64;
 
-    // Adaptive AIMD: if phase 1 ran over budget, halve the override cap.
-    // If we hit the cap with pressure remaining, grow additively toward
-    // the configured ceiling. Skip adjustment when the pool pushed back
-    // (pool_full): the bottleneck there isn't the event loop, so neither
-    // shrinking nor growing would help.
+    // Adaptive AIMD: see `aimd_next_override` for the pure state-transition
+    // logic. Skip adjustment when the pool pushed back (pool_full) — the
+    // bottleneck there isn't the event loop, so neither shrinking nor
+    // growing would help.
     if !pool_full {
         let hit_cap = submitted == batch && pressure;
-        let next = if phase1_us > STALL_BUDGET_US {
-            (batch / 2).max(1)
-        } else if hit_cap && batch < configured_batch {
-            (batch + (batch / 4).max(1)).min(configured_batch)
-        } else if phase1_us * 2 < STALL_BUDGET_US && override_cap != 0 {
-            // Plenty of headroom and no stall in the recent history; lift
-            // the override by one step so we can recover toward configured.
-            (batch + (batch / 4).max(1)).min(configured_batch)
-        } else {
-            batch
-        };
-        if next != batch || (override_cap != 0 && next == configured_batch) {
-            // Store 0 when we've converged back to the configured ceiling
-            // so `override_cap == 0` stays the steady-state "no override"
-            // marker visible to other readers.
-            let store = if next >= configured_batch { 0 } else { next };
-            EFFECTIVE_BATCH_OVERRIDE.store(store, Ordering::Relaxed);
+        let next_store = aimd_next_override(batch, configured_batch, phase1_us, hit_cap);
+        if next_store != override_cap {
+            EFFECTIVE_BATCH_OVERRIDE.store(next_store, Ordering::Relaxed);
         }
     }
 
     schedule(ctx, TICK_INTERVAL);
+}
+
+/// Pure AIMD state-transition for the adaptive batch override.
+///
+/// Inputs describe the tick that just ran:
+///   - `batch`: the effective cap used this tick (already the min of
+///     `configured` and any prior override)
+///   - `configured`: the user-visible `flash.demotion-batch` ceiling
+///   - `phase1_us`: measured phase-1 wall time, µs
+///   - `hit_cap_with_pressure`: `true` when the submit loop hit `batch`
+///     and the cache trigger condition was still true (i.e. more keys
+///     wanted to be demoted than the cap allowed)
+///
+/// Returns the new value to store in `EFFECTIVE_BATCH_OVERRIDE`.
+///   - `0` means "no clamp — use `configured` directly". Stored when the
+///     adaptive cap has recovered back to (or above) the configured
+///     ceiling, so steady-state observation is clean.
+///   - Any non-zero value is the new cap, always strictly less than
+///     `configured`.
+fn aimd_next_override(
+    batch: usize,
+    configured: usize,
+    phase1_us: u64,
+    hit_cap_with_pressure: bool,
+) -> usize {
+    let step = (batch / 4).max(1);
+    let next = if phase1_us > STALL_BUDGET_US {
+        // Multiplicative decrease: halve on over-budget tick.
+        (batch / 2).max(1)
+    } else if hit_cap_with_pressure && batch < configured {
+        // Additive increase: cap was binding and pressure persists.
+        (batch + step).min(configured)
+    } else if phase1_us * 2 < STALL_BUDGET_US && batch < configured {
+        // Plenty of headroom and no stall — lift toward the ceiling.
+        (batch + step).min(configured)
+    } else {
+        batch
+    };
+    if next >= configured { 0 } else { next }
 }
 
 // ── Phase 1 (event loop): prepare + submit ───────────────────────────────────
@@ -630,4 +654,69 @@ pub(crate) fn demote_bytes<T>(
     }
 
     Ok(ValkeyValue::SimpleStringStatic("OK"))
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::{STALL_BUDGET_US, aimd_next_override};
+
+    // Stall budget is 2_000 µs; use constants that straddle it to exercise
+    // each branch unambiguously.
+    const OVER: u64 = STALL_BUDGET_US + 1;
+    const UNDER_HALF: u64 = STALL_BUDGET_US / 4;
+    const AT_HALF: u64 = STALL_BUDGET_US - 1; // over-half-budget but below stall
+
+    #[test]
+    fn over_budget_tick_halves_cap() {
+        // batch 32, stall — halve to 16. Below configured 64 → returns 16.
+        assert_eq!(aimd_next_override(32, 64, OVER, false), 16);
+        // batch 32 halves to 16 even when the tick hit its cap with pressure;
+        // multiplicative decrease wins over additive increase.
+        assert_eq!(aimd_next_override(32, 64, OVER, true), 16);
+    }
+
+    #[test]
+    fn over_budget_never_below_one() {
+        // batch 1 halves to max(0, 1) = 1. Still below configured 64 → 1.
+        assert_eq!(aimd_next_override(1, 64, OVER, true), 1);
+    }
+
+    #[test]
+    fn hit_cap_with_pressure_grows_additively() {
+        // batch 32 hit cap with pressure + plenty of headroom: grow by 25 %
+        // (step = max(8, 1) = 8) toward configured 64 → 40.
+        assert_eq!(aimd_next_override(32, 64, UNDER_HALF, true), 40);
+    }
+
+    #[test]
+    fn idle_headroom_also_grows() {
+        // Same batch 32 + configured 64 but no cap-hit: the idle-headroom
+        // branch still lifts toward the ceiling so recovery proceeds even
+        // when current cap isn't binding.
+        assert_eq!(aimd_next_override(32, 64, UNDER_HALF, false), 40);
+    }
+
+    #[test]
+    fn grow_clamps_at_configured_returns_zero() {
+        // Growing past configured returns 0 — sentinel for "no clamp active,
+        // use the configured ceiling directly".
+        assert_eq!(aimd_next_override(60, 64, UNDER_HALF, true), 0);
+    }
+
+    #[test]
+    fn mid_budget_not_idle_holds_steady() {
+        // Phase-1 runtime above half the stall budget, no cap-hit: neither
+        // branch fires, cap stays at 32. Not at configured → return 32.
+        assert_eq!(aimd_next_override(32, 64, AT_HALF, false), 32);
+    }
+
+    #[test]
+    fn at_configured_stays_at_sentinel() {
+        // Already at configured ceiling under any calm-tick input: returns 0.
+        assert_eq!(aimd_next_override(64, 64, UNDER_HALF, false), 0);
+        assert_eq!(aimd_next_override(64, 64, UNDER_HALF, true), 0);
+        assert_eq!(aimd_next_override(64, 64, AT_HALF, false), 0);
+    }
 }
