@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-04-24
+
+### Fixed
+
+- `alloc_blocks` no longer leaks the bump-allocator watermark when capacity is exhausted. The previous `fetch_add`-then-check pattern bumped `next_block` unconditionally; if the check failed, the watermark stayed bumped and every subsequent failed allocation drifted it further. Under sustained write pressure once the capacity cap was hit, `flash_storage_used_bytes` (computed as `(next_block - free_blocks) × BLOCK`) climbed past `flash_storage_capacity_bytes` without bound, breaking the v1.1 `used + free == capacity` invariant and silently stopping future demotions. Replaced with a CAS-loop that only commits the bump on success. Two regression tests (one N-failed-allocs watermark stability, one oversized-request immediate rejection) lock the invariant in.
+- `StorageBackend::put` now rolls back the allocation when `write_value_at` fails, matching the pattern already used by `alloc_and_write_cold`. A transient io_uring write failure would otherwise leak the freshly-allocated blocks.
+
 ## [1.1.0] - 2026-04-24
 
 ### Added
@@ -143,6 +150,7 @@ Module load args (`--loadmodule libvalkey_flash.so flash.<knob> <value>`):
 - WAL record CRC32C framing detects and rejects corrupt or truncated records on recovery.
 - RDB version-byte guard widened to prevent integer overflow on untrusted input.
 
-[Unreleased]: https://github.com/mbocevski/valkey-flash/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/mbocevski/valkey-flash/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/mbocevski/valkey-flash/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mbocevski/valkey-flash/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mbocevski/valkey-flash/releases/tag/v1.0.0
