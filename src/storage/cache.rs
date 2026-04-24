@@ -4,9 +4,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use quick_cache::{Weighter, sync::Cache};
+use quick_cache::{DefaultHashBuilder, Lifecycle, Weighter, sync::Cache};
 
-type InnerCache = Cache<Vec<u8>, Vec<u8>, BytesWeighter>;
+type InnerCache = Cache<Vec<u8>, Vec<u8>, BytesWeighter, DefaultHashBuilder, CountingLifecycle>;
 
 // ── BytesWeighter ─────────────────────────────────────────────────────────────
 
@@ -16,6 +16,35 @@ struct BytesWeighter;
 impl Weighter<Vec<u8>, Vec<u8>> for BytesWeighter {
     fn weight(&self, key: &Vec<u8>, val: &Vec<u8>) -> u64 {
         (key.len() + val.len()) as u64
+    }
+}
+
+// ── CountingLifecycle ─────────────────────────────────────────────────────────
+//
+// Implements the quick_cache Lifecycle hook so S3-FIFO capacity-pressure
+// evictions increment the same `eviction_count` counter as explicit `delete()`
+// calls.  The `Arc` lets `FlashCache` and all internal quick_cache shards share
+// the same counter without an additional lock.
+//
+// Note: quick_cache's `on_evict` also fires when an existing key is overwritten
+// via `insert()` (the old value is displaced from its slot).  Those displaced
+// entries are included in `eviction_count`, so the metric reflects all entries
+// that have left the RAM cache — capacity pressure, overwrites, and explicit
+// deletes.
+//
+// quick_cache's `remove()` (used by `delete()`) does NOT trigger `on_evict`;
+// `delete()` therefore increments `eviction_count` manually.
+
+#[derive(Clone)]
+struct CountingLifecycle(Arc<AtomicU64>);
+
+impl Lifecycle<Vec<u8>, Vec<u8>> for CountingLifecycle {
+    type RequestState = ();
+
+    fn begin_request(&self) {}
+
+    fn on_evict(&self, _state: &mut (), _key: Vec<u8>, _val: Vec<u8>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -36,10 +65,11 @@ const MAX_CANDIDATES: usize = 65_536;
 pub struct FlashCache {
     inner: RwLock<Arc<InnerCache>>,
     capacity_bytes: AtomicU64,
-    approx_bytes: AtomicU64,
-    hits: AtomicU64,
-    misses: AtomicU64,
-    evictions: AtomicU64,
+    // Shared with CountingLifecycle — both S3-FIFO capacity-pressure evictions
+    // (via Lifecycle::on_evict) and explicit delete() calls increment this
+    // counter.  The Arc lets resize() carry the counter into the replacement
+    // cache so no eviction events are lost across a resize.
+    eviction_count: Arc<AtomicU64>,
     // Insertion-ordered queue used by evict_candidate() to find demotion targets.
     // Keys are added on first put(); auto-evicted keys are skipped on pop.
     candidates: Mutex<VecDeque<Vec<u8>>>,
@@ -47,19 +77,20 @@ pub struct FlashCache {
 
 impl FlashCache {
     pub fn new(capacity_bytes: u64) -> Self {
+        let eviction_count = Arc::new(AtomicU64::new(0));
+        let lifecycle = CountingLifecycle(Arc::clone(&eviction_count));
         // Assume average 256-byte entry for pre-sizing the item count estimate.
         let estimated_items = ((capacity_bytes / 256).max(16)) as usize;
         FlashCache {
-            inner: RwLock::new(Arc::new(Cache::with_weighter(
+            inner: RwLock::new(Arc::new(Cache::with(
                 estimated_items,
                 capacity_bytes,
                 BytesWeighter,
+                DefaultHashBuilder::default(),
+                lifecycle,
             ))),
             capacity_bytes: AtomicU64::new(capacity_bytes),
-            approx_bytes: AtomicU64::new(0),
-            hits: AtomicU64::new(0),
-            misses: AtomicU64::new(0),
-            evictions: AtomicU64::new(0),
+            eviction_count,
             candidates: Mutex::new(VecDeque::new()),
         }
     }
@@ -71,15 +102,20 @@ impl FlashCache {
     /// Resize the cache to `new_capacity` bytes.
     ///
     /// Existing entries are migrated into the new cache. If the new capacity is
-    /// smaller, the new cache's W-TinyLFU policy auto-evicts the least-valuable
+    /// smaller, the new cache's S3-FIFO policy auto-evicts the least-valuable
     /// entries during migration (eager eviction). If larger, all existing entries
     /// are preserved and the extra space fills on future puts.
     pub fn resize(&self, new_capacity: u64) {
         let estimated_items = ((new_capacity / 256).max(16)) as usize;
-        let new_cache = Arc::new(Cache::with_weighter(
+        // Re-use the same eviction_count Arc so the counter is continuous
+        // across the resize and evictions during migration are counted.
+        let lifecycle = CountingLifecycle(Arc::clone(&self.eviction_count));
+        let new_cache = Arc::new(Cache::with(
             estimated_items,
             new_capacity,
             BytesWeighter,
+            DefaultHashBuilder::default(),
+            lifecycle,
         ));
         // Migrate entries; new cache enforces new capacity via auto-eviction.
         let old = self.cache_ref();
@@ -88,32 +124,17 @@ impl FlashCache {
         }
         *self.inner.write().unwrap_or_else(|e| e.into_inner()) = new_cache;
         self.capacity_bytes.store(new_capacity, Ordering::Relaxed);
-        // Reset byte counter; it will repopulate naturally via subsequent puts.
-        self.approx_bytes.store(0, Ordering::Relaxed);
     }
 
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        match self.cache_ref().get(key) {
-            Some(val) => {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                Some(val)
-            }
-            None => {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-                None
-            }
-        }
+        // Hits and misses are tracked natively by quick_cache (stats feature).
+        self.cache_ref().get(key)
     }
 
     pub fn put(&self, key: &[u8], value: Vec<u8>) {
         let cache = self.cache_ref();
-        let new_weight = (key.len() + value.len()) as u64;
         // Use peek (no recency update) to check for an existing entry.
-        let old_weight = cache
-            .peek(key)
-            .map(|v| (key.len() + v.len()) as u64)
-            .unwrap_or(0);
-        if old_weight == 0 {
+        if cache.peek(key).is_none() {
             // New key: enqueue as a potential demotion candidate.
             if let Ok(mut q) = self.candidates.lock()
                 && q.len() < MAX_CANDIDATES
@@ -122,28 +143,16 @@ impl FlashCache {
             }
         }
         cache.insert(key.to_vec(), value);
-        self.approx_bytes.fetch_add(new_weight, Ordering::Relaxed);
-        if old_weight > 0 {
-            self.approx_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                    Some(cur.saturating_sub(old_weight))
-                })
-                .ok();
-        }
     }
 
     /// Remove `key`. Returns `true` if the key was present.
     pub fn delete(&self, key: &[u8]) -> bool {
-        // remove() returns the (Key, Val) pair so we can compute the freed weight.
         match self.cache_ref().remove(key) {
-            Some((k, v)) => {
-                let weight = (k.len() + v.len()) as u64;
-                self.approx_bytes
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                        Some(cur.saturating_sub(weight))
-                    })
-                    .ok();
-                self.evictions.fetch_add(1, Ordering::Relaxed);
+            Some(_) => {
+                // quick_cache's remove() does not fire Lifecycle::on_evict, so
+                // increment the shared counter here to keep the evictions tally
+                // consistent with the S3-FIFO auto-eviction accounting above.
+                self.eviction_count.fetch_add(1, Ordering::Relaxed);
                 true
             }
             None => false,
@@ -178,11 +187,19 @@ impl FlashCache {
         self.cache_ref().peek(key).is_some()
     }
 
-    /// Approximate total byte footprint of all current entries (key + value).
-    /// Slightly overestimates when the cache auto-evicts entries under capacity
-    /// pressure (auto-evictions are not tracked; only explicit `delete` calls are).
+    /// Current byte footprint of all live entries (key + value).
+    ///
+    /// Delegates directly to quick_cache's native `weight()` counter, which the
+    /// S3-FIFO policy maintains internally.  Unlike the previous manual counter,
+    /// this value never drifts above `capacity_bytes()` due to untracked
+    /// auto-eviction events; the demotion trigger in `demotion.rs` therefore
+    /// works against a faithful signal.
+    ///
+    /// Note: `weight()` sums per-shard counters under brief shard read-locks.
+    /// A concurrent insert may cause a transient over-read of a few bytes, but
+    /// drift is negligible at the demote-vs-hold decision granularity.
     pub fn approx_bytes(&self) -> u64 {
-        self.approx_bytes.load(Ordering::Relaxed)
+        self.cache_ref().weight()
     }
 
     /// Configured capacity in bytes. Updated on `resize()`.
@@ -191,10 +208,11 @@ impl FlashCache {
     }
 
     pub fn metrics(&self) -> CacheMetrics {
+        let cache = self.cache_ref();
         CacheMetrics {
-            hits: self.hits.load(Ordering::Relaxed),
-            misses: self.misses.load(Ordering::Relaxed),
-            evictions: self.evictions.load(Ordering::Relaxed),
+            hits: cache.hits(),
+            misses: cache.misses(),
+            evictions: self.eviction_count.load(Ordering::Relaxed),
         }
     }
 }
@@ -265,6 +283,31 @@ mod tests {
         assert_eq!(c.approx_bytes(), 8);
         assert!(c.delete(b"key"));
         assert_eq!(c.approx_bytes(), 0);
+    }
+
+    #[test]
+    fn approx_bytes_stays_bounded_under_auto_eviction_pressure() {
+        // 100-byte cache; each entry is 5 + 15 = 20 bytes.
+        // Insert 20 entries — S3-FIFO must auto-evict ≥15 to stay in budget.
+        let c = FlashCache::new(100);
+        for i in 0..20u8 {
+            c.put(&[i; 5], vec![i; 15]);
+        }
+        // Native weight() always stays within capacity — no drift possible.
+        assert!(
+            c.approx_bytes() <= c.capacity_bytes(),
+            "approx_bytes ({}) exceeded capacity ({})",
+            c.approx_bytes(),
+            c.capacity_bytes()
+        );
+        // S3-FIFO auto-evictions must be reflected in metrics().evictions.
+        // 20 inserts into a 5-slot cache: at least 15 must have been evicted.
+        let m = c.metrics();
+        assert!(
+            m.evictions >= 15,
+            "expected ≥15 auto-evictions, got {}",
+            m.evictions
+        );
     }
 
     #[test]
@@ -383,29 +426,29 @@ mod loom_tests {
         });
     }
 
-    // Model the approx_bytes AtomicU64 counter. put() uses fetch_add and
-    // delete() uses fetch_update(saturating_sub). loom verifies no data race
-    // exists under any valid interleaving of the two atomic operations.
+    // Model the Arc<AtomicU64> eviction_count shared between FlashCache and
+    // CountingLifecycle. Concurrent on_evict (S3-FIFO auto-eviction) and
+    // delete() (explicit eviction) both call fetch_add on the same Arc.
+    // loom verifies no data race exists under any valid interleaving.
     #[test]
-    fn approx_bytes_concurrent_add_sub() {
+    fn eviction_count_concurrent_increment() {
         loom::model(|| {
-            let counter = Arc::new(AtomicU64::new(8));
+            let counter: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
             let c1 = counter.clone();
             let c2 = counter.clone();
 
-            let adder = thread::spawn(move || {
-                c1.fetch_add(10, Ordering::Relaxed);
+            let auto_evict = thread::spawn(move || {
+                c1.fetch_add(1, Ordering::Relaxed); // simulates CountingLifecycle::on_evict
             });
 
-            let subber = thread::spawn(move || {
-                c2.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                    Some(cur.saturating_sub(8))
-                })
-                .ok();
+            let explicit_delete = thread::spawn(move || {
+                c2.fetch_add(1, Ordering::Relaxed); // simulates FlashCache::delete
             });
 
-            adder.join().unwrap();
-            subber.join().unwrap();
+            auto_evict.join().unwrap();
+            explicit_delete.join().unwrap();
+
+            assert_eq!(counter.load(Ordering::Relaxed), 2);
         });
     }
 }

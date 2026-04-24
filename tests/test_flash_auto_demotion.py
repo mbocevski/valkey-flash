@@ -106,9 +106,9 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         for i in range(4000):
             self.client.execute_command("FLASH.SET", f"idle:{i}", "x" * 1000)
 
-        # The worker is correctness-gated on cache.approx_bytes() >
-        # cache.capacity_bytes(). Must see a non-zero tiered-keys count inside
-        # the poll window.
+        # The worker fires at ≥95% cache fill (see DEMOTION_FILL_PCT in
+        # src/demotion.rs).  Must see a non-zero tiered-keys count inside the
+        # poll window.
         assert _wait_for(lambda: self._info()["flash_tiered_keys"] >= 1), (
             f"expected ≥1 cold key within {DEMOTION_POLL_DEADLINE_S}s; "
             f"info: {self._info()}"

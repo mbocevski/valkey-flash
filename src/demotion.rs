@@ -37,6 +37,14 @@ const TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// event-loop stall; each NVMe put is synchronous.
 const MAX_DEMOTIONS_PER_TICK: usize = 128;
 
+/// Start demoting when the hot-tier RAM cache reaches this fill fraction
+/// (numerator over 100).  `FlashCache::approx_bytes()` now returns
+/// quick_cache's native `weight()`, which the S3-FIFO policy maintains at or
+/// below `capacity_bytes` at all times — strict overflow can never occur.
+/// Triggering at 95% gives the demotion loop a chance to move entries to NVMe
+/// cold tier before S3-FIFO has to discard them silently.
+const DEMOTION_FILL_PCT: u64 = 95;
+
 /// Set by `shutdown()` so an in-flight timer fires once, observes this, and
 /// does not re-arm — preventing dlclose() from unloading the .so out from
 /// under a pending timer callback.
@@ -87,7 +95,14 @@ fn tick(ctx: &Context, _data: ()) {
     };
 
     let mut demoted = 0usize;
-    while cache.approx_bytes() > cache.capacity_bytes() && demoted < MAX_DEMOTIONS_PER_TICK {
+    // `approx_bytes()` returns quick_cache's native `weight()`, which S3-FIFO
+    // keeps ≤ capacity_bytes at all times.  Compare against a 95% fill
+    // threshold so demotion fires proactively, before S3-FIFO is forced to
+    // discard entries without an NVMe backup.
+    while cache.approx_bytes().saturating_mul(100)
+        >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
+        && demoted < MAX_DEMOTIONS_PER_TICK
+    {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
         };

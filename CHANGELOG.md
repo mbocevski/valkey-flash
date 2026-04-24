@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `flash_cache_size_bytes` and `flash_eviction_count` now reflect quick_cache's S3-FIFO internal state directly. Previously, `cache_size_bytes` was tracked by a manual atomic that missed auto-evictions, causing it to drift above the configured capacity and making the auto-demotion trigger over-fire. `eviction_count` similarly missed all capacity-pressure evictions and reported zero even after hundreds of entries had been silently discarded. Both metrics now delegate to quick_cache's native counters (`weight()`, `stats` hits/misses, and a `Lifecycle::on_evict` callback). The auto-demotion tick threshold has been adjusted to 95% fill so it fires proactively before S3-FIFO has to discard entries without an NVMe backup.
 - `flash_storage_used_bytes` now reports live blocks (`next_block - reclaimed`) instead of the bump-allocator high-water mark. `flash_storage_free_bytes` now includes both the unallocated tail headroom *and* reclaimed free-list blocks. `used + free == capacity` always holds (modulo tiny drift across the two lock-free reads). The previous formula reported `storage_free_bytes = 0` as soon as any data was written, hiding the real headroom behind the bump pointer.
 
 ### Fixed
