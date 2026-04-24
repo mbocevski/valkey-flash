@@ -33,3 +33,6 @@ Thumbs.db
 /dump.rdb
 /appendonly.aof
 /appendonly.aof.*
+
+# Bench report output (regenerated on each run)
+/bench-report.json
