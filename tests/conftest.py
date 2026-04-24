@@ -137,6 +137,96 @@ def _reap_leftover_test_state() -> None:
 _reap_leftover_test_state()
 
 
+# ── Docker cluster health gate ────────────────────────────────────────────────
+#
+# Failover / resharding tests kill cluster nodes as part of their scenarios.
+# Their own teardown attempts `docker start` + `CLUSTER FAILOVER TAKEOVER` to
+# restore topology, but the timing is fragile — a failed recovery used to
+# cascade into 19 unrelated ConnectionRefusedError failures on subsequent
+# tests that default-target port 7001. This hook runs before each
+# `docker_cluster` / `docker_cluster_replica_tier` test, probes every port the
+# fixture advertises, and either:
+#
+#   1. All ports reachable → no-op, test runs.
+#   2. Some ports unreachable → `docker start` the matching containers and
+#      wait for health. If recovery succeeds, the test runs.
+#   3. Recovery fails → `pytest.skip()` with a message identifying the dead
+#      port. Converts a cascade of misleading failures into a single clear
+#      skip per broken container.
+
+
+_CLUSTER_PROJECT_PORTS = {
+    # marker → (compose project, first-primary port)
+    "docker_cluster": ("vf-cluster", 7001),
+    "docker_cluster_replica_tier": ("vf-cluster-rt", 7011),
+}
+
+
+def _port_reachable(port: int, timeout: float = 2.0) -> bool:
+    import socket as _socket
+
+    try:
+        with _socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.sendall(b"*1\r\n$4\r\nPING\r\n")
+            data = s.recv(64)
+            return b"+PONG" in data
+    except Exception:
+        return False
+
+
+def _recover_unhealthy_cluster(project: str, base_port: int, timeout: float = 30.0) -> list[int]:
+    """Attempt to bring any unreachable cluster container back up. Returns the
+    list of ports still unreachable after the recovery window."""
+    import subprocess
+    import time as _time
+
+    name_to_port = {
+        f"{project}-flash-primary-1-1": base_port,
+        f"{project}-flash-primary-2-1": base_port + 1,
+        f"{project}-flash-primary-3-1": base_port + 2,
+        f"{project}-flash-replica-1-1": base_port + 3,
+        f"{project}-flash-replica-2-1": base_port + 4,
+        f"{project}-flash-replica-3-1": base_port + 5,
+    }
+    unhealthy = {port: cname for cname, port in name_to_port.items() if not _port_reachable(port)}
+    if not unhealthy:
+        return []
+
+    for _port, cname in unhealthy.items():
+        with contextlib.suppress(Exception):
+            subprocess.run(
+                ["docker", "start", cname],
+                timeout=10,
+                capture_output=True,
+                check=False,
+            )
+
+    deadline = _time.monotonic() + timeout
+    still_down: list[int] = list(unhealthy.keys())
+    while _time.monotonic() < deadline and still_down:
+        still_down = [p for p in still_down if not _port_reachable(p)]
+        if not still_down:
+            break
+        _time.sleep(1)
+    return still_down
+
+
+def pytest_runtest_setup(item):
+    if os.environ.get("USE_DOCKER") != "1":
+        return
+    for marker_name, (project, base_port) in _CLUSTER_PROJECT_PORTS.items():
+        if not any(m.name == marker_name for m in item.iter_markers()):
+            continue
+        still_down = _recover_unhealthy_cluster(project, base_port)
+        if still_down:
+            pytest.skip(
+                f"docker_cluster health gate: ports {still_down} on project "
+                f"'{project}' unreachable after recovery attempt; a prior test "
+                f"left a container down and `docker start` did not revive it "
+                f"within the window."
+            )
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """Dump compose logs for every known project on docker-test failure.
