@@ -83,6 +83,10 @@ On-disk record format per value: `[u64 value_len][value bytes][zero padding to 4
 
 Hot/cold integration: `FlashCache::get()` is the fast path for `FLASH.GET` (inline reply, no `BlockClient`). On miss, the command hands off to the async I/O pool, reads from `FileIoUringBackend`, promotes the result back to Hot, and replies via `UnblockClient`.
 
+**Automatic demotion** (`src/demotion.rs`): a `RedisModule_CreateTimer`-driven tick fires every 100 ms on the event-loop thread. Each tick checks `cache.approx_bytes() > cache.capacity_bytes()` and, while over, pops up to 128 keys from the cache's insertion-ordered candidate queue (`FlashCache::evict_candidate()`). For each candidate the tick opens a writable key handle, serializes the hot payload (shape-specific), calls `storage.put()` synchronously, then atomically updates the `TieringMap`, WAL, cache, and in-memory `Tier` marker — the same sequence `FLASH.DEBUG.DEMOTE` uses.
+
+The 128-key per-tick budget caps worst-case event-loop stall at roughly one write batch; the timer yields between batches so client traffic, cluster heartbeats, and other timers make progress. Replica-mode nodes short-circuit the tick (`IS_REPLICA`), and `deinitialize()` flips a shutdown flag so an in-flight timer exits without re-arming. Monitoring: `INFO flash` exposes `flash_auto_demotions_total`.
+
 ## 6. Async I/O
 
 A fixed-size thread pool (`src/async_io.rs`) services operations that might block on NVMe.

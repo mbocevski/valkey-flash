@@ -15,6 +15,7 @@ EXPECTED_FIELDS = [
     "flash_compaction_runs",
     "flash_compaction_bytes_reclaimed",
     "flash_tiered_keys",
+    "flash_auto_demotions_total",
     "flash_module_state",
 ]
 
@@ -69,12 +70,30 @@ class TestFlashInfo(ValkeyFlashTestCase):
         ratio = float(self._info()["flash_cache_hit_ratio"])
         assert 0.0 < ratio <= 1.0
 
-    def test_storage_used_increases_after_demote(self):
+    def test_storage_used_reflects_live_data(self):
+        # storage_used_bytes is `(next_block - free_blocks) * BLOCK`, i.e. live
+        # blocks currently holding data. The FLASH.SET durability write already
+        # puts one block on NVMe, so storage_used is non-zero before DEMOTE and
+        # unchanged after DEMOTE (the demote path allocates fresh blocks and
+        # reclaims the prior durability-write blocks — net live blocks stay the
+        # same). Assert the live-blocks invariant rather than a bump-pointer
+        # delta.
         self.client.execute_command("FLASH.SET", "demote_info", "x" * 512)
         before = self._info()["flash_storage_used_bytes"]
+        assert before > 0, "FLASH.SET durability write should put ≥1 block on NVMe"
         self.client.execute_command("FLASH.DEBUG.DEMOTE", "demote_info")
         after = self._info()["flash_storage_used_bytes"]
-        assert after > before
+        assert after > 0, "after DEMOTE there must still be ≥1 live block"
+
+    def test_storage_used_plus_free_equals_capacity(self):
+        # The corrected storage accounting must produce a well-formed partition.
+        info = self._info()
+        used = info["flash_storage_used_bytes"]
+        free = info["flash_storage_free_bytes"]
+        cap = info["flash_storage_capacity_bytes"]
+        assert used + free == cap, (
+            f"storage partition broken: used({used}) + free({free}) != cap({cap})"
+        )
 
     def test_tiered_keys_increases_after_demote(self):
         self.client.execute_command("FLASH.SET", "tier_info", "data")

@@ -1,6 +1,6 @@
 [package]
 name = "valkey-flash"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "BSD-3-Clause"
 repository = "https://github.com/mbocevski/valkey-flash"
@@ -12,7 +12,7 @@ valkey-module-macros = "0"
 linkme = "0"
 io-uring = "0.7"
 libc = "0.2"
-quick_cache = "=0.6.18"
+quick_cache = { version = "=0.6.18", features = ["stats"] }
 crossbeam-channel = "=0.5.15"
 num_cpus = "=1.17.0"
 crc32c = "=0.6.8"
