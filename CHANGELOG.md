@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Auto-demotion now fires across the full range of value sizes. The previous `DEMOTION_FILL_PCT = 95` threshold sat *above* S3-FIFO's auto-eviction waterline at multi-KiB values (observed steady state ≈ 94 %): the cache never crossed 95 %, so the tick skipped demotion even while S3-FIFO churned tens of thousands of silent evictions per second. The tick now demotes when either cache fill is at or above 90 % **or** S3-FIFO has evicted at least one entry since the last tick — the latter closes the silent-eviction gap entirely, catching every workload where hot payloads accumulate in Valkey's keyspace even if the cache stays a hair below the fill threshold. Lowered `DEMOTION_FILL_PCT` from 95 to 90 for extra margin.
+
 ### Changed
 
 - Auto-demotion moved to a three-phase async pipeline: phase 1 (payload clone + pool submit) runs on the event loop, phase 2 (NVMe write via `alloc_and_write_cold`) runs on `AsyncThreadPool`, phase 3 (tier-state commit with race check against the phase-1 value hash) runs at the top of the next event-loop tick. The event loop no longer blocks on `storage.put` per demotion — client GET p99 under active demotion stays at steady-state latency instead of ticking up with value size. The tick breaks its submit loop early when `pool.submit` returns `PoolError::Full` so demotion never starves FLASH.SET / HSET / RPUSH / ZADD write-through on the shared pool. Demotion is throughput-bounded by `MAX_DEMOTIONS_PER_TICK` (128 per 100 ms tick) and back-pressured by `MAX_INFLIGHT` (256 pending completions); both will become runtime-configurable in a follow-up.

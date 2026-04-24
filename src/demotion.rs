@@ -87,11 +87,22 @@ use crate::{CACHE, POOL, STORAGE, TIERING_MAP, WAL};
 /// Tick period for the auto-demotion timer.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Start demoting when the hot-tier RAM cache reaches this fill fraction
-/// (numerator over 100). quick_cache's native `weight()` stays at or below
-/// capacity at all times, so the 95 % threshold fires proactively before
-/// S3-FIFO has to discard entries without an NVMe backup.
-const DEMOTION_FILL_PCT: u64 = 95;
+/// Demote when the hot-tier RAM cache is at or above this fill fraction
+/// (numerator over 100). Lowered from 95 % because S3-FIFO's auto-eviction
+/// waterline varies with value size: at multi-KiB values the cache steadies
+/// out at ~94 % as S3-FIFO evicts on every new insert, so a 95 % threshold
+/// was never actually crossed and demotion silently didn't fire. 90 % is
+/// comfortably below the observed steady-state waterline across value sizes
+/// while still requiring meaningful cache pressure before demotion starts.
+const DEMOTION_FILL_PCT: u64 = 90;
+
+/// Supplementary trigger: demote even if fill is below the fill threshold
+/// when S3-FIFO is actively evicting — any delta > 0 in `eviction_count`
+/// since the last tick indicates the cache is losing entries without NVMe
+/// backup, which is exactly when we want to catch up. This closes the
+/// failure mode where dense value encodings hold the cache at 89.9 %
+/// steady-state: demotion fires on the eviction signal instead.
+static LAST_EVICTION_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // The per-tick demotion budget and in-flight cap are read from the
 // `flash.demotion-batch` and `flash.demotion-max-inflight` configs on every
@@ -187,14 +198,24 @@ fn tick(ctx: &Context, _data: ()) {
     // On `PoolError::Full` we exit the loop immediately — the pool is shared
     // with FLASH.SET / HSET / RPUSH / ZADD write-through, and continuing
     // would starve client writes. Next tick retries after the pool drains.
+    //
+    // Trigger = fill ≥ threshold OR S3-FIFO has evicted at least one entry
+    // since the last tick. The eviction delta catches workloads whose value
+    // encoding keeps cache fill steady just below the fill threshold while
+    // S3-FIFO churns underneath — without this, demotion silently skips
+    // them even though Valkey-keyspace RAM is growing as Hot payloads
+    // accumulate.
+    let current_evictions = cache.metrics().evictions;
+    let last_evictions = LAST_EVICTION_COUNT.swap(current_evictions, Ordering::Relaxed);
+    let evictions_since_last_tick = current_evictions.saturating_sub(last_evictions);
+    let fill_pressure = cache.approx_bytes().saturating_mul(100)
+        >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT);
+    let pressure = fill_pressure || evictions_since_last_tick > 0;
+
     let batch = crate::config::flash_demotion_batch();
     let max_inflight = crate::config::flash_demotion_max_inflight();
     let mut submitted = 0usize;
-    while cache.approx_bytes().saturating_mul(100)
-        >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
-        && submitted < batch
-        && INFLIGHT.load(Ordering::Relaxed) < max_inflight
-    {
+    while pressure && submitted < batch && INFLIGHT.load(Ordering::Relaxed) < max_inflight {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
         };
