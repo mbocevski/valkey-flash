@@ -595,6 +595,47 @@ pub unsafe extern "C" fn copy(
     }
 }
 
+/// Hashes at or below this entry count get a full `HashMap` rebuild during
+/// defrag so the backing bucket-table is also relocated. Above this size,
+/// a rebuild allocates O(n) bucket slots every time the defrag cursor
+/// lands on the key — expensive enough that we keep the drain-and-reinsert
+/// pattern and accept that the bucket table stays at its original
+/// location. 128 is a rough crossover: Rust `HashMap`'s default capacity
+/// formula keeps the table under 256 entries at this size, so the rebuild
+/// allocation is comparable to a single entry buffer relocation.
+const DEFRAG_FULL_REBUILD_MAX_ENTRIES: usize = 128;
+
+/// Place the drained `entries` back into `map`. For small hashes (≤
+/// `DEFRAG_FULL_REBUILD_MAX_ENTRIES`) this replaces `*map` with a
+/// freshly-allocated `HashMap` so the backing bucket-table is also
+/// relocated by the allocator; for larger hashes it reinserts into
+/// `map` so we don't allocate a new bucket array every defrag pass.
+///
+/// Extracted from the `defrag` callback below so the pure data-movement
+/// logic is unit-testable without a real `RedisModuleDefragCtx`.
+pub(crate) fn reinsert_defrag_entries(
+    map: &mut HashMap<Vec<u8>, Vec<u8>>,
+    entries: Vec<(Vec<u8>, Vec<u8>)>,
+) {
+    let full_rebuild = entries.len() <= DEFRAG_FULL_REBUILD_MAX_ENTRIES;
+    if full_rebuild {
+        let mut rebuild_target: HashMap<Vec<u8>, Vec<u8>> = HashMap::with_capacity(entries.len());
+        for (k, v) in entries {
+            rebuild_target.insert(k, v);
+        }
+        // `*map = rebuild_target` drops the original HashMap (freeing
+        // its bucket table via the Valkey allocator) and installs the
+        // freshly-allocated one — which the allocator chose at a
+        // defragmented address since we built it inside this defrag
+        // callback.
+        *map = rebuild_target;
+    } else {
+        for (k, v) in entries {
+            map.insert(k, v);
+        }
+    }
+}
+
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
@@ -613,19 +654,22 @@ pub unsafe extern "C" fn defrag(
             *value = new_struct;
         }
 
-        // Step 2: for Hot tier, relocate each key and value Vec's backing buffer
+        // Step 2: for Hot tier, relocate each key and value Vec's backing
+        // buffer. For small hashes, we also replace the backing HashMap
+        // with a fresh one so its bucket table is relocated too (see
+        // DEFRAG_FULL_REBUILD_MAX_ENTRIES for the threshold rationale).
         let obj: &mut FlashHashObject = &mut *(*value).cast::<FlashHashObject>();
         if let Tier::Hot(ref mut map) = obj.tier {
             // Drain the map, potentially relocating each key and value buffer, then
             // reinsert. Collect first to avoid borrowing `map` during drain.
-            let entries: Vec<(Vec<u8>, Vec<u8>)> = map.drain().collect();
-            for (mut k, mut v) in entries {
+            let mut entries: Vec<(Vec<u8>, Vec<u8>)> = map.drain().collect();
+            for (k, v) in entries.iter_mut() {
                 if k.capacity() > 0 {
                     let new_buf = dfg.alloc(k.as_mut_ptr().cast::<c_void>());
                     if !new_buf.is_null() {
                         let (old_len, old_cap) = (k.len(), k.capacity());
                         let old = mem::replace(
-                            &mut k,
+                            k,
                             Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
                         );
                         mem::forget(old);
@@ -636,14 +680,14 @@ pub unsafe extern "C" fn defrag(
                     if !new_buf.is_null() {
                         let (old_len, old_cap) = (v.len(), v.capacity());
                         let old = mem::replace(
-                            &mut v,
+                            v,
                             Vec::from_raw_parts(new_buf.cast::<u8>(), old_len, old_cap),
                         );
                         mem::forget(old);
                     }
                 }
-                map.insert(k, v);
             }
+            reinsert_defrag_entries(map, entries);
         }
         // Cold tier: only primitive scalars — nothing to relocate.
 
@@ -660,6 +704,98 @@ mod tests {
     #[test]
     fn encoding_version_is_one() {
         assert_eq!(ENCODING_VERSION, 1);
+    }
+
+    #[test]
+    fn reinsert_defrag_entries_rebuilds_small_hash_map() {
+        // At ≤128 entries the helper must replace the backing HashMap so
+        // the bucket table is freshly allocated. We can't verify the
+        // allocator choice directly, but we can check that the contents
+        // are intact and the new map's capacity matches the small-hash
+        // with_capacity(n) path rather than the drained map's (which
+        // keeps its prior — potentially larger — bucket allocation).
+        let mut map: HashMap<Vec<u8>, Vec<u8>> = HashMap::with_capacity(1024);
+        let entries = vec![
+            (b"k1".to_vec(), b"v1".to_vec()),
+            (b"k2".to_vec(), b"v2".to_vec()),
+            (b"k3".to_vec(), b"v3".to_vec()),
+        ];
+
+        reinsert_defrag_entries(&mut map, entries);
+
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(b"k1".as_ref()), Some(&b"v1".to_vec()));
+        assert_eq!(map.get(b"k2".as_ref()), Some(&b"v2".to_vec()));
+        assert_eq!(map.get(b"k3".as_ref()), Some(&b"v3".to_vec()));
+        // Fresh allocation: capacity follows `with_capacity(entries.len())`,
+        // not the pre-existing 1024. Anything ≫ 3 means we kept the old
+        // bucket table (regression).
+        assert!(
+            map.capacity() < 1024,
+            "small-hash path must rebuild the bucket table; capacity stayed at {}",
+            map.capacity()
+        );
+    }
+
+    #[test]
+    fn reinsert_defrag_entries_reinserts_large_hash_in_place() {
+        // Above the threshold the helper must reuse the drained map (no
+        // allocation churn per defrag tick).
+        let mut map: HashMap<Vec<u8>, Vec<u8>> = HashMap::with_capacity(1024);
+        let pre_capacity = map.capacity();
+        let n = DEFRAG_FULL_REBUILD_MAX_ENTRIES + 10;
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..n)
+            .map(|i| (format!("k{i}").into_bytes(), format!("v{i}").into_bytes()))
+            .collect();
+
+        reinsert_defrag_entries(&mut map, entries);
+
+        assert_eq!(map.len(), n);
+        for i in 0..n {
+            assert_eq!(
+                map.get(format!("k{i}").as_bytes()),
+                Some(&format!("v{i}").into_bytes()),
+                "entry k{i} missing after large-hash reinsert",
+            );
+        }
+        // Large-hash path keeps the drained map; capacity may have grown
+        // to fit `n` but must not have been replaced by a fresh
+        // `with_capacity(n)` shrink.
+        assert!(
+            map.capacity() >= pre_capacity,
+            "large-hash path must not shrink the bucket table; {} < {}",
+            map.capacity(),
+            pre_capacity,
+        );
+    }
+
+    #[test]
+    fn reinsert_defrag_entries_handles_boundary_128_entries() {
+        // Exactly 128 entries falls on the rebuild side of the
+        // boundary. Verify the helper handles the edge count without
+        // losing data.
+        let mut map: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let entries: Vec<(Vec<u8>, Vec<u8>)> = (0..DEFRAG_FULL_REBUILD_MAX_ENTRIES)
+            .map(|i| (format!("k{i}").into_bytes(), format!("v{i}").into_bytes()))
+            .collect();
+
+        reinsert_defrag_entries(&mut map, entries);
+
+        assert_eq!(map.len(), DEFRAG_FULL_REBUILD_MAX_ENTRIES);
+    }
+
+    #[test]
+    fn reinsert_defrag_entries_empty_input_produces_empty_map() {
+        let mut map: HashMap<Vec<u8>, Vec<u8>> = HashMap::with_capacity(16);
+        map.insert(b"stale".to_vec(), b"v".to_vec());
+
+        reinsert_defrag_entries(&mut map, Vec::new());
+
+        assert!(
+            map.is_empty(),
+            "empty-entries rebuild must leave an empty map, got {} entries",
+            map.len()
+        );
     }
 
     #[test]

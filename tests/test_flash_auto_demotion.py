@@ -271,6 +271,37 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
                 f"expected {expected!r} got {got!r}"
             )
 
+    def test_tick_counters_reflect_demotion_activity(self):
+        """`flash_demotion_tick_last_us` must become non-zero once the tick
+        has done real work, and `flash_demotion_stall_events_total` must be
+        readable as a non-negative integer. Exercises the two INFO fields
+        added in v1.1 for bench instrumentation of the demotion loop."""
+        self._shrink_cache_to_1mib()
+
+        # Drive enough load through the tick for phase-1 to measure a
+        # non-zero wall-clock window (the counter is stored on every tick).
+        for i in range(2000):
+            self.client.execute_command("FLASH.SET", f"tick:{i}", "x" * 1000)
+
+        assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
+            "demotion never fired so tick counters have nothing to report"
+        )
+
+        info = self._info()
+        assert info["flash_demotion_tick_last_us"] >= 0, (
+            f"tick_last_us must be a non-negative u64; got {info['flash_demotion_tick_last_us']!r}"
+        )
+        assert info["flash_demotion_stall_events_total"] >= 0, (
+            "stall_events_total must be a non-negative u64; got "
+            f"{info['flash_demotion_stall_events_total']!r}"
+        )
+        # After active demotion the last-tick measurement must have been
+        # populated at least once by the tick path.
+        assert _wait_for(
+            lambda: self._info()["flash_demotion_tick_last_us"] > 0,
+            deadline_s=2.0,
+        ), f"flash_demotion_tick_last_us never moved above 0; info: {self._info()}"
+
     def test_no_data_loss_under_sustained_write_load(self):
         """Sustained writes with cache pressure must never lose a key. Writes
         and subsequent reads all return the correct value, whether the value

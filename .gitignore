@@ -8,6 +8,7 @@ fuzz/artifacts/
 
 # Agent session reports
 .agent-reports/
+CLAUDE.md
 
 # Coverage artifacts
 lcov.info
