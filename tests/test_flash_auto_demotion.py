@@ -110,8 +110,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         # src/demotion.rs).  Must see a non-zero tiered-keys count inside the
         # poll window.
         assert _wait_for(lambda: self._info()["flash_tiered_keys"] >= 1), (
-            f"expected ≥1 cold key within {DEMOTION_POLL_DEADLINE_S}s; "
-            f"info: {self._info()}"
+            f"expected ≥1 cold key within {DEMOTION_POLL_DEADLINE_S}s; info: {self._info()}"
         )
 
     # ── metrics correctness (alongside the auto-demotion fix) ────────────────
@@ -130,12 +129,10 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         free = info["flash_storage_free_bytes"]
         cap = info["flash_storage_capacity_bytes"]
         assert used + free == cap, (
-            f"used({used}) + free({free}) != capacity({cap}); delta "
-            f"{cap - used - free}"
+            f"used({used}) + free({free}) != capacity({cap}); delta {cap - used - free}"
         )
         assert free > 0, (
-            "storage_free_bytes reported zero with free headroom — the old "
-            "formula regressed"
+            "storage_free_bytes reported zero with free headroom — the old formula regressed"
         )
 
     def test_auto_demotions_total_field_present(self):
@@ -174,6 +171,5 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
             if isinstance(got, bytes):
                 got = got.decode("utf-8")
             assert got == expected, (
-                f"value corrupted after auto-demotion: key={k} "
-                f"expected {expected!r} got {got!r}"
+                f"value corrupted after auto-demotion: key={k} expected {expected!r} got {got!r}"
             )
