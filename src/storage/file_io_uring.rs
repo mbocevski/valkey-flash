@@ -245,12 +245,28 @@ impl FileIoUringBackend {
                 return Ok(range.start);
             }
         }
-        // Fall back to bump allocator for fresh blocks.
-        let start = self.next_block.fetch_add(n as u64, Ordering::Relaxed);
-        if start + n as u64 > self.capacity_blocks {
-            return Err(StorageError::Other("storage capacity exhausted".into()));
+        // Bump allocator for fresh blocks. CAS-loop so a capacity-exhausted
+        // allocation doesn't leak the watermark forward. The earlier
+        // `fetch_add`-then-check pattern bumped `next_block` unconditionally;
+        // every failed alloc after the cap drifted the watermark and
+        // `flash_storage_used_bytes` (computed as `next_block - free_blocks`)
+        // over-reported indefinitely once the cap was first hit.
+        loop {
+            let current = self.next_block.load(Ordering::Relaxed);
+            let end = match current.checked_add(n as u64) {
+                Some(e) if e <= self.capacity_blocks => e,
+                _ => return Err(StorageError::Other("storage capacity exhausted".into())),
+            };
+            match self.next_block.compare_exchange_weak(
+                current,
+                end,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(current),
+                Err(_) => continue, // another allocator won the race; retry
+            }
         }
-        Ok(start)
     }
 
     fn push_free_range(&self, start: u64, len: u32) {
@@ -689,7 +705,12 @@ impl StorageBackend for FileIoUringBackend {
     fn put(&self, key: &[u8], value: &[u8]) -> StorageResult<u64> {
         let n_blocks = Self::blocks_needed(value.len());
         let block_offset = self.alloc_blocks(n_blocks)?;
-        self.write_value_at(block_offset, value)?;
+        // Roll back on write failure so a transient io_uring error doesn't
+        // leak blocks — matches the pattern in `alloc_and_write_cold`.
+        if let Err(e) = self.write_value_at(block_offset, value) {
+            self.push_free_range(block_offset, n_blocks);
+            return Err(e);
+        }
         let new_entry = IndexEntry {
             block_offset,
             value_len: value.len() as u32,
@@ -1058,6 +1079,70 @@ mod tests {
         coalesce_ranges(&mut v);
         // 5+5+2 = 12 blocks merged into one range starting at 0.
         assert_eq!(v, vec![BlockRange { start: 0, len: 12 }]);
+    }
+
+    #[test]
+    fn alloc_blocks_capacity_exhausted_does_not_leak_watermark() {
+        // Regression for: alloc_blocks previously used `fetch_add` before the
+        // capacity check, so a failed alloc permanently bumped `next_block`
+        // past capacity. Each subsequent failed alloc leaked more watermark,
+        // making `flash_storage_used_bytes` drift arbitrarily high.
+        //
+        // With the CAS-loop fix, the watermark must stay <= capacity_blocks
+        // across any number of failed attempts.
+        let tmp = NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_str().unwrap().to_owned();
+        // 16 KiB cap = 4 blocks.
+        let backend = FileIoUringBackend::open(&path, 16 * 1024, 32).expect("open_backend");
+
+        // Fill the file exactly.
+        for _ in 0..4 {
+            backend.alloc_blocks(1).expect("alloc should fit");
+        }
+        assert_eq!(backend.next_block_snapshot(), 4);
+
+        // 10 more attempts all fail. Critically, next_block must NOT drift
+        // above capacity_blocks (4) regardless of attempt count.
+        for _ in 0..10 {
+            assert!(backend.alloc_blocks(1).is_err());
+            assert_eq!(
+                backend.next_block_snapshot(),
+                4,
+                "next_block leaked past capacity on failed alloc — watermark drift"
+            );
+        }
+
+        // Also verify the accounting invariant the v1.1 CHANGELOG promises:
+        // `storage_used_bytes + storage_free_bytes == capacity_bytes`.
+        let cap = backend.capacity_bytes();
+        let live = backend
+            .next_block_snapshot()
+            .saturating_sub(backend.free_block_count());
+        let used = live * BLOCK_SIZE as u64;
+        let headroom = (cap / BLOCK_SIZE as u64).saturating_sub(backend.next_block_snapshot())
+            + backend.free_block_count();
+        let free = headroom * BLOCK_SIZE as u64;
+        assert_eq!(
+            used + free,
+            cap,
+            "used({used}) + free({free}) != cap({cap}) — storage invariant broken"
+        );
+    }
+
+    #[test]
+    fn alloc_blocks_rejects_oversized_request() {
+        // A single request bigger than capacity should fail immediately and
+        // not leak the watermark.
+        let tmp = NamedTempFile::new().expect("tempfile");
+        let path = tmp.path().to_str().unwrap().to_owned();
+        let backend = FileIoUringBackend::open(&path, 16 * 1024, 32).expect("open_backend");
+
+        assert!(backend.alloc_blocks(10).is_err());
+        assert_eq!(
+            backend.next_block_snapshot(),
+            0,
+            "oversized alloc should not touch the watermark",
+        );
     }
 
     #[test]
