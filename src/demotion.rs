@@ -170,6 +170,28 @@ pub fn shutdown() {
     SHUTDOWN.store(true, Ordering::Release);
 }
 
+/// Commit all pending demotion completions synchronously. Call from
+/// `aux_save` BEFORE the fork so the snapshot captures a consistent view of
+/// tier state — any `COMMIT_QUEUE` contents represent NVMe-written payloads
+/// whose `Tier::Cold` transition hasn't happened yet, and if left uncommitted
+/// across a fork the blocks would be orphaned on crash-recovery (the RDB
+/// records the keys as still `Hot` in Valkey's keyspace while the NVMe file
+/// has data at offsets not referenced by any `Tier::Cold` marker).
+///
+/// Callable only from the event-loop thread — internally opens writable key
+/// handles to complete phase 3 of the demotion pipeline. Safe to call
+/// alongside `FLASH.DEBUG.DEMOTE` or other event-loop commands.
+///
+/// Residual leak window: this does not drain `INFLIGHT` (demotions whose
+/// pool worker hasn't yet pushed to `COMMIT_QUEUE`). Bounded by the pool's
+/// per-task latency (µs) × number of in-flight demotions; much smaller than
+/// the queued window this call closes.
+pub fn drain_for_persistence(ctx: &Context) {
+    if let Some(storage) = STORAGE.get() {
+        drain_commit_queue(ctx, storage);
+    }
+}
+
 fn schedule(ctx: &Context, delay: Duration) {
     ctx.create_timer(delay, tick, ());
 }

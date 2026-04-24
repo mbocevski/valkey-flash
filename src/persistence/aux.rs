@@ -94,6 +94,24 @@ pub unsafe extern "C" fn aux_save(io: *mut raw::RedisModuleIO, when: c_int) {
     use std::sync::atomic::Ordering;
 
     if when == AUX_BEFORE_RDB {
+        // Drain any pending async-demotion commits before snapshotting the
+        // NVMe allocator. Phase 2 of the demotion pipeline writes blocks to
+        // NVMe; phase 3 flips the key to `Tier::Cold` and points it at those
+        // blocks. If aux_save runs between phase 2 completion and phase 3
+        // commit, the snapshot would record a key as still `Hot` while its
+        // allocated blocks have no `Tier::Cold` owner — on crash-recovery
+        // those blocks would leak until a compaction pass noticed. Draining
+        // the commit queue here closes that window for every demotion that
+        // has finished its NVMe write; see `crate::demotion::drain_for_persistence`.
+        let get_ctx_fn = unsafe { raw::RedisModule_GetContextFromIO };
+        if let Some(f) = get_ctx_fn {
+            let raw_ctx = unsafe { f(io) };
+            if !raw_ctx.is_null() {
+                let ctx = valkey_module::Context::new(raw_ctx);
+                crate::demotion::drain_for_persistence(&ctx);
+            }
+        }
+
         let path = match FLASH_PATH.lock() {
             Ok(g) => g.clone(),
             Err(_) => {
@@ -112,6 +130,8 @@ pub unsafe extern "C" fn aux_save(io: *mut raw::RedisModuleIO, when: c_int) {
             .unwrap_or(0);
 
         // Snapshot NVMe allocator state for cross-session free-list reclaim.
+        // Done *after* the demotion drain above so `next_block` + `free_list`
+        // include any blocks whose demotion just completed.
         let nvme_next_block = crate::STORAGE
             .get()
             .map(|s| s.next_block_snapshot())

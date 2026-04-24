@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Auto-demotion now fires across the full range of value sizes. The previous `DEMOTION_FILL_PCT = 95` threshold sat *above* S3-FIFO's auto-eviction waterline at multi-KiB values (observed steady state ≈ 94 %): the cache never crossed 95 %, so the tick skipped demotion even while S3-FIFO churned tens of thousands of silent evictions per second. The tick now demotes when either cache fill is at or above 90 % **or** S3-FIFO has evicted at least one entry since the last tick — the latter closes the silent-eviction gap entirely, catching every workload where hot payloads accumulate in Valkey's keyspace even if the cache stays a hair below the fill threshold. Lowered `DEMOTION_FILL_PCT` from 95 to 90 for extra margin.
+- `BGSAVE` (and by extension `SAVE` and `PSYNC` full resyncs) now drains pending async-demotion commits before capturing the aux snapshot. Without this, demotions whose phase 2 (NVMe write) had completed but phase 3 (tier-state commit) had not would be recorded in the RDB as still `Tier::Hot` — and their NVMe blocks would be orphaned after crash-recovery, bounded by `MAX_INFLIGHT × block_size`. The drain runs on the event-loop thread in `aux_save` BEFORE the fork so no correctness issue crosses the fork boundary. Pool-worker-in-flight demotions (the µs window between `alloc_and_write_cold` returning and the commit-queue push) remain a residual leak source bounded by at most a few worker-µs of allocation per BGSAVE.
 
 ### Changed
 
