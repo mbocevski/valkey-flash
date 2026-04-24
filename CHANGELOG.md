@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Adaptive per-tick demotion batch cap. `demotion::tick` now measures phase-1 wall time and clamps the next tick's submit ceiling below `flash.demotion-batch` when the previous tick exceeded a 2 ms stall budget (AIMD: halve on over-budget, grow by 25 % per tick toward the configured ceiling once the event loop is idle again). Lets the configured `flash.demotion-batch` stay at an aggressive steady-state value while automatically throttling during transient load spikes. Exposed as `flash_demotion_effective_batch` in `INFO flash` — `0` means "at or above configured ceiling, no clamp active".
+
 ### Fixed
 
 - Auto-demotion now fires across the full range of value sizes. The previous `DEMOTION_FILL_PCT = 95` threshold sat *above* S3-FIFO's auto-eviction waterline at multi-KiB values (observed steady state ≈ 94 %): the cache never crossed 95 %, so the tick skipped demotion even while S3-FIFO churned tens of thousands of silent evictions per second. The tick now demotes when either cache fill is at or above 90 % **or** S3-FIFO has evicted at least one entry since the last tick — the latter closes the silent-eviction gap entirely, catching every workload where hot payloads accumulate in Valkey's keyspace even if the cache stays a hair below the fill threshold. Lowered `DEMOTION_FILL_PCT` from 95 to 90 for extra margin.

@@ -13,7 +13,9 @@ use crate::commands::drain::{
     DRAIN_LAST_SKIPPED,
 };
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
-use crate::demotion::{AUTO_DEMOTIONS_TOTAL, INFLIGHT as AUTO_DEMOTIONS_INFLIGHT};
+use crate::demotion::{
+    AUTO_DEMOTIONS_TOTAL, EFFECTIVE_BATCH_OVERRIDE, INFLIGHT as AUTO_DEMOTIONS_INFLIGHT,
+};
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
 
@@ -107,6 +109,11 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     // ── Auto-demotion ─────────────────────────────────────────────────────────
     let auto_demotions_total = AUTO_DEMOTIONS_TOTAL.load(Ordering::Relaxed);
     let auto_demotions_inflight = AUTO_DEMOTIONS_INFLIGHT.load(Ordering::Relaxed);
+    // Effective batch ceiling after adaptive clamp. `0` means "no clamp,
+    // using the `flash.demotion-batch` setting as-is". Any other value is
+    // the current per-tick ceiling chosen by the AIMD adaptation logic in
+    // `demotion::tick`.
+    let demotion_effective_batch = EFFECTIVE_BATCH_OVERRIDE.load(Ordering::Relaxed) as u64;
 
     // ── Drain progress ────────────────────────────────────────────────────────
     let convert_total = CONVERT_TOTAL.load(Ordering::Relaxed);
@@ -142,6 +149,10 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .field(
             "auto_demotions_inflight",
             auto_demotions_inflight.to_string(),
+        )?
+        .field(
+            "demotion_effective_batch",
+            demotion_effective_batch.to_string(),
         )?
         .field("module_state", module_state)?
         .field("cluster_mode", cluster_mode.to_string())?

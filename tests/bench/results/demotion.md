@@ -18,35 +18,35 @@ reach NVMe cold tier under sustained cache overflow.
 
 | Value size | Demotions/s | Tiered keys | Client GET p50 | Client GET p99 | Client GET p999 | Storage used |
 |---|---|---|---|---|---|---|
-| 200B | 79 | 2,368 | 24.8 µs | 62.9 µs | 237.6 µs | 694 MiB |
-| 1KiB | 80 | 2,488 | 25.6 µs | 64.5 µs | 206.6 µs | 167 MiB |
-| 4KiB | 80 | 108 | 26.2 µs | 72.0 µs | 255.9 µs | 96 MiB |
-| 16KiB | 80 | 88 | 24.7 µs | 62.8 µs | 195.1 µs | 60 MiB |
+| 200B | 79 | 2,368 | 23.7 µs | 59.6 µs | 222.1 µs | 694 MiB |
+| 1KiB | 80 | 2,488 | 23.7 µs | 59.8 µs | 146.3 µs | 167 MiB |
+| 4KiB | 80 | 105 | 24.5 µs | 61.4 µs | 189.0 µs | 96 MiB |
+| 16KiB | 80 | 88 | 23.5 µs | 58.4 µs | 176.3 µs | 60 MiB |
 
 ## HASH
 
 | Value size | Demotions/s | Tiered keys | Client GET p50 | Client GET p99 | Client GET p999 | Storage used |
 |---|---|---|---|---|---|---|
-| 200B | 79 | 2,376 | 24.1 µs | 62.8 µs | 236.3 µs | 694 MiB |
-| 1KiB | 80 | 2,488 | 24.4 µs | 64.3 µs | 168.0 µs | 167 MiB |
-| 4KiB | 80 | 104 | 24.5 µs | 64.6 µs | 204.0 µs | 96 MiB |
-| 16KiB | 80 | 88 | 26.8 µs | 70.3 µs | 205.6 µs | 60 MiB |
+| 200B | 79 | 2,376 | 24.5 µs | 64.8 µs | 175.7 µs | 694 MiB |
+| 1KiB | 80 | 2,488 | 26.5 µs | 68.8 µs | 223.4 µs | 167 MiB |
+| 4KiB | 80 | 106 | 24.5 µs | 65.7 µs | 209.7 µs | 96 MiB |
+| 16KiB | 79 | 95 | 24.1 µs | 64.0 µs | 259.6 µs | 60 MiB |
 
 ## LIST
 
 | Value size | Demotions/s | Tiered keys | Client GET p50 | Client GET p99 | Client GET p999 | Storage used |
 |---|---|---|---|---|---|---|
-| 200B | 79 | 2,376 | 24.1 µs | 60.9 µs | 165.4 µs | 694 MiB |
-| 1KiB | 80 | 2,488 | 24.4 µs | 61.3 µs | 205.7 µs | 167 MiB |
-| 4KiB | 80 | 104 | 24.2 µs | 63.9 µs | 161.6 µs | 96 MiB |
-| 16KiB | 80 | 88 | 23.5 µs | 61.3 µs | 235.9 µs | 60 MiB |
+| 200B | 79 | 2,368 | 24.0 µs | 60.2 µs | 138.7 µs | 694 MiB |
+| 1KiB | 80 | 2,488 | 23.6 µs | 62.0 µs | 182.6 µs | 167 MiB |
+| 4KiB | 80 | 104 | 24.6 µs | 67.9 µs | 227.6 µs | 96 MiB |
+| 16KiB | 80 | 96 | 26.6 µs | 69.8 µs | 202.7 µs | 60 MiB |
 
 ## ZSET
 
 | Value size | Demotions/s | Tiered keys | Client GET p50 | Client GET p99 | Client GET p999 | Storage used |
 |---|---|---|---|---|---|---|
-| 200B | 78 | 2,336 | 26.4 µs | 69.7 µs | 235.3 µs | 694 MiB |
-| 1KiB | 80 | 2,480 | 24.6 µs | 60.5 µs | 196.2 µs | 167 MiB |
-| 4KiB | 80 | 1,920 | 26.5 µs | 68.4 µs | 231.7 µs | 48 MiB |
-| 16KiB | 80 | 96 | 23.6 µs | 62.0 µs | 203.4 µs | 36 MiB |
+| 200B | 78 | 2,336 | 24.4 µs | 61.2 µs | 240.7 µs | 694 MiB |
+| 1KiB | 80 | 2,480 | 24.2 µs | 64.3 µs | 242.9 µs | 167 MiB |
+| 4KiB | 80 | 1,928 | 25.0 µs | 65.2 µs | 246.7 µs | 48 MiB |
+| 16KiB | 80 | 104 | 24.0 µs | 65.0 µs | 253.0 µs | 36 MiB |
 

@@ -66,9 +66,9 @@
 //! frozen.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use valkey_module::{Context, NotifyEvent};
 
@@ -103,6 +103,24 @@ const DEMOTION_FILL_PCT: u64 = 90;
 /// failure mode where dense value encodings hold the cache at 89.9 %
 /// steady-state: demotion fires on the eviction signal instead.
 static LAST_EVICTION_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Target upper bound on phase-1 event-loop stall per tick, in microseconds.
+/// When a tick's submit loop runs longer than this, the adaptive batch cap
+/// halves on the next tick to keep client command latency stable. When ticks
+/// complete well under budget and cache pressure persists, the cap grows
+/// additively. See `EFFECTIVE_BATCH_OVERRIDE`.
+const STALL_BUDGET_US: u64 = 2_000;
+
+/// Adaptive batch cap, shrunk from the configured ceiling when the tick
+/// exceeds the stall budget. `0` means "no adaptive clamp — use the
+/// `flash.demotion-batch` setting directly". A non-zero value is the
+/// current per-tick ceiling and is always ≤ the configured setting.
+///
+/// The cap follows an additive-increase / multiplicative-decrease pattern:
+/// on an over-budget tick it halves (fast backoff under pressure), and on
+/// a cap-hitting tick that still had cache pressure it increments by 25 %
+/// (slow recovery toward the configured ceiling).
+pub static EFFECTIVE_BATCH_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
 
 // The per-tick demotion budget and in-flight cap are read from the
 // `flash.demotion-batch` and `flash.demotion-max-inflight` configs on every
@@ -234,9 +252,24 @@ fn tick(ctx: &Context, _data: ()) {
         >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT);
     let pressure = fill_pressure || evictions_since_last_tick > 0;
 
-    let batch = crate::config::flash_demotion_batch();
+    // Resolve the effective batch cap. `configured` is the user-visible
+    // ceiling (the `flash.demotion-batch` knob); `override_cap` is the
+    // adaptive clamp applied when the previous tick ran over budget.
+    // Effective cap = min(configured, override_cap) if an override is set,
+    // else just configured.
+    let configured_batch = crate::config::flash_demotion_batch();
+    let override_cap = EFFECTIVE_BATCH_OVERRIDE.load(Ordering::Relaxed);
+    let batch = if override_cap == 0 {
+        configured_batch
+    } else {
+        override_cap.min(configured_batch)
+    };
+
     let max_inflight = crate::config::flash_demotion_max_inflight();
     let mut submitted = 0usize;
+    let mut pool_full = false;
+
+    let phase1_start = Instant::now();
     while pressure && submitted < batch && INFLIGHT.load(Ordering::Relaxed) < max_inflight {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
@@ -244,7 +277,38 @@ fn tick(ctx: &Context, _data: ()) {
         match submit_async_demotion(ctx, pool, &key_bytes) {
             SubmitOutcome::Submitted => submitted += 1,
             SubmitOutcome::Skipped => continue,
-            SubmitOutcome::PoolFull => break,
+            SubmitOutcome::PoolFull => {
+                pool_full = true;
+                break;
+            }
+        }
+    }
+    let phase1_us = phase1_start.elapsed().as_micros() as u64;
+
+    // Adaptive AIMD: if phase 1 ran over budget, halve the override cap.
+    // If we hit the cap with pressure remaining, grow additively toward
+    // the configured ceiling. Skip adjustment when the pool pushed back
+    // (pool_full): the bottleneck there isn't the event loop, so neither
+    // shrinking nor growing would help.
+    if !pool_full {
+        let hit_cap = submitted == batch && pressure;
+        let next = if phase1_us > STALL_BUDGET_US {
+            (batch / 2).max(1)
+        } else if hit_cap && batch < configured_batch {
+            (batch + (batch / 4).max(1)).min(configured_batch)
+        } else if phase1_us * 2 < STALL_BUDGET_US && override_cap != 0 {
+            // Plenty of headroom and no stall in the recent history; lift
+            // the override by one step so we can recover toward configured.
+            (batch + (batch / 4).max(1)).min(configured_batch)
+        } else {
+            batch
+        };
+        if next != batch || (override_cap != 0 && next == configured_batch) {
+            // Store 0 when we've converged back to the configured ceiling
+            // so `override_cap == 0` stays the steady-state "no override"
+            // marker visible to other readers.
+            let store = if next >= configured_batch { 0 } else { next };
+            EFFECTIVE_BATCH_OVERRIDE.store(store, Ordering::Relaxed);
         }
     }
 
