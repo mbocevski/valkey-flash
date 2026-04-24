@@ -15,6 +15,7 @@ use crate::commands::drain::{
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
 use crate::demotion::{
     AUTO_DEMOTIONS_TOTAL, EFFECTIVE_BATCH_OVERRIDE, INFLIGHT as AUTO_DEMOTIONS_INFLIGHT,
+    TICK_LAST_PHASE1_US, TICK_OVER_BUDGET_TOTAL,
 };
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
@@ -114,6 +115,8 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
     // the current per-tick ceiling chosen by the AIMD adaptation logic in
     // `demotion::tick`.
     let demotion_effective_batch = EFFECTIVE_BATCH_OVERRIDE.load(Ordering::Relaxed) as u64;
+    let demotion_tick_last_us = TICK_LAST_PHASE1_US.load(Ordering::Relaxed);
+    let demotion_stall_events_total = TICK_OVER_BUDGET_TOTAL.load(Ordering::Relaxed);
 
     // ── Drain progress ────────────────────────────────────────────────────────
     let convert_total = CONVERT_TOTAL.load(Ordering::Relaxed);
@@ -153,6 +156,11 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         .field(
             "demotion_effective_batch",
             demotion_effective_batch.to_string(),
+        )?
+        .field("demotion_tick_last_us", demotion_tick_last_us.to_string())?
+        .field(
+            "demotion_stall_events_total",
+            demotion_stall_events_total.to_string(),
         )?
         .field("module_state", module_state)?
         .field("cluster_mode", cluster_mode.to_string())?

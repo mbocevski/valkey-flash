@@ -145,6 +145,18 @@ pub static AUTO_DEMOTIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// `flash_auto_demotions_inflight` for back-pressure monitoring.
 pub static INFLIGHT: AtomicU64 = AtomicU64::new(0);
 
+/// Wall-clock duration of the most recent tick's phase-1 work, in µs.
+/// Exposed via `INFO flash` as `flash_demotion_tick_last_us`. Bench
+/// harnesses sample this at their polling interval to reconstruct the
+/// distribution without needing an on-module histogram.
+pub static TICK_LAST_PHASE1_US: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative number of ticks whose phase-1 wall time exceeded the
+/// `STALL_BUDGET_US` threshold. Exposed via `INFO flash` as
+/// `flash_demotion_stall_events_total` so operators can verify the
+/// adaptive AIMD controller is (or isn't) kicking in against real load.
+pub static TICK_OVER_BUDGET_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// Queue of completions handed from pool workers back to the event-loop
 /// commit phase. The tick drains this at the top of each iteration.
 static COMMIT_QUEUE: LazyLock<Mutex<VecDeque<CompletedDemotion>>> =
@@ -284,6 +296,10 @@ fn tick(ctx: &Context, _data: ()) {
         }
     }
     let phase1_us = phase1_start.elapsed().as_micros() as u64;
+    TICK_LAST_PHASE1_US.store(phase1_us, Ordering::Relaxed);
+    if phase1_us > STALL_BUDGET_US {
+        TICK_OVER_BUDGET_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
 
     // Adaptive AIMD: see `aimd_next_override` for the pure state-transition
     // logic. Skip adjustment when the pool pushed back (pool_full) — the

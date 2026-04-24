@@ -18,6 +18,8 @@ EXPECTED_FIELDS = [
     "flash_auto_demotions_total",
     "flash_auto_demotions_inflight",
     "flash_demotion_effective_batch",
+    "flash_demotion_tick_last_us",
+    "flash_demotion_stall_events_total",
     "flash_module_state",
 ]
 

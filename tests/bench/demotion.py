@@ -12,13 +12,17 @@ event-loop stall time (demotion runs synchronously on the event loop, so
 any blocking shows up in unrelated clients' tail latency).
 
 Matrix:
-  * sizes:  200 B, 1 KiB, 4 KiB, 16 KiB
+  * sizes:  200 B, 1 KiB, 4 KiB, 16 KiB, 64 KiB
   * shapes: STRING, HASH (two fields), LIST (two elements), ZSET (two members)
   * cache:  4 MiB (fixed) — forces demotion across all cells
-  * batch:  128 per tick (current default, `MAX_DEMOTIONS_PER_TICK` in
-            `src/demotion.rs`)
+  * batch:  auto-sized (or per `flash.demotion-batch`) on the module side
 
-Runtime: ~30 s per cell × 16 cells ≈ 8 min.
+Runtime: ~30 s per cell × 20 cells ≈ 10 min.
+
+Per-cell outputs include demotions/sec, tick phase-1 p50/p99 (sampled
+from `flash_demotion_tick_last_us` every 100 ms), AIMD stall events,
+client GET p99, NVMe write amplification (bytes / demotion), and final
+storage footprint.
 
 Usage:
   python3 tests/bench/demotion.py [--window-sec 30] [--out-dir tests/bench/results]
@@ -29,8 +33,9 @@ Environment:
   SERVER_VERSION valkey version dir name (default: unstable)
 
 Output:
-  tests/bench/results/demotion.md   Markdown table with narrative
-  tests/bench/results/demotion.csv  machine-readable for the adaptive-batch task
+  tests/bench/results/demotion_v1.1.0.md   Markdown report
+  tests/bench/results/demotion_v1.1.0.csv  machine-readable, loadable by the
+                                           adaptive-batch task's tuner
 """
 
 from __future__ import annotations
@@ -63,14 +68,15 @@ FLASH_CAPACITY_BYTES = 4 * 1024 * 1024 * 1024
 # Cap on total preload keys to avoid runaway counts at tiny value sizes.
 PRELOAD_KEYS_MAX = 10_000
 
-# Four log-spaced sizes — below 200 B the demotion work is serialisation-bound
-# rather than NVMe-bound; above 16 KiB the matrix gets large without adding
-# much information.
+# Five log-spaced sizes — below 200 B the demotion work is serialisation-bound
+# rather than NVMe-bound; above 64 KiB the matrix gets large without adding
+# much information. Sizes match the spec in the `#143` backlog task.
 VALUE_SIZES = [
     ("200B", 200),
     ("1KiB", 1024),
     ("4KiB", 4 * 1024),
     ("16KiB", 16 * 1024),
+    ("64KiB", 64 * 1024),
 ]
 
 # Per-shape writer factory: takes a client + index + value payload and issues
@@ -236,6 +242,12 @@ class CellResult:
     client_get_p99_us: float
     client_get_p999_us: float
     client_get_samples: int
+    # phase-1 tick cost (sampled from flash_demotion_tick_last_us every 100 ms)
+    tick_phase1_p50_us: float
+    tick_phase1_p99_us: float
+    tick_stall_events_delta: int
+    # NVMe write amplification: storage bytes written per demotion
+    nvme_bytes_per_demote: float
     # cache + storage state at the end
     cache_hit_ratio_final: float
     eviction_count_delta: int
@@ -286,6 +298,8 @@ def measure_cell(
     info_before = client.info("flash")
     auto_before = parse_info(info_before, "auto_demotions_total")
     evict_before = parse_info(info_before, "eviction_count")
+    stall_before = parse_info(info_before, "demotion_stall_events_total")
+    storage_before = parse_info(info_before, "storage_used_bytes")
 
     # Measurement window: background reader + continuous delete-then-write
     # loop against a bounded key ring. DEL reclaims the prior NVMe blocks
@@ -294,6 +308,26 @@ def measure_cell(
     ring_size = max(200, (8 * CACHE_SIZE_BYTES) // max(size_bytes, 1))
     reader = Reader(port, READER_RPS)
     reader.start()
+    # Separate client thread for INFO sampling — keeps the tick-duration
+    # sampler from interleaving with the writer loop's synchronous commands.
+    tick_samples: list[int] = []
+    sampler_stop = threading.Event()
+
+    def _sample_ticks():
+        c_sampler = valkey.Valkey(host="127.0.0.1", port=port, socket_timeout=5)
+        while not sampler_stop.is_set():
+            try:
+                info = c_sampler.info("flash")
+                v = info.get("flash_demotion_tick_last_us", 0)
+                if isinstance(v, (int, float)) and v > 0:
+                    tick_samples.append(int(v))
+            except Exception:
+                pass
+            sampler_stop.wait(timeout=0.1)
+
+    sampler_thread = threading.Thread(target=_sample_ticks, daemon=True)
+    sampler_thread.start()
+
     t_start = time.perf_counter()
     i = 0
     while time.perf_counter() - t_start < window_sec:
@@ -303,17 +337,24 @@ def measure_cell(
         i += 1
     elapsed = time.perf_counter() - t_start
     reader.stop()
+    sampler_stop.set()
+    sampler_thread.join(timeout=3)
 
     info_after = client.info("flash")
     auto_after = parse_info(info_after, "auto_demotions_total")
     evict_after = parse_info(info_after, "eviction_count")
+    stall_after = parse_info(info_after, "demotion_stall_events_total")
+    storage_after = parse_info(info_after, "storage_used_bytes")
     tiered_final = parse_info(info_after, "tiered_keys")
     hit_ratio = parse_info_float(info_after, "cache_hit_ratio")
-    storage_used = parse_info(info_after, "storage_used_bytes")
     storage_free = parse_info(info_after, "storage_free_bytes")
 
     auto_delta = auto_after - auto_before
+    storage_delta = max(0, storage_after - storage_before)
+    nvme_per_demote = (storage_delta / auto_delta) if auto_delta > 0 else 0.0
+
     samples = sorted(reader.samples_us)
+    tick_sorted = sorted(tick_samples)
     return CellResult(
         size_label=size_label,
         size_bytes=size_bytes,
@@ -325,9 +366,13 @@ def measure_cell(
         client_get_p99_us=round(percentile(samples, 99), 2),
         client_get_p999_us=round(percentile(samples, 99.9), 2),
         client_get_samples=len(samples),
+        tick_phase1_p50_us=round(percentile(tick_sorted, 50), 2),
+        tick_phase1_p99_us=round(percentile(tick_sorted, 99), 2),
+        tick_stall_events_delta=stall_after - stall_before,
+        nvme_bytes_per_demote=round(nvme_per_demote, 1),
         cache_hit_ratio_final=hit_ratio,
         eviction_count_delta=evict_after - evict_before,
-        storage_used_bytes_final=storage_used,
+        storage_used_bytes_final=storage_after,
         storage_free_bytes_final=storage_free,
     )
 
@@ -361,18 +406,46 @@ def render_markdown(results: list[CellResult], window_sec: float) -> str:
         lines.append(f"## {shape}")
         lines.append("")
         lines.append(
-            "| Value size | Demotions/s | Tiered keys | Client GET p50 | "
-            "Client GET p99 | Client GET p999 | Storage used |"
+            "| Value size | Demotions/s | Tick p50 | Tick p99 | Stalls | "
+            "Client GET p99 | NVMe B / demote | Storage used |"
         )
-        lines.append("|---|---|---|---|---|---|---|")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for r in rows:
             lines.append(
                 f"| {r.size_label} | {r.demotions_per_sec:,.0f} | "
-                f"{r.tiered_keys_final:,} | {r.client_get_p50_us:.1f} µs | "
-                f"{r.client_get_p99_us:.1f} µs | {r.client_get_p999_us:.1f} µs | "
+                f"{r.tick_phase1_p50_us:.1f} µs | {r.tick_phase1_p99_us:.1f} µs | "
+                f"{r.tick_stall_events_delta} | "
+                f"{r.client_get_p99_us:.1f} µs | "
+                f"{r.nvme_bytes_per_demote:,.0f} B | "
                 f"{r.storage_used_bytes_final // (1024 * 1024)} MiB |"
             )
         lines.append("")
+    lines.append("")
+    lines.append("### Column glossary")
+    lines.append("")
+    lines.append(
+        "- **Tick p50 / p99** — phase-1 wall time sampled from "
+        "`flash_demotion_tick_last_us` at 100 ms intervals over the cell's "
+        "measurement window. Tracks the event-loop stall budget the adaptive "
+        "AIMD controller uses; see `STALL_BUDGET_US` in `src/demotion.rs`."
+    )
+    lines.append(
+        "- **Stalls** — delta of `flash_demotion_stall_events_total` over the "
+        "cell. Non-zero means at least one tick exceeded `STALL_BUDGET_US` "
+        "and the AIMD controller halved the effective batch cap."
+    )
+    lines.append(
+        "- **Client GET p99** — latency of a background native-RAM GET loop; "
+        "an external-observer proxy for event-loop contention from demotion."
+    )
+    lines.append(
+        "- **NVMe B / demote** — write amplification: `storage_used_bytes` "
+        "delta divided by the number of committed demotions. For the "
+        "default 4 KiB-aligned allocator this should hover near "
+        "`max(4096, value_size rounded up)`; substantial drift indicates a "
+        "leak or accounting bug."
+    )
+    lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -437,9 +510,11 @@ def main() -> int:
                     )
 
     md = render_markdown(results, args.window_sec)
-    (out_dir / "demotion.md").write_text(md)
-    write_csv(results, out_dir / "demotion.csv")
-    print(f"\nWrote {out_dir / 'demotion.md'} and {out_dir / 'demotion.csv'}")
+    # Filename matches the spec for the v1.1.0 baseline report so the CSV
+    # is loadable by the adaptive-batch task's threshold tuner.
+    (out_dir / "demotion_v1.1.0.md").write_text(md)
+    write_csv(results, out_dir / "demotion_v1.1.0.csv")
+    print(f"\nWrote {out_dir / 'demotion_v1.1.0.md'} and {out_dir / 'demotion_v1.1.0.csv'}")
     return 0
 
 
