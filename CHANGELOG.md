@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Auto-demotion moved to a three-phase async pipeline: phase 1 (payload clone + pool submit) runs on the event loop, phase 2 (NVMe write via `alloc_and_write_cold`) runs on `AsyncThreadPool`, phase 3 (tier-state commit with race check against the phase-1 value hash) runs at the top of the next event-loop tick. Under sustained cache pressure this lifts the prior ~1,250 keys/s ceiling — small-value demotion scales 4–8× higher and sizes where the sync path was silently failing to tier (auto_demotions_total stuck at 0) now demote correctly. Phase-1 event-loop stall is bounded by `MAX_DEMOTIONS_PER_TICK` (default 512) per tick; transient NVMe footprint is bounded by `MAX_INFLIGHT` (default 1024).
+- `FLASH.DEBUG.DEMOTE` retained for deterministic integration-test use. Its synchronous `demote_bytes` helper now uses the same `alloc_and_write_cold` primitive — one fewer NVMe round-trip than the previous put-then-remove-from-index pattern.
+
+### Added
+
+- `INFO flash` field `flash_auto_demotions_inflight` — current number of demotions submitted to the pool but not yet committed via phase 3. Lets operators monitor back-pressure on the tiering pipeline.
+- `FileIoUringBackend::alloc_and_write_cold` — thread-safe direct-to-cold primitive that allocates + writes NVMe blocks without touching the storage index. Used by the async demotion path.
+- `tests/bench/demotion.py` + `tests/bench/results/demotion.{md,csv}` — parameterised benchmark across 4 value sizes × 4 shapes measuring demotion throughput, client GET p99 stall (event-loop contention proxy), and storage footprint under sustained cache overflow.
+
 ## [1.1.0] - 2026-04-24
 
 ### Added

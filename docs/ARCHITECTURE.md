@@ -83,9 +83,21 @@ On-disk record format per value: `[u64 value_len][value bytes][zero padding to 4
 
 Hot/cold integration: `FlashCache::get()` is the fast path for `FLASH.GET` (inline reply, no `BlockClient`). On miss, the command hands off to the async I/O pool, reads from `FileIoUringBackend`, promotes the result back to Hot, and replies via `UnblockClient`.
 
-**Automatic demotion** (`src/demotion.rs`): a `RedisModule_CreateTimer`-driven tick fires every 100 ms on the event-loop thread. Each tick checks `cache.approx_bytes() > cache.capacity_bytes()` and, while over, pops up to 128 keys from the cache's insertion-ordered candidate queue (`FlashCache::evict_candidate()`). For each candidate the tick opens a writable key handle, serializes the hot payload (shape-specific), calls `storage.put()` synchronously, then atomically updates the `TieringMap`, WAL, cache, and in-memory `Tier` marker — the same sequence `FLASH.DEBUG.DEMOTE` uses.
+**Automatic demotion** (`src/demotion.rs`) runs as a three-phase pipeline so the NVMe write never blocks the Valkey event loop:
 
-The 128-key per-tick budget caps worst-case event-loop stall at roughly one write batch; the timer yields between batches so client traffic, cluster heartbeats, and other timers make progress. Replica-mode nodes short-circuit the tick (`IS_REPLICA`), and `deinitialize()` flips a shutdown flag so an in-flight timer exits without re-arming. Monitoring: `INFO flash` exposes `flash_auto_demotions_total`.
+- **Phase 1 — event loop (tick, every 100 ms).** When `FlashCache::approx_bytes()` reaches 95 % of `flash.cache-size-bytes`, the tick pops up to `MAX_DEMOTIONS_PER_TICK` (default 512) candidates from the insertion-ordered eviction queue (`FlashCache::evict_candidate()`). For each, it opens a writable key handle, clones the hot payload, computes a value hash, and submits a `storage.alloc_and_write_cold` task to the `AsyncThreadPool`. The key handle is dropped before the task runs — the `&mut Tier<T>` borrow does not cross the async boundary.
+- **Phase 2 — pool worker.** `alloc_and_write_cold` allocates NVMe blocks and writes the payload. It does not touch the storage index; ownership of the blocks is carried in a `CompletedDemotion` record pushed onto a commit queue.
+- **Phase 3 — event loop (next tick).** Before submitting new work, the tick drains the commit queue. For each completion it re-opens the key, race-checks the current Hot payload against the phase-1 value hash, and on a match appends the WAL record, inserts into `TIERING_MAP`, transitions `obj.tier` to `Cold`, evicts the hot cache entry, and reclaims the stale durability-write index entry via `storage.delete`. On mismatch (client wrote during the in-flight window), missing key, or type change, the newly-allocated blocks are released via `release_cold_blocks` and the candidate is dropped.
+
+The 95 % trigger is proactive rather than strict-overflow because `FlashCache::approx_bytes()` delegates to quick_cache's native `weight()`, which S3-FIFO keeps at or below capacity at all times — without the lead-in, S3-FIFO would silently discard hot entries before the demotion path could write them to NVMe.
+
+`MAX_DEMOTIONS_PER_TICK` bounds phase-1 event-loop work (payload clone + pool submit, measured in µs per iteration). `MAX_INFLIGHT` (default 1024) bounds transient NVMe footprint during the in-flight window: each in-flight demotion holds both a Cold block and the stale durability-write block until phase 3 reclaims it.
+
+Replica-mode nodes short-circuit the tick (`IS_REPLICA`) and only begin demoting after a `REPLICAOF NO ONE` promotion. `deinitialize()` flips a shutdown flag before tearing down the pool, so pending timers and in-flight tasks land safely. Monitoring: `INFO flash` exposes `flash_auto_demotions_total` (cumulative successful commits) and `flash_auto_demotions_inflight` (current phase-2 depth for back-pressure observation).
+
+A synchronous `demote_bytes` helper is retained for `FLASH.DEBUG.DEMOTE` — the deterministic admin command preferred in integration tests that need immediate completion.
+
+**Crash between phase 2 and phase 3.** In the ≤ 100 ms window where the NVMe payload exists but the WAL record does not, a crash leaves those blocks allocated but unreferenced. The Hot payload is still in Valkey's keyspace (RDB/AOF recovers it), so no data is lost — but the allocator's free-list cannot reclaim the orphaned blocks until a future compaction pass notices they are unreferenced. Bounded by `MAX_INFLIGHT × block_size`, at most a few MB per crash.
 
 ## 6. Async I/O
 
