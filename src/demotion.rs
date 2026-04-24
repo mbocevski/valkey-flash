@@ -27,16 +27,22 @@
 //!
 //! # Why this shape
 //!
-//! The v1.1.0 synchronous path issued `storage.put` on the event loop. Under
-//! sustained overflow that capped demotion throughput at
-//! `MAX_DEMOTIONS_PER_TICK * (1 s / TICK_INTERVAL) = 128 × 10 ≈ 1250 keys/s`
-//! — enough for 200 B session-sized workloads, but insufficient for multi-KiB
-//! values. Above the cap, S3-FIFO silently auto-evicted hot entries before the
-//! tick could back them up, so the module's RAM-to-NVMe spill failed silently.
+//! Putting the NVMe write on the event loop coupled the demotion rate to
+//! `storage.put` latency and blocked the loop for the duration of each
+//! write. With the pipeline, phase 2 runs on pool workers — the event loop
+//! only pays for phase-1 serialisation + submit and phase-3 tier mutation,
+//! both measured in µs. Under sustained pressure the pool drains phase-2
+//! work in parallel while client commands, cluster heartbeats, and other
+//! timers continue to make progress.
 //!
-//! Moving the NVMe write to the pool parallelises throughput across
-//! `flash.io-threads` workers. Event-loop stall stays bounded to phase-1/3
-//! work: serialising the payload + a tier-state mutation, measured in µs.
+//! The tick is a good neighbour to client write-through. `AsyncThreadPool`
+//! is shared with FLASH.SET / HSET / RPUSH / ZADD's durability writes, and
+//! the pool's queue depth is `io_threads * 4`. To avoid starving clients,
+//! the tick breaks its submit loop as soon as `pool.submit` returns
+//! `PoolError::Full`, leaving room for client submits to drain the queue
+//! before the next tick fires. `MAX_DEMOTIONS_PER_TICK` and `MAX_INFLIGHT`
+//! are sized below typical `io_threads * 4` so a steady-state sweep rarely
+//! fills the queue in the first place.
 //!
 //! # Crash-recovery notes
 //!
