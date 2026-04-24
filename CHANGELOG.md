@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- FlashHash defrag now relocates the backing `HashMap`'s bucket table for hashes up to 128 entries. Previously the defrag callback only relocated per-entry key/value buffers — the `HashMap`'s internal bucket array stayed at its original address across defrag passes, leaving a persistent fragment regardless of how many ticks ran. Small hashes now get a full `HashMap` rebuild inside the callback (the fresh allocation picks up a defragmented address from the Valkey allocator); large hashes keep the drain-and-reinsert pattern to avoid per-tick O(n) bucket-slot allocations.
 - Adaptive per-tick demotion batch cap. `demotion::tick` now measures phase-1 wall time and clamps the next tick's submit ceiling below `flash.demotion-batch` when the previous tick exceeded a 2 ms stall budget (AIMD: halve on over-budget, grow by 25 % per tick toward the configured ceiling once the event loop is idle again). Lets the configured `flash.demotion-batch` stay at an aggressive steady-state value while automatically throttling during transient load spikes. Exposed as `flash_demotion_effective_batch` in `INFO flash` — `0` means "at or above configured ceiling, no clamp active".
 
 ### Fixed

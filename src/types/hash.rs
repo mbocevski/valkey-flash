@@ -595,6 +595,16 @@ pub unsafe extern "C" fn copy(
     }
 }
 
+/// Hashes at or below this entry count get a full `HashMap` rebuild during
+/// defrag so the backing bucket-table is also relocated. Above this size,
+/// a rebuild allocates O(n) bucket slots every time the defrag cursor
+/// lands on the key — expensive enough that we keep the drain-and-reinsert
+/// pattern and accept that the bucket table stays at its original
+/// location. 128 is a rough crossover: Rust `HashMap`'s default capacity
+/// formula keeps the table under 256 entries at this size, so the rebuild
+/// allocation is comparable to a single entry buffer relocation.
+const DEFRAG_FULL_REBUILD_MAX_ENTRIES: usize = 128;
+
 /// # Safety
 pub unsafe extern "C" fn defrag(
     ctx: *mut RedisModuleDefragCtx,
@@ -613,12 +623,27 @@ pub unsafe extern "C" fn defrag(
             *value = new_struct;
         }
 
-        // Step 2: for Hot tier, relocate each key and value Vec's backing buffer
+        // Step 2: for Hot tier, relocate each key and value Vec's backing
+        // buffer. For small hashes, we also replace the backing HashMap
+        // with a fresh one so its bucket table is relocated too (see
+        // DEFRAG_FULL_REBUILD_MAX_ENTRIES for the threshold rationale).
         let obj: &mut FlashHashObject = &mut *(*value).cast::<FlashHashObject>();
         if let Tier::Hot(ref mut map) = obj.tier {
             // Drain the map, potentially relocating each key and value buffer, then
             // reinsert. Collect first to avoid borrowing `map` during drain.
             let entries: Vec<(Vec<u8>, Vec<u8>)> = map.drain().collect();
+
+            // Preallocate the target map. For small hashes this is a
+            // fresh HashMap (replaces `map` below, relocating the bucket
+            // table); for large hashes we skip the replacement and keep
+            // the drained `map`.
+            let full_rebuild = entries.len() <= DEFRAG_FULL_REBUILD_MAX_ENTRIES;
+            let mut rebuild_target: HashMap<Vec<u8>, Vec<u8>> = if full_rebuild {
+                HashMap::with_capacity(entries.len())
+            } else {
+                HashMap::new()
+            };
+
             for (mut k, mut v) in entries {
                 if k.capacity() > 0 {
                     let new_buf = dfg.alloc(k.as_mut_ptr().cast::<c_void>());
@@ -642,7 +667,20 @@ pub unsafe extern "C" fn defrag(
                         mem::forget(old);
                     }
                 }
-                map.insert(k, v);
+                if full_rebuild {
+                    rebuild_target.insert(k, v);
+                } else {
+                    map.insert(k, v);
+                }
+            }
+
+            if full_rebuild {
+                // Replace in place. `*map = rebuild_target` drops the
+                // original HashMap (freeing its bucket table via the
+                // Valkey allocator) and installs the freshly-allocated
+                // one — which the allocator chose at a defragmented
+                // address since we built it inside this defrag callback.
+                *map = rebuild_target;
             }
         }
         // Cold tier: only primitive scalars — nothing to relocate.
