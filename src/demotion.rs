@@ -1,70 +1,167 @@
 //! Automatic hot → cold tier demotion.
 //!
-//! A periodic event-loop timer checks whether the in-RAM [`FlashCache`] is over
-//! capacity. When it is, the timer pulls insertion-ordered candidates from the
-//! cache's eviction queue and moves each to NVMe cold tier through the same
-//! pipeline that `FLASH.DEBUG.DEMOTE` uses.
+//! # Pipeline
 //!
-//! All tier-state mutations run on the event-loop thread — that is the only
-//! context where `ctx.open_key_writable()` yields a safe `&mut Tier<T>`. The
-//! NVMe write (`storage.put`) is synchronous and blocks that thread for the
-//! duration of the write; a per-tick budget caps the worst-case stall.
+//! Demotion runs as a three-phase split so the NVMe write never blocks the
+//! Valkey event loop. An event-loop timer drives phases 1 and 3; the async
+//! I/O pool (`AsyncThreadPool`, same pool `FLASH.HSET` write-through uses)
+//! drives phase 2.
 //!
-//! The scheduling pattern — boxed state passed through `create_timer`, the
-//! callback re-arming itself at the end of each tick — mirrors
-//! `cluster::prewarm_tick` at `src/cluster/mod.rs`.
+//! 1. **Phase 1 (event loop)** — the tick pops a candidate from
+//!    `FlashCache::evict_candidate()`, opens the key writable, clones the hot
+//!    payload, captures a value hash, and submits a `storage.alloc_and_write_cold`
+//!    task to the pool. The key handle is dropped before phase 2 starts —
+//!    the `&mut Tier<T>` borrow does not cross the async boundary.
+//! 2. **Phase 2 (pool worker)** — `alloc_and_write_cold` allocates NVMe
+//!    blocks and writes the payload. It does NOT touch the storage index;
+//!    ownership of the blocks is carried in a `CompletedDemotion` record the
+//!    worker pushes onto the commit queue.
+//! 3. **Phase 3 (event loop, next tick)** — the tick drains the commit queue
+//!    before submitting new work. For each completion it re-opens the key
+//!    and race-checks against the phase-1 value hash: on a match it appends
+//!    the WAL record, inserts into TIERING_MAP, transitions `obj.tier` to
+//!    `Cold`, and evicts the hot cache entry. On a mismatch (client wrote
+//!    during the in-flight window), key-deletion, or type-change, the
+//!    newly-allocated blocks are released via `release_cold_blocks` and the
+//!    candidate is silently dropped.
 //!
-//! [`FlashCache`]: crate::storage::cache::FlashCache
+//! # Why this shape
+//!
+//! The v1.1.0 synchronous path issued `storage.put` on the event loop. Under
+//! sustained overflow that capped demotion throughput at
+//! `MAX_DEMOTIONS_PER_TICK * (1 s / TICK_INTERVAL) = 128 × 10 ≈ 1250 keys/s`
+//! — enough for 200 B session-sized workloads, but insufficient for multi-KiB
+//! values. Above the cap, S3-FIFO silently auto-evicted hot entries before the
+//! tick could back them up, so the module's RAM-to-NVMe spill failed silently.
+//!
+//! Moving the NVMe write to the pool parallelises throughput across
+//! `flash.io-threads` workers. Event-loop stall stays bounded to phase-1/3
+//! work: serialising the payload + a tier-state mutation, measured in µs.
+//!
+//! # Crash-recovery notes
+//!
+//! Between phase 2 completing and phase 3 running there is a window (≤ one
+//! tick interval, default 100 ms) where the NVMe payload exists but the WAL
+//! record does not. On crash in this window the blocks are leaked — no data
+//! loss (the Hot payload is still in Valkey's keyspace and recovers via
+//! RDB/AOF), but the allocator's free-list does not reclaim the blocks until
+//! a future compaction pass notices they're unreferenced. Bounded by
+//! `MAX_INFLIGHT × block_size` ≈ a few MB per crash; acceptable for
+//! production uptimes. A follow-up can track in-flight allocations via
+//! `aux_save`.
+//!
+//! # Shutdown
+//!
+//! `shutdown()` flips an atomic; the next timer fires, sees it, and does not
+//! re-arm. In-flight pool tasks may still complete and push onto the commit
+//! queue but the queue is never drained again — this is fine because
+//! `deinitialize()` shuts the pool down *after* `shutdown()`, so by the time
+//! `dlclose` runs the worker threads are joined and the queue is effectively
+//! frozen.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-use valkey_module::{Context, NotifyEvent, ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+use valkey_module::{Context, NotifyEvent};
 
-use crate::storage::backend::StorageBackend;
+use crate::async_io::{AsyncThreadPool, CompletionHandle};
+use crate::storage::backend::{StorageBackend, StorageError, StorageResult};
 use crate::storage::file_io_uring::FileIoUringBackend;
 use crate::types::Tier;
 use crate::types::hash::{FLASH_HASH_TYPE, FlashHashObject, hash_serialize};
 use crate::types::list::{FLASH_LIST_TYPE, FlashListObject, list_serialize};
 use crate::types::string::{FLASH_STRING_TYPE, FlashStringObject};
 use crate::types::zset::{FLASH_ZSET_TYPE, FlashZSetObject, zset_serialize};
-use crate::{CACHE, STORAGE, TIERING_MAP, WAL};
+use crate::{CACHE, POOL, STORAGE, TIERING_MAP, WAL};
+
+// ── Tunables ─────────────────────────────────────────────────────────────────
 
 /// Tick period for the auto-demotion timer.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Maximum number of keys to demote in a single tick. Caps the worst-case
-/// event-loop stall; each NVMe put is synchronous.
-const MAX_DEMOTIONS_PER_TICK: usize = 128;
+/// Maximum number of new demotions to submit per tick. This caps the phase-1
+/// work (payload clone + value hash + pool submit) on the event loop, not
+/// the NVMe write itself — that runs on pool workers. Sized to keep phase-1
+/// stall under ~1 ms p99 across realistic value sizes: each iteration is
+/// dominated by a ~µs `open_key_writable` + clone of `value_size` bytes,
+/// so 512 × worst-case a few µs ≈ sub-millisecond. Raise if the bench shows
+/// persistent throughput saturation at this cap; lower if p99 regressions
+/// appear in production.
+const MAX_DEMOTIONS_PER_TICK: usize = 512;
 
 /// Start demoting when the hot-tier RAM cache reaches this fill fraction
-/// (numerator over 100).  `FlashCache::approx_bytes()` now returns
-/// quick_cache's native `weight()`, which the S3-FIFO policy maintains at or
-/// below `capacity_bytes` at all times — strict overflow can never occur.
-/// Triggering at 95% gives the demotion loop a chance to move entries to NVMe
-/// cold tier before S3-FIFO has to discard them silently.
+/// (numerator over 100). quick_cache's native `weight()` stays at or below
+/// capacity at all times, so the 95 % threshold fires proactively before
+/// S3-FIFO has to discard entries without an NVMe backup.
 const DEMOTION_FILL_PCT: u64 = 95;
 
+/// Hard cap on in-flight async demotions (submitted to the pool but not yet
+/// committed). Bounds transient NVMe footprint: during the in-flight window
+/// each demotion holds a Cold block *and* the stale durability-write block
+/// is still owned by the storage index (reclaimed only at phase-3 commit).
+/// Peak overhead is `MAX_INFLIGHT * value_size`; at 1024 × 16 KiB that's
+/// 16 MiB — acceptable against production-scale `flash.capacity-bytes`.
+/// Under pressure the tick throttles back; the next tick drains completions
+/// and reopens the window.
+const MAX_INFLIGHT: u64 = 1024;
+
+// ── Module-level state ───────────────────────────────────────────────────────
+
 /// Set by `shutdown()` so an in-flight timer fires once, observes this, and
-/// does not re-arm — preventing dlclose() from unloading the .so out from
+/// does not re-arm — preventing `dlclose()` from unloading the .so out from
 /// under a pending timer callback.
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// Total number of successful auto-demotions since module load. Exposed via
-/// `INFO flash` as `flash_auto_demotions_total` so operators can verify the
-/// loop is firing against their workload.
+/// `INFO flash` as `flash_auto_demotions_total`.
 pub static AUTO_DEMOTIONS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// Current number of in-flight demotions (submitted to the pool but not yet
+/// committed via phase 3). Exposed via `INFO flash` as
+/// `flash_auto_demotions_inflight` for back-pressure monitoring.
+pub static INFLIGHT: AtomicU64 = AtomicU64::new(0);
+
+/// Queue of completions handed from pool workers back to the event-loop
+/// commit phase. The tick drains this at the top of each iteration.
+static COMMIT_QUEUE: LazyLock<Mutex<VecDeque<CompletedDemotion>>> =
+    LazyLock::new(|| Mutex::new(VecDeque::new()));
+
+/// Which Valkey flash type was observed at phase 1 — phase 3 dispatches on
+/// this to probe the same type for the race check. Copy so the closure and
+/// the handle can both capture it.
+#[derive(Clone, Copy, Debug)]
+enum FlashTypeTag {
+    String,
+    Hash,
+    List,
+    Zset,
+}
+
+/// Everything phase 3 needs to re-open the key, race-check the Hot payload,
+/// and either commit the transition to Cold or roll back the NVMe blocks.
+struct CompletedDemotion {
+    key_bytes: Vec<u8>,
+    tag: FlashTypeTag,
+    phase1_value_hash: u64,
+    backend_offset: u64,
+    num_blocks: u32,
+    value_len: u32,
+}
+
+// ── Public lifecycle ─────────────────────────────────────────────────────────
+
 /// Kick off the periodic auto-demotion timer. Call once from `initialize()`
-/// after CACHE and STORAGE are set.
+/// (and from `init_nvme_backend` on replica→primary promotion) after CACHE,
+/// STORAGE, and POOL are set.
 pub fn start(ctx: &Context) {
     SHUTDOWN.store(false, Ordering::Release);
     schedule(ctx, TICK_INTERVAL);
 }
 
 /// Signal the timer loop to stop re-arming. Call from `deinitialize()` before
-/// joining background threads. Any pending timer will fire once more, see
-/// the flag, and exit without scheduling another tick.
+/// the async pool is shut down.
 pub fn shutdown() {
     SHUTDOWN.store(true, Ordering::Release);
 }
@@ -73,115 +170,291 @@ fn schedule(ctx: &Context, delay: Duration) {
     ctx.create_timer(delay, tick, ());
 }
 
+// ── Tick ─────────────────────────────────────────────────────────────────────
+
 fn tick(ctx: &Context, _data: ()) {
     if SHUTDOWN.load(Ordering::Acquire) {
         return;
     }
-
-    // Replicas apply writes from the primary directly to RAM without a local
-    // NVMe copy; they should not demote on their own. `replication::is_replica()`
-    // is toggled by the role-changed event handler, so this correctly tracks
-    // primary ↔ replica transitions at runtime.
     if crate::replication::is_replica() {
         schedule(ctx, TICK_INTERVAL);
         return;
     }
 
-    // Tolerate transient absence of cache/storage (e.g. RAM-only replica
-    // before promotion). Re-arm and try again next tick.
-    let (Some(cache), Some(storage)) = (CACHE.get(), STORAGE.get()) else {
+    let (Some(cache), Some(storage), Some(pool)) = (CACHE.get(), STORAGE.get(), POOL.get()) else {
         schedule(ctx, TICK_INTERVAL);
         return;
     };
 
-    let mut demoted = 0usize;
-    // `approx_bytes()` returns quick_cache's native `weight()`, which S3-FIFO
-    // keeps ≤ capacity_bytes at all times.  Compare against a 95% fill
-    // threshold so demotion fires proactively, before S3-FIFO is forced to
-    // discard entries without an NVMe backup.
+    // Phase 3 first: drain completions from earlier ticks so their memory
+    // is reclaimed before we potentially submit more work.
+    drain_commit_queue(ctx, storage);
+
+    // Phase 1: submit new demotions up to per-tick + global in-flight caps.
+    let mut submitted = 0usize;
     while cache.approx_bytes().saturating_mul(100)
         >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
-        && demoted < MAX_DEMOTIONS_PER_TICK
+        && submitted < MAX_DEMOTIONS_PER_TICK
+        && INFLIGHT.load(Ordering::Relaxed) < MAX_INFLIGHT
     {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
         };
-        if let Ok(true) = try_demote_key(ctx, storage, &key_bytes) {
-            demoted += 1;
+        if submit_async_demotion(ctx, pool, &key_bytes) {
+            submitted += 1;
         }
-    }
-
-    if demoted > 0 {
-        AUTO_DEMOTIONS_TOTAL.fetch_add(demoted as u64, Ordering::Relaxed);
     }
 
     schedule(ctx, TICK_INTERVAL);
 }
 
-/// Probe `key_bytes` as each of the four flash types in turn. On a match with a
-/// hot-tier value, demote it to cold tier and return `Ok(true)`. Absent /
-/// already-cold / non-flash-type keys return `Ok(false)` (the caller will try
-/// the next candidate). Only an actual NVMe-write failure returns `Err`.
-fn try_demote_key(
-    ctx: &Context,
-    storage: &FileIoUringBackend,
-    key_bytes: &[u8],
-) -> ValkeyResult<bool> {
+// ── Phase 1 (event loop): prepare + submit ───────────────────────────────────
+
+/// Probe the key, clone its hot payload, submit an NVMe-write task. Returns
+/// `true` if a task was submitted. Callers increment submitted-count only on
+/// true; `false` means the key was missing / already cold / not a flash type
+/// / the pool was saturated.
+fn submit_async_demotion(ctx: &Context, pool: &AsyncThreadPool, key_bytes: &[u8]) -> bool {
     let key = ctx.create_string(key_bytes);
     let key_handle = ctx.open_key_writable(&key);
 
-    if let Ok(Some(obj)) = key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
-        let bytes = match &obj.tier {
-            Tier::Hot(v) => v.clone(),
-            Tier::Cold { .. } => return Ok(false),
+    let (serialized, tag) =
+        if let Ok(Some(obj)) = key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
+            match &obj.tier {
+                Tier::Hot(v) => (v.clone(), FlashTypeTag::String),
+                Tier::Cold { .. } => return false,
+            }
+        } else if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
+            match &obj.tier {
+                Tier::Hot(fields) => (hash_serialize(fields), FlashTypeTag::Hash),
+                Tier::Cold { .. } => return false,
+            }
+        } else if let Ok(Some(obj)) = key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
+            match &obj.tier {
+                Tier::Hot(items) => (list_serialize(items), FlashTypeTag::List),
+                Tier::Cold { .. } => return false,
+            }
+        } else if let Ok(Some(obj)) = key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
+            match &obj.tier {
+                Tier::Hot(inner) => (zset_serialize(inner), FlashTypeTag::Zset),
+                Tier::Cold { .. } => return false,
+            }
+        } else {
+            return false;
         };
-        demote_bytes(&key, storage, &bytes, &mut obj.tier)?;
-        ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", &key);
-        return Ok(true);
-    }
+    drop(key_handle);
 
-    if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
-        let bytes = match &obj.tier {
-            Tier::Hot(fields) => hash_serialize(fields),
-            Tier::Cold { .. } => return Ok(false),
+    let phase1_hash = crate::util::value_hash(&serialized);
+    let key_vec = key_bytes.to_vec();
+
+    // Reserve a slot in the in-flight budget before submitting so the counter
+    // accurately reflects "work the pool is obligated to process or we've
+    // rolled back". If submit fails we release the slot immediately.
+    INFLIGHT.fetch_add(1, Ordering::Relaxed);
+
+    // Closure captures the owned payload + key + metadata by move; the
+    // handle holds just enough context for the completion callback to
+    // decrement the in-flight counter.
+    let handle = Box::new(DemotePoolHandle);
+    let task_key_bytes = key_vec;
+    let task_serialized = serialized;
+    let submit_result = pool.submit(handle, move || {
+        let storage = STORAGE
+            .get()
+            .ok_or_else(|| StorageError::Other("storage closed during async demotion".into()))?;
+        let (offset, num_blocks) = storage.alloc_and_write_cold(&task_serialized)?;
+        let value_len = task_serialized.len() as u32;
+
+        let completion = CompletedDemotion {
+            key_bytes: task_key_bytes,
+            tag,
+            phase1_value_hash: phase1_hash,
+            backend_offset: offset,
+            num_blocks,
+            value_len,
         };
-        demote_bytes(&key, storage, &bytes, &mut obj.tier)?;
-        ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", &key);
-        return Ok(true);
-    }
+        if let Ok(mut q) = COMMIT_QUEUE.lock() {
+            q.push_back(completion);
+        } else {
+            // Queue poisoned — roll back the NVMe blocks so they don't leak.
+            storage.release_cold_blocks(offset, num_blocks);
+            return Err(StorageError::Other("demotion commit queue poisoned".into()));
+        }
+        Ok(Vec::new())
+    });
 
-    if let Ok(Some(obj)) = key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
-        let bytes = match &obj.tier {
-            Tier::Hot(items) => list_serialize(items),
-            Tier::Cold { .. } => return Ok(false),
-        };
-        demote_bytes(&key, storage, &bytes, &mut obj.tier)?;
-        ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", &key);
-        return Ok(true);
+    if submit_result.is_err() {
+        // Submit failed (pool closed / queue full / etc.) — release the slot.
+        INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+        return false;
     }
-
-    if let Ok(Some(obj)) = key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
-        let bytes = match &obj.tier {
-            Tier::Hot(inner) => zset_serialize(inner),
-            Tier::Cold { .. } => return Ok(false),
-        };
-        demote_bytes(&key, storage, &bytes, &mut obj.tier)?;
-        ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", &key);
-        return Ok(true);
-    }
-
-    Ok(false)
+    true
 }
 
-/// Write `bytes` to NVMe, update tiering map + WAL, transition `tier` to
-/// `Cold`, evict from the hot cache. Callers must already hold the writable
-/// key handle for `key` so the mutation of `*tier` is safe.
+/// Minimal completion handle: all real work happens in the task closure
+/// (pushing to COMMIT_QUEUE). This callback exists so the pool has a handle
+/// type to call `complete()` on — it just decrements the in-flight counter
+/// and logs any task-level error. The in-flight counter is released here
+/// rather than inside the task so it always fires exactly once per submit
+/// regardless of task success/failure/panic.
+struct DemotePoolHandle;
+
+impl CompletionHandle for DemotePoolHandle {
+    fn complete(self: Box<Self>, result: StorageResult<Vec<u8>>) {
+        INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+        if let Err(e) = result {
+            valkey_module::logging::log_warning(
+                format!("flash: demotion pool task failed: {e}").as_str(),
+            );
+        }
+    }
+}
+
+// ── Phase 3 (event loop): drain + commit ─────────────────────────────────────
+
+fn drain_commit_queue(ctx: &Context, storage: &FileIoUringBackend) {
+    // Take the whole queue in one swap so we hold the lock minimally.
+    let completions: VecDeque<CompletedDemotion> = match COMMIT_QUEUE.lock() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => return, // poisoned — nothing we can safely do
+    };
+    let mut committed = 0usize;
+    for c in completions {
+        if commit_one(ctx, storage, &c) {
+            committed += 1;
+        } else {
+            // Race-check failed / key gone / wrong type — release the NVMe
+            // blocks we allocated in phase 2 so they don't leak.
+            storage.release_cold_blocks(c.backend_offset, c.num_blocks);
+        }
+    }
+    if committed > 0 {
+        AUTO_DEMOTIONS_TOTAL.fetch_add(committed as u64, Ordering::Relaxed);
+    }
+}
+
+/// Attempt to transition `c.key_bytes` from Hot to Cold. Returns `true` on
+/// successful commit; `false` means the race check failed (the caller must
+/// release the NVMe blocks).
+fn commit_one(ctx: &Context, _storage: &FileIoUringBackend, c: &CompletedDemotion) -> bool {
+    let key = ctx.create_string(c.key_bytes.as_slice());
+    let key_handle = ctx.open_key_writable(&key);
+
+    match c.tag {
+        FlashTypeTag::String => commit_string(ctx, &key_handle, &key, c),
+        FlashTypeTag::Hash => commit_hash(ctx, &key_handle, &key, c),
+        FlashTypeTag::List => commit_list(ctx, &key_handle, &key, c),
+        FlashTypeTag::Zset => commit_zset(ctx, &key_handle, &key, c),
+    }
+}
+
+macro_rules! commit_type {
+    ($fn_name:ident, $obj_ty:ty, $type_handle:expr, $serialize:expr) => {
+        fn $fn_name(
+            ctx: &Context,
+            key_handle: &valkey_module::key::ValkeyKeyWritable,
+            key: &valkey_module::ValkeyString,
+            c: &CompletedDemotion,
+        ) -> bool {
+            let Ok(Some(obj)) = key_handle.get_value::<$obj_ty>(&$type_handle) else {
+                return false; // key missing or wrong type now
+            };
+            let current_bytes = match &obj.tier {
+                Tier::Hot(payload) => $serialize(payload),
+                Tier::Cold { .. } => return false, // already cold (unexpected — discard)
+            };
+            if crate::util::value_hash(&current_bytes) != c.phase1_value_hash {
+                return false; // client wrote during the in-flight window
+            }
+
+            // Race check passed: commit the transition.
+            let key_hash = crate::util::key_hash(&c.key_bytes);
+            if let Some(wal) = WAL.get() {
+                let _ = wal.append(crate::storage::wal::WalOp::Put {
+                    key_hash,
+                    offset: c.backend_offset,
+                    value_hash: c.phase1_value_hash,
+                });
+            }
+            if let Ok(mut map) = TIERING_MAP.lock() {
+                map.insert(
+                    key_hash,
+                    crate::recovery::TierEntry {
+                        offset: c.backend_offset,
+                        value_hash: c.phase1_value_hash,
+                    },
+                );
+            }
+            obj.tier = Tier::Cold {
+                key_hash,
+                backend_offset: c.backend_offset,
+                num_blocks: c.num_blocks,
+                value_len: c.value_len,
+            };
+            if let Some(cache) = CACHE.get() {
+                cache.delete(key.as_slice());
+            }
+            // Reclaim the durability-write index entry left behind by the
+            // write-through NVMe copy (from FLASH.SET / HSET / RPUSH / ZADD).
+            // `alloc_and_write_cold` bypasses the index, so the stale entry
+            // would leak without this step — unlike the sync path's
+            // `storage.put` which overwrote the index and freed old blocks
+            // automatically. `storage.delete` is a no-op for keys that
+            // never had a durability entry (e.g. synthetic debug demotions).
+            if let Some(storage) = STORAGE.get() {
+                let _ = storage.delete(&c.key_bytes);
+            }
+            ctx.notify_keyspace_event(NotifyEvent::GENERIC, "flash.evict", key);
+            true
+        }
+    };
+}
+
+// A tiny helper so string's "serialize" (identity copy) has the same callable
+// shape as the other three types' serializers. Takes a byte slice and returns
+// an owned Vec so the macro can call it uniformly against whatever the
+// corresponding Tier::Hot variant holds.
+fn string_serialize(v: &[u8]) -> Vec<u8> {
+    v.to_vec()
+}
+
+commit_type!(
+    commit_string,
+    FlashStringObject,
+    FLASH_STRING_TYPE,
+    string_serialize
+);
+commit_type!(
+    commit_hash,
+    FlashHashObject,
+    FLASH_HASH_TYPE,
+    hash_serialize
+);
+commit_type!(
+    commit_list,
+    FlashListObject,
+    FLASH_LIST_TYPE,
+    list_serialize
+);
+commit_type!(
+    commit_zset,
+    FlashZSetObject,
+    FLASH_ZSET_TYPE,
+    zset_serialize
+);
+
+// ── Synchronous demote_bytes (retained for FLASH.DEBUG.DEMOTE) ───────────────
+
+use valkey_module::{ValkeyError, ValkeyResult, ValkeyString, ValkeyValue};
+
+/// Synchronously write `bytes` to NVMe, update tiering map + WAL, transition
+/// `tier` to `Cold`, and evict the key from the hot cache. Callers must hold
+/// the writable key handle for `key`.
 ///
-/// Note: this currently re-writes the value even when the key already has a
-/// durability-copy on NVMe (see `src/commands/hset.rs` write-through path).
-/// The storage backend's `put()` reclaims the old blocks via the free-list, so
-/// this is wasteful but not leaking — optimisation opportunity tracked
-/// separately.
+/// Used by `FLASH.DEBUG.DEMOTE` for deterministic test paths. The production
+/// auto-demotion pipeline is async (see the module docstring); this helper
+/// stays for test-only admin use where immediate completion matters more than
+/// event-loop responsiveness.
 pub(crate) fn demote_bytes<T>(
     key: &ValkeyString,
     storage: &FileIoUringBackend,
@@ -191,14 +464,11 @@ pub(crate) fn demote_bytes<T>(
     let key_bytes = key.as_slice();
     let kh = crate::util::key_hash(key_bytes);
     let vh = crate::util::value_hash(bytes);
-    let num_blocks = FileIoUringBackend::blocks_needed(bytes.len());
-    let value_len = bytes.len() as u32;
 
-    let backend_offset = storage
-        .put(key_bytes, bytes)
+    let (backend_offset, num_blocks) = storage
+        .alloc_and_write_cold(bytes)
         .map_err(|e| ValkeyError::String(e.to_string()))?;
-
-    storage.remove_from_index(key_bytes);
+    let value_len = bytes.len() as u32;
 
     if let Some(wal) = WAL.get() {
         let _ = wal.append(crate::storage::wal::WalOp::Put {

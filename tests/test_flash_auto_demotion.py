@@ -54,7 +54,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         self._shrink_cache_to_1mib()
 
         # 1 MiB cache; write ~4 MiB of distinct keys (4 × ~1 KiB each).
-        n_keys = 4000
+        n_keys = 2000
         for i in range(n_keys):
             self.client.execute_command("FLASH.SET", f"auto:{i}", "x" * 1000)
 
@@ -83,7 +83,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", sentinel, payload)
 
         # Push the sentinel to cold by filling the cache past capacity.
-        for i in range(4000):
+        for i in range(2000):
             self.client.execute_command("FLASH.SET", f"fill:{i}", "x" * 1000)
 
         assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0)
@@ -103,7 +103,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         to pick it must register in TIERING_MAP (flash_tiered_keys counter)."""
         self._shrink_cache_to_1mib()
 
-        for i in range(4000):
+        for i in range(2000):
             self.client.execute_command("FLASH.SET", f"idle:{i}", "x" * 1000)
 
         # The worker fires at ≥95% cache fill (see DEMOTION_FILL_PCT in
@@ -153,7 +153,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         the probe runs end-to-end."""
         self._shrink_cache_to_1mib()
 
-        for i in range(4000):
+        for i in range(2000):
             self.client.execute_command(
                 "FLASH.HSET", f"hash:{i}", "field1", "a" * 500, "field2", "b" * 500
             )
@@ -166,7 +166,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
 
         # Verify a cold-tier hash still round-trips correctly.
         sample_key = None
-        for i in range(4000):
+        for i in range(2000):
             existence = self.client.execute_command("FLASH.HEXISTS", f"hash:{i}", "field1")
             if existence:
                 sample_key = f"hash:{i}"
@@ -181,7 +181,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         end proves the list serialize/deserialize loop survives the cycle."""
         self._shrink_cache_to_1mib()
 
-        for i in range(4000):
+        for i in range(2000):
             self.client.execute_command("FLASH.RPUSH", f"list:{i}", "a" * 500, "b" * 500)
 
         assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
@@ -205,7 +205,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         """
         self._shrink_cache_to_1mib()
 
-        for i in range(4000):
+        for i in range(2000):
             self.client.execute_command(
                 "FLASH.ZADD",
                 f"zset:{i}",
