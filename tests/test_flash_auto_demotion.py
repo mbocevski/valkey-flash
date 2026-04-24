@@ -300,9 +300,7 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         assert _wait_for(
             lambda: self._info()["flash_demotion_tick_last_us"] > 0,
             deadline_s=2.0,
-        ), (
-            f"flash_demotion_tick_last_us never moved above 0; info: {self._info()}"
-        )
+        ), f"flash_demotion_tick_last_us never moved above 0; info: {self._info()}"
 
     def test_no_data_loss_under_sustained_write_load(self):
         """Sustained writes with cache pressure must never lose a key. Writes
