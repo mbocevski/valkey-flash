@@ -144,6 +144,87 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
         # Starts at 0 on a fresh server; int-coercible.
         assert int(info["flash_auto_demotions_total"]) >= 0
 
+    # ── per-type coverage: hash / list / zset auto-demotion ─────────────────
+
+    def test_auto_demotion_fires_for_flash_hash_keys(self):
+        """The four-type probe in `try_demote_key` must route hashes correctly.
+        Write enough FLASH.HSET-backed keys to overflow the cache and assert
+        tiered_keys + auto_demotions_total rise — proves the hash branch of
+        the probe runs end-to-end."""
+        self._shrink_cache_to_1mib()
+
+        for i in range(4000):
+            self.client.execute_command(
+                "FLASH.HSET", f"hash:{i}", "field1", "a" * 500, "field2", "b" * 500
+            )
+
+        assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
+            f"hash auto-demotion never fired; info: {self._info()}"
+        )
+        info = self._info()
+        assert info["flash_auto_demotions_total"] > 0
+
+        # Verify a cold-tier hash still round-trips correctly.
+        sample_key = None
+        for i in range(4000):
+            existence = self.client.execute_command("FLASH.HEXISTS", f"hash:{i}", "field1")
+            if existence:
+                sample_key = f"hash:{i}"
+                break
+        assert sample_key is not None, "no hash key survived the load"
+        fields = self.client.execute_command("FLASH.HGETALL", sample_key)
+        assert len(fields) == 4, f"expected 2 field/value pairs, got {fields!r}"
+
+    def test_auto_demotion_fires_for_flash_list_keys(self):
+        """Lists probe branch: write FLASH.RPUSH keys, overflow the cache,
+        assert the demotion tick picked them up. A cold-tier LRANGE at the
+        end proves the list serialize/deserialize loop survives the cycle."""
+        self._shrink_cache_to_1mib()
+
+        for i in range(4000):
+            self.client.execute_command("FLASH.RPUSH", f"list:{i}", "a" * 500, "b" * 500)
+
+        assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
+            f"list auto-demotion never fired; info: {self._info()}"
+        )
+        info = self._info()
+        assert info["flash_auto_demotions_total"] > 0
+
+        # Any surviving list must LRANGE 0 -1 to two elements in original order.
+        items = self.client.execute_command("FLASH.LRANGE", "list:0", "0", "-1")
+        assert len(items) == 2, f"list:0 lost elements after auto-demotion: {items!r}"
+
+    def test_auto_demotion_fires_for_flash_zset_keys(self):
+        """Sorted-set probe branch: write FLASH.ZADD keys, overflow the cache,
+        assert the tick picks them up, verify a zrange round-trips the scores.
+
+        Uses 1000-byte members (2x the hash/list tests) because the zset
+        encoding is denser than hash's HashMap serialisation — a smaller
+        workload was landing at 94.96% fill, right under the 95% auto-demotion
+        trigger. The inflated member size guarantees the threshold is crossed.
+        """
+        self._shrink_cache_to_1mib()
+
+        for i in range(4000):
+            self.client.execute_command(
+                "FLASH.ZADD",
+                f"zset:{i}",
+                "1.5",
+                "a" * 1000,
+                "2.5",
+                "b" * 1000,
+            )
+
+        assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
+            f"zset auto-demotion never fired; info: {self._info()}"
+        )
+        info = self._info()
+        assert info["flash_auto_demotions_total"] > 0
+
+        members = self.client.execute_command("FLASH.ZRANGE", "zset:0", "0", "-1", "WITHSCORES")
+        # Expect 4 elements: [member1, score1, member2, score2] — scores as strings.
+        assert len(members) == 4, f"zset:0 lost members after auto-demotion: {members!r}"
+
     # ── invariants that must hold under all workloads ───────────────────────
 
     def test_no_data_loss_under_sustained_write_load(self):
