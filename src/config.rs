@@ -87,6 +87,64 @@ pub const FLASH_COMPACTION_INTERVAL_SEC_MAX: i64 = 3600;
 pub static FLASH_COMPACTION_INTERVAL_SEC: AtomicI64 =
     AtomicI64::new(FLASH_COMPACTION_INTERVAL_SEC_DEFAULT);
 
+// ── flash.demotion-batch ──────────────────────────────────────────────────────
+//
+// Maximum number of demotions `demotion::tick` submits per invocation. Bounds
+// phase-1 event-loop work and — critically — the burst rate at which demotion
+// occupies the shared `AsyncThreadPool` queue (also used by FLASH.SET / HSET /
+// RPUSH / ZADD write-through). Setting this too high relative to the pool
+// queue depth (`io-threads * 4`) starves client writes with `PoolError::Full`.
+//
+// `0` = auto: `max(1, flash.io-threads / 2)`. Leaves at least half the pool
+// queue open for client write-through in the worst case. Mutable via
+// CONFIG SET.
+
+pub const FLASH_DEMOTION_BATCH_DEFAULT: i64 = 0;
+pub const FLASH_DEMOTION_BATCH_MIN: i64 = 0;
+pub const FLASH_DEMOTION_BATCH_MAX: i64 = 4096;
+
+pub static FLASH_DEMOTION_BATCH: AtomicI64 = AtomicI64::new(FLASH_DEMOTION_BATCH_DEFAULT);
+
+/// Effective per-tick demotion budget. Never returns zero — when the knob is
+/// `0` it auto-sizes from `flash.io-threads`.
+pub fn flash_demotion_batch() -> usize {
+    let v = FLASH_DEMOTION_BATCH.load(Ordering::Relaxed);
+    if v == 0 {
+        (flash_io_threads() / 2).max(1)
+    } else {
+        v as usize
+    }
+}
+
+// ── flash.demotion-max-inflight ───────────────────────────────────────────────
+//
+// Hard cap on demotions submitted to the pool but not yet committed via
+// phase 3. Bounds transient NVMe footprint (each in-flight entry holds both
+// a cold-tier block and the stale durability-write block) and also prevents
+// demotion from monopolising the pool queue across ticks.
+//
+// `0` = auto: `max(2, flash.io-threads * 2)`. At typical io-thread counts
+// this keeps the shared pool's queue half-empty for client write-through.
+// Mutable via CONFIG SET.
+
+pub const FLASH_DEMOTION_MAX_INFLIGHT_DEFAULT: i64 = 0;
+pub const FLASH_DEMOTION_MAX_INFLIGHT_MIN: i64 = 0;
+pub const FLASH_DEMOTION_MAX_INFLIGHT_MAX: i64 = 65536;
+
+pub static FLASH_DEMOTION_MAX_INFLIGHT: AtomicI64 =
+    AtomicI64::new(FLASH_DEMOTION_MAX_INFLIGHT_DEFAULT);
+
+/// Effective demotion in-flight cap. Never returns zero — `0` auto-sizes
+/// from `flash.io-threads`.
+pub fn flash_demotion_max_inflight() -> u64 {
+    let v = FLASH_DEMOTION_MAX_INFLIGHT.load(Ordering::Relaxed);
+    if v == 0 {
+        (flash_io_threads() as u64 * 2).max(2)
+    } else {
+        v as u64
+    }
+}
+
 // ── flash.cluster-mode-enabled ────────────────────────────────────────────────
 
 pub const FLASH_CLUSTER_MODE_ENABLED_DEFAULT: &str = "auto";

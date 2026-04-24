@@ -16,6 +16,7 @@ EXPECTED_FIELDS = [
     "flash_compaction_bytes_reclaimed",
     "flash_tiered_keys",
     "flash_auto_demotions_total",
+    "flash_auto_demotions_inflight",
     "flash_module_state",
 ]
 

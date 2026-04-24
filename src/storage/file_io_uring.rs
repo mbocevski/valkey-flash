@@ -328,6 +328,28 @@ impl FileIoUringBackend {
         BYTES_RECLAIMED.fetch_add(num_blocks as u64 * BLOCK_SIZE as u64, Ordering::Relaxed);
     }
 
+    /// Allocate blocks, write `value`, return `(byte_offset, num_blocks)`.
+    ///
+    /// Unlike [`StorageBackend::put`], this path does NOT touch the in-memory
+    /// index — the caller is expected to hand ownership of the returned blocks
+    /// straight to a `Tier::Cold` marker. It is the direct-to-cold primitive
+    /// used by automatic demotion, where a subsequent `remove_from_index` is
+    /// otherwise redundant and pays for an extra index lock acquisition.
+    ///
+    /// Safe to call from any thread (no event-loop affinity) — only the
+    /// block allocator and the io_uring submission path are touched. On
+    /// failure, any partially-allocated blocks are returned to the free-list.
+    pub fn alloc_and_write_cold(&self, value: &[u8]) -> StorageResult<(u64, u32)> {
+        let n_blocks = Self::blocks_needed(value.len());
+        let block_offset = self.alloc_blocks(n_blocks)?;
+        if let Err(e) = self.write_value_at(block_offset, value) {
+            // Roll the allocation back so a failed write doesn't leak blocks.
+            self.push_free_range(block_offset, n_blocks);
+            return Err(e);
+        }
+        Ok((block_offset * BLOCK_SIZE as u64, n_blocks))
+    }
+
     /// Remove a key from the STORAGE index without freeing its blocks.
     /// Used by demotion: after `put()` writes the value, ownership transfers to
     /// `Tier::Cold`, so the index entry must be removed to prevent double-free on

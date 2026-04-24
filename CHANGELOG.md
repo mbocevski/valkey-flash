@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Auto-demotion moved to a three-phase async pipeline: phase 1 (payload clone + pool submit) runs on the event loop, phase 2 (NVMe write via `alloc_and_write_cold`) runs on `AsyncThreadPool`, phase 3 (tier-state commit with race check against the phase-1 value hash) runs at the top of the next event-loop tick. The event loop no longer blocks on `storage.put` per demotion — client GET p99 under active demotion stays at steady-state latency instead of ticking up with value size. The tick breaks its submit loop early when `pool.submit` returns `PoolError::Full` so demotion never starves FLASH.SET / HSET / RPUSH / ZADD write-through on the shared pool. Demotion is throughput-bounded by `MAX_DEMOTIONS_PER_TICK` (128 per 100 ms tick) and back-pressured by `MAX_INFLIGHT` (256 pending completions); both will become runtime-configurable in a follow-up.
+- `FLASH.DEBUG.DEMOTE` retained for deterministic integration-test use. Its synchronous `demote_bytes` helper now uses the same `alloc_and_write_cold` primitive — one fewer NVMe round-trip than the previous put-then-remove-from-index pattern.
+
+### Added
+
+- Two runtime config knobs for tuning the async demotion pipeline against pool contention, both mutable via `CONFIG SET`: `flash.demotion-batch` (max demotions submitted per tick; `0` = auto-size to `max(1, flash.io-threads / 2)`) and `flash.demotion-max-inflight` (cap on outstanding pool submits; `0` = auto-size to `max(2, flash.io-threads * 2)`). The auto-sizing leaves pool-queue headroom for `FLASH.SET` / `HSET` / `RPUSH` / `ZADD` write-through regardless of host core count; operators can override for workload-specific tuning.
+- `INFO flash` field `flash_auto_demotions_inflight` — current number of demotions submitted to the pool but not yet committed via phase 3. Lets operators monitor back-pressure on the tiering pipeline.
+- `FileIoUringBackend::alloc_and_write_cold` — thread-safe direct-to-cold primitive that allocates + writes NVMe blocks without touching the storage index. Used by the async demotion path.
+- `tests/bench/demotion.py` + `tests/bench/results/demotion.{md,csv}` — parameterised benchmark across 4 value sizes × 4 shapes measuring demotion throughput, client GET p99 stall (event-loop contention proxy), and storage footprint under sustained cache overflow.
+
 ## [1.1.0] - 2026-04-24
 
 ### Added

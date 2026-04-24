@@ -164,6 +164,8 @@ Loaded-module args take the form `flash.<knob> <value>` on the `valkey-server --
 | `flash.io-threads` | `num_cpus()` | No | Async I/O worker pool size |
 | `flash.io-uring-entries` | `256` | No | io_uring submission queue depth per worker |
 | `flash.compaction-interval-sec` | `60` | Yes | NVMe compaction cadence |
+| `flash.demotion-batch` | `0` (auto: `io-threads / 2`, min 1) | Yes | Max demotions submitted per tick. Keep below `io-threads × 4` (pool queue depth) so client write-through always has headroom |
+| `flash.demotion-max-inflight` | `0` (auto: `io-threads × 2`, min 2) | Yes | Cap on outstanding demotion submits. Bounds transient NVMe footprint and pool contention across ticks |
 | `flash.replica-tier-enabled` | `no` | No | Opt-in symmetric tiering on replicas (cluster recommendation: `yes`) |
 | `flash.cluster-mode-enabled` | `auto` | No | `auto`/`yes`/`no` — cluster-mode detection |
 | `flash.migration-bandwidth-mbps` | `100` (0 = unlimited) | Yes | Slot-migration rate cap |

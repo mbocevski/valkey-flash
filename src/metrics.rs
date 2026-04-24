@@ -13,7 +13,7 @@ use crate::commands::drain::{
     DRAIN_LAST_SKIPPED,
 };
 use crate::config::FLASH_MIGRATION_BANDWIDTH_MBPS;
-use crate::demotion::AUTO_DEMOTIONS_TOTAL;
+use crate::demotion::{AUTO_DEMOTIONS_TOTAL, INFLIGHT as AUTO_DEMOTIONS_INFLIGHT};
 use crate::storage::file_io_uring::{BYTES_RECLAIMED, COMPACTION_RUNS};
 use crate::{CACHE, MODULE_STATE, STORAGE, TIERING_MAP, WAL};
 
@@ -106,6 +106,7 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
 
     // ── Auto-demotion ─────────────────────────────────────────────────────────
     let auto_demotions_total = AUTO_DEMOTIONS_TOTAL.load(Ordering::Relaxed);
+    let auto_demotions_inflight = AUTO_DEMOTIONS_INFLIGHT.load(Ordering::Relaxed);
 
     // ── Drain progress ────────────────────────────────────────────────────────
     let convert_total = CONVERT_TOTAL.load(Ordering::Relaxed);
@@ -138,6 +139,10 @@ pub fn flash_info_handler(ctx: &InfoContext) -> ValkeyResult<()> {
         )?
         .field("tiered_keys", tiered_keys.to_string())?
         .field("auto_demotions_total", auto_demotions_total.to_string())?
+        .field(
+            "auto_demotions_inflight",
+            auto_demotions_inflight.to_string(),
+        )?
         .field("module_state", module_state)?
         .field("cluster_mode", cluster_mode.to_string())?
         .field("migration_slots_in_progress", migration_slots.to_string())?
