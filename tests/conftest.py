@@ -174,6 +174,30 @@ def _port_reachable(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def _compose_project_exists(project: str) -> bool:
+    """True if the compose project has any containers tracked (running or not).
+
+    Used to guard `_recover_unhealthy_cluster` from running before the session
+    fixture has brought the project up for the first time. Without this guard,
+    `_recover_unhealthy_cluster` would see every port unreachable, call
+    `docker start` against non-existent container names (silently no-ops), and
+    skip every test — preventing the session fixture from ever running.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-p", project, "ps", "-a", "-q"],
+            timeout=5,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
 def _recover_unhealthy_cluster(project: str, base_port: int, timeout: float = 30.0) -> list[int]:
     """Attempt to bring any unreachable cluster container back up. Returns the
     list of ports still unreachable after the recovery window."""
@@ -217,6 +241,13 @@ def pytest_runtest_setup(item):
     for marker_name, (project, base_port) in _CLUSTER_PROJECT_PORTS.items():
         if not any(m.name == marker_name for m in item.iter_markers()):
             continue
+        # Skip the health gate if the compose project doesn't exist yet —
+        # the session-scoped fixture brings it up on first test. Without
+        # this guard the hook would see all 6 ports unreachable, attempt
+        # `docker start` against non-existent containers (silently failing),
+        # and skip every test before the fixture ever runs.
+        if not _compose_project_exists(project):
+            return
         still_down = _recover_unhealthy_cluster(project, base_port)
         if still_down:
             pytest.skip(
