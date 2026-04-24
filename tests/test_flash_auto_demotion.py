@@ -329,3 +329,37 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
             assert got == expected, (
                 f"value corrupted after auto-demotion: key={k} expected {expected!r} got {got!r}"
             )
+
+    def test_bgsave_survives_inflight_demotions(self):
+        """Regression for a v1.1 fork-safety crash.
+
+        Before v1.1.1, `aux_save` (invoked by Valkey inside the forked BGSAVE
+        child) called `drain_for_persistence()`, which in turn invoked
+        `ctx.open_key_writable(...)` on every completed demotion in the commit
+        queue. Keyspace-mutating module APIs in a forked child corrupt the
+        parent's hash-table and SIGSEGV the save. v1.1.1 moves the drain to
+        the `RdbStart` server event (parent, pre-fork); this test asserts
+        that BGSAVE completes cleanly while demotions are in flight.
+        """
+        self._shrink_cache_to_1mib()
+
+        # Write 4 MiB into a 1 MiB cache — forces a steady stream of demotes
+        # and puts entries in the commit queue that the pre-v1.1.1 code
+        # would have dereferenced inside the forked child.
+        for i in range(4000):
+            self.client.execute_command("FLASH.SET", f"bgsave:{i}", "x" * 1000)
+
+        # Confirm the workload actually produced in-flight demotions before
+        # triggering BGSAVE. Without this gate the test would only catch the
+        # "empty commit queue" case, which never hits the crash path.
+        assert _wait_for(lambda: self._info()["flash_tiered_keys"] > 0), (
+            "no demotions fired; workload is not tight enough to reproduce"
+        )
+
+        # Trigger BGSAVE while demotion is still active. If the pre-fork
+        # drain is missing or incorrectly wired, the child SIGSEGVs here.
+        self.client.execute_command("BGSAVE")
+        self.server.wait_for_save_done()
+
+        # The server must still be alive + responsive afterwards.
+        assert self.client.execute_command("PING") is True
