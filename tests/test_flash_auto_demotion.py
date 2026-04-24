@@ -227,6 +227,50 @@ class TestFlashAutoDemotion(ValkeyFlashTestCase):
 
     # ── invariants that must hold under all workloads ───────────────────────
 
+    def test_bgsave_drains_pending_demotions_no_data_loss(self):
+        """aux_save must commit any NVMe-written-but-phase-3-pending demotions
+        before the fork, so the RDB snapshot sees a consistent tier state and
+        the post-crash recovery doesn't orphan blocks.
+
+        Writes enough keys to force demotion to be active, immediately triggers
+        BGSAVE while in-flight demotions exist, restarts from the snapshot,
+        and verifies every key is still readable. Without the drain, keys
+        whose phase 2 completed between the tick and BGSAVE would have their
+        NVMe blocks saved but their `Tier::Cold` marker missing — the RDB
+        would record those keys as still `Hot`, and on restart the blocks
+        would be orphaned (no data loss, but capacity leak).
+        """
+        self._shrink_cache_to_1mib()
+
+        written = {}
+        # 400 keys × ~2 KiB = ~800 KiB in cache (under the 1 MiB cap after
+        # this many inserts S3-FIFO will auto-evict). Enough pressure to
+        # keep the demotion tick active when BGSAVE is called.
+        for i in range(400):
+            k = f"bgsave:{i}"
+            v = f"val-{i}-" + ("y" * 1000)
+            self.client.execute_command("FLASH.SET", k, v)
+            written[k] = v
+
+        # Fire BGSAVE while demotions are likely in flight.
+        self.client.execute_command("BGSAVE")
+        self.server.wait_for_save_done()
+        self.server.restart(remove_rdb=False, remove_nodes_conf=False, connect_client=True)
+        assert self.server.is_alive()
+        from valkeytestframework.util.waiters import wait_for_equal
+
+        wait_for_equal(self.server.is_rdb_done_loading, True)
+
+        for k, expected in written.items():
+            got = self.client.execute_command("FLASH.GET", k)
+            assert got is not None, f"key lost across BGSAVE + restart: {k}"
+            if isinstance(got, bytes):
+                got = got.decode("utf-8")
+            assert got == expected, (
+                f"value corrupted across BGSAVE + restart: key={k} "
+                f"expected {expected!r} got {got!r}"
+            )
+
     def test_no_data_loss_under_sustained_write_load(self):
         """Sustained writes with cache pressure must never lose a key. Writes
         and subsequent reads all return the correct value, whether the value

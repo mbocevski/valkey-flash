@@ -17,6 +17,7 @@ EXPECTED_FIELDS = [
     "flash_tiered_keys",
     "flash_auto_demotions_total",
     "flash_auto_demotions_inflight",
+    "flash_demotion_effective_batch",
     "flash_module_state",
 ]
 

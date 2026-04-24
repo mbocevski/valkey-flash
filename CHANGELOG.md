@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Adaptive per-tick demotion batch cap. `demotion::tick` now measures phase-1 wall time and clamps the next tick's submit ceiling below `flash.demotion-batch` when the previous tick exceeded a 2 ms stall budget (AIMD: halve on over-budget, grow by 25 % per tick toward the configured ceiling once the event loop is idle again). Lets the configured `flash.demotion-batch` stay at an aggressive steady-state value while automatically throttling during transient load spikes. Exposed as `flash_demotion_effective_batch` in `INFO flash` — `0` means "at or above configured ceiling, no clamp active".
+
+### Fixed
+
+- Auto-demotion now fires across the full range of value sizes. The previous `DEMOTION_FILL_PCT = 95` threshold sat *above* S3-FIFO's auto-eviction waterline at multi-KiB values (observed steady state ≈ 94 %): the cache never crossed 95 %, so the tick skipped demotion even while S3-FIFO churned tens of thousands of silent evictions per second. The tick now demotes when either cache fill is at or above 90 % **or** S3-FIFO has evicted at least one entry since the last tick — the latter closes the silent-eviction gap entirely, catching every workload where hot payloads accumulate in Valkey's keyspace even if the cache stays a hair below the fill threshold. Lowered `DEMOTION_FILL_PCT` from 95 to 90 for extra margin.
+- `BGSAVE` (and by extension `SAVE` and `PSYNC` full resyncs) now drains pending async-demotion commits before capturing the aux snapshot. Without this, demotions whose phase 2 (NVMe write) had completed but phase 3 (tier-state commit) had not would be recorded in the RDB as still `Tier::Hot` — and their NVMe blocks would be orphaned after crash-recovery, bounded by `MAX_INFLIGHT × block_size`. The drain runs on the event-loop thread in `aux_save` BEFORE the fork so no correctness issue crosses the fork boundary. Pool-worker-in-flight demotions (the µs window between `alloc_and_write_cold` returning and the commit-queue push) remain a residual leak source bounded by at most a few worker-µs of allocation per BGSAVE.
+
 ### Changed
 
 - Auto-demotion moved to a three-phase async pipeline: phase 1 (payload clone + pool submit) runs on the event loop, phase 2 (NVMe write via `alloc_and_write_cold`) runs on `AsyncThreadPool`, phase 3 (tier-state commit with race check against the phase-1 value hash) runs at the top of the next event-loop tick. The event loop no longer blocks on `storage.put` per demotion — client GET p99 under active demotion stays at steady-state latency instead of ticking up with value size. The tick breaks its submit loop early when `pool.submit` returns `PoolError::Full` so demotion never starves FLASH.SET / HSET / RPUSH / ZADD write-through on the shared pool. Demotion is throughput-bounded by `MAX_DEMOTIONS_PER_TICK` (128 per 100 ms tick) and back-pressured by `MAX_INFLIGHT` (256 pending completions); both will become runtime-configurable in a follow-up.

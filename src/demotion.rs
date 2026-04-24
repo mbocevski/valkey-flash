@@ -66,9 +66,9 @@
 //! frozen.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use valkey_module::{Context, NotifyEvent};
 
@@ -87,11 +87,40 @@ use crate::{CACHE, POOL, STORAGE, TIERING_MAP, WAL};
 /// Tick period for the auto-demotion timer.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Start demoting when the hot-tier RAM cache reaches this fill fraction
-/// (numerator over 100). quick_cache's native `weight()` stays at or below
-/// capacity at all times, so the 95 % threshold fires proactively before
-/// S3-FIFO has to discard entries without an NVMe backup.
-const DEMOTION_FILL_PCT: u64 = 95;
+/// Demote when the hot-tier RAM cache is at or above this fill fraction
+/// (numerator over 100). Lowered from 95 % because S3-FIFO's auto-eviction
+/// waterline varies with value size: at multi-KiB values the cache steadies
+/// out at ~94 % as S3-FIFO evicts on every new insert, so a 95 % threshold
+/// was never actually crossed and demotion silently didn't fire. 90 % is
+/// comfortably below the observed steady-state waterline across value sizes
+/// while still requiring meaningful cache pressure before demotion starts.
+const DEMOTION_FILL_PCT: u64 = 90;
+
+/// Supplementary trigger: demote even if fill is below the fill threshold
+/// when S3-FIFO is actively evicting — any delta > 0 in `eviction_count`
+/// since the last tick indicates the cache is losing entries without NVMe
+/// backup, which is exactly when we want to catch up. This closes the
+/// failure mode where dense value encodings hold the cache at 89.9 %
+/// steady-state: demotion fires on the eviction signal instead.
+static LAST_EVICTION_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Target upper bound on phase-1 event-loop stall per tick, in microseconds.
+/// When a tick's submit loop runs longer than this, the adaptive batch cap
+/// halves on the next tick to keep client command latency stable. When ticks
+/// complete well under budget and cache pressure persists, the cap grows
+/// additively. See `EFFECTIVE_BATCH_OVERRIDE`.
+const STALL_BUDGET_US: u64 = 2_000;
+
+/// Adaptive batch cap, shrunk from the configured ceiling when the tick
+/// exceeds the stall budget. `0` means "no adaptive clamp — use the
+/// `flash.demotion-batch` setting directly". A non-zero value is the
+/// current per-tick ceiling and is always ≤ the configured setting.
+///
+/// The cap follows an additive-increase / multiplicative-decrease pattern:
+/// on an over-budget tick it halves (fast backoff under pressure), and on
+/// a cap-hitting tick that still had cache pressure it increments by 25 %
+/// (slow recovery toward the configured ceiling).
+pub static EFFECTIVE_BATCH_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
 
 // The per-tick demotion budget and in-flight cap are read from the
 // `flash.demotion-batch` and `flash.demotion-max-inflight` configs on every
@@ -159,6 +188,28 @@ pub fn shutdown() {
     SHUTDOWN.store(true, Ordering::Release);
 }
 
+/// Commit all pending demotion completions synchronously. Call from
+/// `aux_save` BEFORE the fork so the snapshot captures a consistent view of
+/// tier state — any `COMMIT_QUEUE` contents represent NVMe-written payloads
+/// whose `Tier::Cold` transition hasn't happened yet, and if left uncommitted
+/// across a fork the blocks would be orphaned on crash-recovery (the RDB
+/// records the keys as still `Hot` in Valkey's keyspace while the NVMe file
+/// has data at offsets not referenced by any `Tier::Cold` marker).
+///
+/// Callable only from the event-loop thread — internally opens writable key
+/// handles to complete phase 3 of the demotion pipeline. Safe to call
+/// alongside `FLASH.DEBUG.DEMOTE` or other event-loop commands.
+///
+/// Residual leak window: this does not drain `INFLIGHT` (demotions whose
+/// pool worker hasn't yet pushed to `COMMIT_QUEUE`). Bounded by the pool's
+/// per-task latency (µs) × number of in-flight demotions; much smaller than
+/// the queued window this call closes.
+pub fn drain_for_persistence(ctx: &Context) {
+    if let Some(storage) = STORAGE.get() {
+        drain_commit_queue(ctx, storage);
+    }
+}
+
 fn schedule(ctx: &Context, delay: Duration) {
     ctx.create_timer(delay, tick, ());
 }
@@ -187,25 +238,105 @@ fn tick(ctx: &Context, _data: ()) {
     // On `PoolError::Full` we exit the loop immediately — the pool is shared
     // with FLASH.SET / HSET / RPUSH / ZADD write-through, and continuing
     // would starve client writes. Next tick retries after the pool drains.
-    let batch = crate::config::flash_demotion_batch();
+    //
+    // Trigger = fill ≥ threshold OR S3-FIFO has evicted at least one entry
+    // since the last tick. The eviction delta catches workloads whose value
+    // encoding keeps cache fill steady just below the fill threshold while
+    // S3-FIFO churns underneath — without this, demotion silently skips
+    // them even though Valkey-keyspace RAM is growing as Hot payloads
+    // accumulate.
+    let current_evictions = cache.metrics().evictions;
+    let last_evictions = LAST_EVICTION_COUNT.swap(current_evictions, Ordering::Relaxed);
+    let evictions_since_last_tick = current_evictions.saturating_sub(last_evictions);
+    let fill_pressure = cache.approx_bytes().saturating_mul(100)
+        >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT);
+    let pressure = fill_pressure || evictions_since_last_tick > 0;
+
+    // Resolve the effective batch cap. `configured` is the user-visible
+    // ceiling (the `flash.demotion-batch` knob); `override_cap` is the
+    // adaptive clamp applied when the previous tick ran over budget.
+    // Effective cap = min(configured, override_cap) if an override is set,
+    // else just configured.
+    let configured_batch = crate::config::flash_demotion_batch();
+    let override_cap = EFFECTIVE_BATCH_OVERRIDE.load(Ordering::Relaxed);
+    let batch = if override_cap == 0 {
+        configured_batch
+    } else {
+        override_cap.min(configured_batch)
+    };
+
     let max_inflight = crate::config::flash_demotion_max_inflight();
     let mut submitted = 0usize;
-    while cache.approx_bytes().saturating_mul(100)
-        >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
-        && submitted < batch
-        && INFLIGHT.load(Ordering::Relaxed) < max_inflight
-    {
+    let mut pool_full = false;
+
+    let phase1_start = Instant::now();
+    while pressure && submitted < batch && INFLIGHT.load(Ordering::Relaxed) < max_inflight {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
         };
         match submit_async_demotion(ctx, pool, &key_bytes) {
             SubmitOutcome::Submitted => submitted += 1,
             SubmitOutcome::Skipped => continue,
-            SubmitOutcome::PoolFull => break,
+            SubmitOutcome::PoolFull => {
+                pool_full = true;
+                break;
+            }
+        }
+    }
+    let phase1_us = phase1_start.elapsed().as_micros() as u64;
+
+    // Adaptive AIMD: see `aimd_next_override` for the pure state-transition
+    // logic. Skip adjustment when the pool pushed back (pool_full) — the
+    // bottleneck there isn't the event loop, so neither shrinking nor
+    // growing would help.
+    if !pool_full {
+        let hit_cap = submitted == batch && pressure;
+        let next_store = aimd_next_override(batch, configured_batch, phase1_us, hit_cap);
+        if next_store != override_cap {
+            EFFECTIVE_BATCH_OVERRIDE.store(next_store, Ordering::Relaxed);
         }
     }
 
     schedule(ctx, TICK_INTERVAL);
+}
+
+/// Pure AIMD state-transition for the adaptive batch override.
+///
+/// Inputs describe the tick that just ran:
+///   - `batch`: the effective cap used this tick (already the min of
+///     `configured` and any prior override)
+///   - `configured`: the user-visible `flash.demotion-batch` ceiling
+///   - `phase1_us`: measured phase-1 wall time, µs
+///   - `hit_cap_with_pressure`: `true` when the submit loop hit `batch`
+///     and the cache trigger condition was still true (i.e. more keys
+///     wanted to be demoted than the cap allowed)
+///
+/// Returns the new value to store in `EFFECTIVE_BATCH_OVERRIDE`.
+///   - `0` means "no clamp — use `configured` directly". Stored when the
+///     adaptive cap has recovered back to (or above) the configured
+///     ceiling, so steady-state observation is clean.
+///   - Any non-zero value is the new cap, always strictly less than
+///     `configured`.
+fn aimd_next_override(
+    batch: usize,
+    configured: usize,
+    phase1_us: u64,
+    hit_cap_with_pressure: bool,
+) -> usize {
+    let step = (batch / 4).max(1);
+    let next = if phase1_us > STALL_BUDGET_US {
+        // Multiplicative decrease: halve on over-budget tick.
+        (batch / 2).max(1)
+    } else if hit_cap_with_pressure && batch < configured {
+        // Additive increase: cap was binding and pressure persists.
+        (batch + step).min(configured)
+    } else if phase1_us * 2 < STALL_BUDGET_US && batch < configured {
+        // Plenty of headroom and no stall — lift toward the ceiling.
+        (batch + step).min(configured)
+    } else {
+        batch
+    };
+    if next >= configured { 0 } else { next }
 }
 
 // ── Phase 1 (event loop): prepare + submit ───────────────────────────────────
@@ -523,4 +654,69 @@ pub(crate) fn demote_bytes<T>(
     }
 
     Ok(ValkeyValue::SimpleStringStatic("OK"))
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::{STALL_BUDGET_US, aimd_next_override};
+
+    // Stall budget is 2_000 µs; use constants that straddle it to exercise
+    // each branch unambiguously.
+    const OVER: u64 = STALL_BUDGET_US + 1;
+    const UNDER_HALF: u64 = STALL_BUDGET_US / 4;
+    const AT_HALF: u64 = STALL_BUDGET_US - 1; // over-half-budget but below stall
+
+    #[test]
+    fn over_budget_tick_halves_cap() {
+        // batch 32, stall — halve to 16. Below configured 64 → returns 16.
+        assert_eq!(aimd_next_override(32, 64, OVER, false), 16);
+        // batch 32 halves to 16 even when the tick hit its cap with pressure;
+        // multiplicative decrease wins over additive increase.
+        assert_eq!(aimd_next_override(32, 64, OVER, true), 16);
+    }
+
+    #[test]
+    fn over_budget_never_below_one() {
+        // batch 1 halves to max(0, 1) = 1. Still below configured 64 → 1.
+        assert_eq!(aimd_next_override(1, 64, OVER, true), 1);
+    }
+
+    #[test]
+    fn hit_cap_with_pressure_grows_additively() {
+        // batch 32 hit cap with pressure + plenty of headroom: grow by 25 %
+        // (step = max(8, 1) = 8) toward configured 64 → 40.
+        assert_eq!(aimd_next_override(32, 64, UNDER_HALF, true), 40);
+    }
+
+    #[test]
+    fn idle_headroom_also_grows() {
+        // Same batch 32 + configured 64 but no cap-hit: the idle-headroom
+        // branch still lifts toward the ceiling so recovery proceeds even
+        // when current cap isn't binding.
+        assert_eq!(aimd_next_override(32, 64, UNDER_HALF, false), 40);
+    }
+
+    #[test]
+    fn grow_clamps_at_configured_returns_zero() {
+        // Growing past configured returns 0 — sentinel for "no clamp active,
+        // use the configured ceiling directly".
+        assert_eq!(aimd_next_override(60, 64, UNDER_HALF, true), 0);
+    }
+
+    #[test]
+    fn mid_budget_not_idle_holds_steady() {
+        // Phase-1 runtime above half the stall budget, no cap-hit: neither
+        // branch fires, cap stays at 32. Not at configured → return 32.
+        assert_eq!(aimd_next_override(32, 64, AT_HALF, false), 32);
+    }
+
+    #[test]
+    fn at_configured_stays_at_sentinel() {
+        // Already at configured ceiling under any calm-tick input: returns 0.
+        assert_eq!(aimd_next_override(64, 64, UNDER_HALF, false), 0);
+        assert_eq!(aimd_next_override(64, 64, UNDER_HALF, true), 0);
+        assert_eq!(aimd_next_override(64, 64, AT_HALF, false), 0);
+    }
 }
