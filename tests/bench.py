@@ -119,6 +119,16 @@ def running_server(
         module_path,
         "--flash.path",
         flash_path,
+        # Demotion caps low enough that a single bench client can't get
+        # starved by the auto-demotion tick sharing the AsyncThreadPool
+        # queue. `io_threads * 4` is the pool queue depth; keeping demotion
+        # below a quarter of that leaves steady-state headroom for the
+        # bench's sequential FLASH.SET / HSET / RPUSH / ZADD writes on
+        # 2-core CI hosts where `num_cpus::get() == 2`.
+        "--flash.demotion-batch",
+        "4",
+        "--flash.demotion-max-inflight",
+        "16",
         "--save",
         "",
         "--loglevel",

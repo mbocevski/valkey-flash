@@ -75,12 +75,19 @@ class ValkeyFlashTestCase(ValkeyTestCase):
         # only applies when addressing the knob via `CONFIG GET`/`SET`.
         self.flash_dir = os.path.abspath(tempfile.mkdtemp(prefix="flash_", dir=self.testdir))
         flash_path = os.path.join(self.flash_dir, "flash.bin")
+        # Demotion caps kept conservative under the integration tests so
+        # the auto-demotion tick never saturates the shared AsyncThreadPool
+        # queue (pool depth = `io_threads * 4`, typically 8 on 2-core CI
+        # hosts). Individual tests that want faster demotion can override
+        # via CONFIG SET after the server starts.
         args = {
             "enable-debug-command": "yes",
             "loadmodule": (
                 f"{os.getenv('MODULE_PATH')} "
                 f"path {flash_path} "
-                f"capacity-bytes {FLASH_TEST_CAPACITY_BYTES}"
+                f"capacity-bytes {FLASH_TEST_CAPACITY_BYTES} "
+                f"demotion-batch 4 "
+                f"demotion-max-inflight 16"
             ),
         }
         self.server, self.client = self.create_server(

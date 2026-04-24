@@ -87,29 +87,18 @@ use crate::{CACHE, POOL, STORAGE, TIERING_MAP, WAL};
 /// Tick period for the auto-demotion timer.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Maximum number of new demotions to submit per tick. Bounds (a) phase-1
-/// event-loop work (payload clone + pool submit, µs per iteration) and
-/// (b) the burst rate at which demotion occupies the shared `AsyncThreadPool`
-/// queue — FLASH.SET / HSET / RPUSH / ZADD share that pool for their
-/// write-through path, so bursting past the queue depth causes client
-/// writes to fail with `PoolError::Full`. The tick also exits the submit
-/// loop early when it hits `PoolError::Full`, so this cap is the ceiling
-/// rather than the steady-state rate.
-const MAX_DEMOTIONS_PER_TICK: usize = 128;
-
 /// Start demoting when the hot-tier RAM cache reaches this fill fraction
 /// (numerator over 100). quick_cache's native `weight()` stays at or below
 /// capacity at all times, so the 95 % threshold fires proactively before
 /// S3-FIFO has to discard entries without an NVMe backup.
 const DEMOTION_FILL_PCT: u64 = 95;
 
-/// Hard cap on in-flight async demotions (submitted to the pool but not yet
-/// committed). Bounds transient NVMe footprint — each in-flight demotion
-/// holds a Cold block and the stale durability-write index entry until
-/// phase 3 reclaims it. Also keeps demotion from monopolising the shared
-/// `AsyncThreadPool`: 256 is well below `io_threads * 4` at any sensible
-/// io-thread count, leaving headroom for client write-through.
-const MAX_INFLIGHT: u64 = 256;
+// The per-tick demotion budget and in-flight cap are read from the
+// `flash.demotion-batch` and `flash.demotion-max-inflight` configs on every
+// tick. Both are mutable via `CONFIG SET` so operators can tune pool
+// contention against client write-through without restarting the module.
+// Default behaviour (knob = 0) auto-sizes from `flash.io-threads` to leave
+// pool headroom for client writes. See `src/config.rs` for the formulas.
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
@@ -198,11 +187,13 @@ fn tick(ctx: &Context, _data: ()) {
     // On `PoolError::Full` we exit the loop immediately — the pool is shared
     // with FLASH.SET / HSET / RPUSH / ZADD write-through, and continuing
     // would starve client writes. Next tick retries after the pool drains.
+    let batch = crate::config::flash_demotion_batch();
+    let max_inflight = crate::config::flash_demotion_max_inflight();
     let mut submitted = 0usize;
     while cache.approx_bytes().saturating_mul(100)
         >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
-        && submitted < MAX_DEMOTIONS_PER_TICK
-        && INFLIGHT.load(Ordering::Relaxed) < MAX_INFLIGHT
+        && submitted < batch
+        && INFLIGHT.load(Ordering::Relaxed) < max_inflight
     {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;

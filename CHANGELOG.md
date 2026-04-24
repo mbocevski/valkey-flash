@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Two runtime config knobs for tuning the async demotion pipeline against pool contention, both mutable via `CONFIG SET`: `flash.demotion-batch` (max demotions submitted per tick; `0` = auto-size to `max(1, flash.io-threads / 2)`) and `flash.demotion-max-inflight` (cap on outstanding pool submits; `0` = auto-size to `max(2, flash.io-threads * 2)`). The auto-sizing leaves pool-queue headroom for `FLASH.SET` / `HSET` / `RPUSH` / `ZADD` write-through regardless of host core count; operators can override for workload-specific tuning.
 - `INFO flash` field `flash_auto_demotions_inflight` — current number of demotions submitted to the pool but not yet committed via phase 3. Lets operators monitor back-pressure on the tiering pipeline.
 - `FileIoUringBackend::alloc_and_write_cold` — thread-safe direct-to-cold primitive that allocates + writes NVMe blocks without touching the storage index. Used by the async demotion path.
 - `tests/bench/demotion.py` + `tests/bench/results/demotion.{md,csv}` — parameterised benchmark across 4 value sizes × 4 shapes measuring demotion throughput, client GET p99 stall (event-loop contention proxy), and storage footprint under sustained cache overflow.
