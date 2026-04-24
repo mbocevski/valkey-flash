@@ -66,7 +66,7 @@ use std::time::Duration;
 
 use valkey_module::{Context, NotifyEvent};
 
-use crate::async_io::{AsyncThreadPool, CompletionHandle};
+use crate::async_io::{AsyncThreadPool, CompletionHandle, PoolError};
 use crate::storage::backend::{StorageBackend, StorageError, StorageResult};
 use crate::storage::file_io_uring::FileIoUringBackend;
 use crate::types::Tier;
@@ -81,15 +81,15 @@ use crate::{CACHE, POOL, STORAGE, TIERING_MAP, WAL};
 /// Tick period for the auto-demotion timer.
 const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Maximum number of new demotions to submit per tick. This caps the phase-1
-/// work (payload clone + value hash + pool submit) on the event loop, not
-/// the NVMe write itself — that runs on pool workers. Sized to keep phase-1
-/// stall under ~1 ms p99 across realistic value sizes: each iteration is
-/// dominated by a ~µs `open_key_writable` + clone of `value_size` bytes,
-/// so 512 × worst-case a few µs ≈ sub-millisecond. Raise if the bench shows
-/// persistent throughput saturation at this cap; lower if p99 regressions
-/// appear in production.
-const MAX_DEMOTIONS_PER_TICK: usize = 512;
+/// Maximum number of new demotions to submit per tick. Bounds (a) phase-1
+/// event-loop work (payload clone + pool submit, µs per iteration) and
+/// (b) the burst rate at which demotion occupies the shared `AsyncThreadPool`
+/// queue — FLASH.SET / HSET / RPUSH / ZADD share that pool for their
+/// write-through path, so bursting past the queue depth causes client
+/// writes to fail with `PoolError::Full`. The tick also exits the submit
+/// loop early when it hits `PoolError::Full`, so this cap is the ceiling
+/// rather than the steady-state rate.
+const MAX_DEMOTIONS_PER_TICK: usize = 128;
 
 /// Start demoting when the hot-tier RAM cache reaches this fill fraction
 /// (numerator over 100). quick_cache's native `weight()` stays at or below
@@ -98,14 +98,12 @@ const MAX_DEMOTIONS_PER_TICK: usize = 512;
 const DEMOTION_FILL_PCT: u64 = 95;
 
 /// Hard cap on in-flight async demotions (submitted to the pool but not yet
-/// committed). Bounds transient NVMe footprint: during the in-flight window
-/// each demotion holds a Cold block *and* the stale durability-write block
-/// is still owned by the storage index (reclaimed only at phase-3 commit).
-/// Peak overhead is `MAX_INFLIGHT * value_size`; at 1024 × 16 KiB that's
-/// 16 MiB — acceptable against production-scale `flash.capacity-bytes`.
-/// Under pressure the tick throttles back; the next tick drains completions
-/// and reopens the window.
-const MAX_INFLIGHT: u64 = 1024;
+/// committed). Bounds transient NVMe footprint — each in-flight demotion
+/// holds a Cold block and the stale durability-write index entry until
+/// phase 3 reclaims it. Also keeps demotion from monopolising the shared
+/// `AsyncThreadPool`: 256 is well below `io_threads * 4` at any sensible
+/// io-thread count, leaving headroom for client write-through.
+const MAX_INFLIGHT: u64 = 256;
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
@@ -191,6 +189,9 @@ fn tick(ctx: &Context, _data: ()) {
     drain_commit_queue(ctx, storage);
 
     // Phase 1: submit new demotions up to per-tick + global in-flight caps.
+    // On `PoolError::Full` we exit the loop immediately — the pool is shared
+    // with FLASH.SET / HSET / RPUSH / ZADD write-through, and continuing
+    // would starve client writes. Next tick retries after the pool drains.
     let mut submitted = 0usize;
     while cache.approx_bytes().saturating_mul(100)
         >= cache.capacity_bytes().saturating_mul(DEMOTION_FILL_PCT)
@@ -200,8 +201,10 @@ fn tick(ctx: &Context, _data: ()) {
         let Some(key_bytes) = cache.evict_candidate() else {
             break;
         };
-        if submit_async_demotion(ctx, pool, &key_bytes) {
-            submitted += 1;
+        match submit_async_demotion(ctx, pool, &key_bytes) {
+            SubmitOutcome::Submitted => submitted += 1,
+            SubmitOutcome::Skipped => continue,
+            SubmitOutcome::PoolFull => break,
         }
     }
 
@@ -210,11 +213,24 @@ fn tick(ctx: &Context, _data: ()) {
 
 // ── Phase 1 (event loop): prepare + submit ───────────────────────────────────
 
-/// Probe the key, clone its hot payload, submit an NVMe-write task. Returns
-/// `true` if a task was submitted. Callers increment submitted-count only on
-/// true; `false` means the key was missing / already cold / not a flash type
-/// / the pool was saturated.
-fn submit_async_demotion(ctx: &Context, pool: &AsyncThreadPool, key_bytes: &[u8]) -> bool {
+/// Tri-state outcome from `submit_async_demotion`. The tick uses it to
+/// distinguish "keep trying the next candidate" (Skipped) from "pool is
+/// saturated, back off for this tick" (PoolFull) — the latter protects
+/// client write-through from starvation.
+enum SubmitOutcome {
+    Submitted,
+    Skipped,
+    PoolFull,
+}
+
+/// Probe the key, clone its hot payload, submit an NVMe-write task.
+///
+/// - `Submitted` — task is now in the pool; INFLIGHT was incremented.
+/// - `Skipped` — key was missing / already cold / not a flash type. Caller
+///   should continue with the next candidate.
+/// - `PoolFull` — pool queue is saturated. Caller should exit the tick's
+///   submit loop so client writes can drain the queue before the next tick.
+fn submit_async_demotion(ctx: &Context, pool: &AsyncThreadPool, key_bytes: &[u8]) -> SubmitOutcome {
     let key = ctx.create_string(key_bytes);
     let key_handle = ctx.open_key_writable(&key);
 
@@ -222,25 +238,25 @@ fn submit_async_demotion(ctx: &Context, pool: &AsyncThreadPool, key_bytes: &[u8]
         if let Ok(Some(obj)) = key_handle.get_value::<FlashStringObject>(&FLASH_STRING_TYPE) {
             match &obj.tier {
                 Tier::Hot(v) => (v.clone(), FlashTypeTag::String),
-                Tier::Cold { .. } => return false,
+                Tier::Cold { .. } => return SubmitOutcome::Skipped,
             }
         } else if let Ok(Some(obj)) = key_handle.get_value::<FlashHashObject>(&FLASH_HASH_TYPE) {
             match &obj.tier {
                 Tier::Hot(fields) => (hash_serialize(fields), FlashTypeTag::Hash),
-                Tier::Cold { .. } => return false,
+                Tier::Cold { .. } => return SubmitOutcome::Skipped,
             }
         } else if let Ok(Some(obj)) = key_handle.get_value::<FlashListObject>(&FLASH_LIST_TYPE) {
             match &obj.tier {
                 Tier::Hot(items) => (list_serialize(items), FlashTypeTag::List),
-                Tier::Cold { .. } => return false,
+                Tier::Cold { .. } => return SubmitOutcome::Skipped,
             }
         } else if let Ok(Some(obj)) = key_handle.get_value::<FlashZSetObject>(&FLASH_ZSET_TYPE) {
             match &obj.tier {
                 Tier::Hot(inner) => (zset_serialize(inner), FlashTypeTag::Zset),
-                Tier::Cold { .. } => return false,
+                Tier::Cold { .. } => return SubmitOutcome::Skipped,
             }
         } else {
-            return false;
+            return SubmitOutcome::Skipped;
         };
     drop(key_handle);
 
@@ -283,12 +299,22 @@ fn submit_async_demotion(ctx: &Context, pool: &AsyncThreadPool, key_bytes: &[u8]
         Ok(Vec::new())
     });
 
-    if submit_result.is_err() {
-        // Submit failed (pool closed / queue full / etc.) — release the slot.
-        INFLIGHT.fetch_sub(1, Ordering::Relaxed);
-        return false;
+    match submit_result {
+        Ok(()) => SubmitOutcome::Submitted,
+        Err(PoolError::Full) => {
+            // Release the slot we reserved and signal the caller to stop
+            // submitting this tick — the pool is saturated by either our
+            // own prior submits or concurrent client write-through.
+            INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+            SubmitOutcome::PoolFull
+        }
+        Err(PoolError::Closed) => {
+            // Pool is shutting down. Release the slot; demotion won't
+            // resume until re-init (e.g. after module reload).
+            INFLIGHT.fetch_sub(1, Ordering::Relaxed);
+            SubmitOutcome::Skipped
+        }
     }
-    true
 }
 
 /// Minimal completion handle: all real work happens in the task closure
