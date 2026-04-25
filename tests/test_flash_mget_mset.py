@@ -32,9 +32,7 @@ class TestFlashMSet(ValkeyFlashTestCase):
         assert self.client.execute_command("FLASH.GET", "ms:k1") == b"v1"
 
     def test_mset_three_pairs(self):
-        result = self.client.execute_command(
-            "FLASH.MSET", "ms:a", "1", "ms:b", "2", "ms:c", "3"
-        )
+        result = self.client.execute_command("FLASH.MSET", "ms:a", "1", "ms:b", "2", "ms:c", "3")
         assert result == b"OK"
         assert self.client.execute_command("FLASH.GET", "ms:a") == b"1"
         assert self.client.execute_command("FLASH.GET", "ms:b") == b"2"
@@ -59,18 +57,14 @@ class TestFlashMSet(ValkeyFlashTestCase):
         # Mix one good key with one wrong-type key. Whole batch must fail
         # with WRONGTYPE; no partial writes.
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.MSET", "ms:goodkey", "v", "ms:hash_blocker", "v"
-            )
+            self.client.execute_command("FLASH.MSET", "ms:goodkey", "v", "ms:hash_blocker", "v")
         # ms:goodkey was NEVER created.
         assert self.client.execute_command("FLASH.GET", "ms:goodkey") is None
 
     def test_mset_wrongtype_against_native_string_aborts_batch(self):
         self.client.execute_command("SET", "ms:native_blocker", "x")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.MSET", "ms:other", "v", "ms:native_blocker", "v"
-            )
+            self.client.execute_command("FLASH.MSET", "ms:other", "v", "ms:native_blocker", "v")
         assert self.client.execute_command("FLASH.GET", "ms:other") is None
 
     # ── Arity ──────────────────────────────────────────────────────────────────
@@ -102,9 +96,7 @@ class TestFlashMGet(ValkeyFlashTestCase):
         assert self.client.execute_command("FLASH.MGET", "mg:k1") == [b"v1"]
 
     def test_mget_three_keys(self):
-        self.client.execute_command(
-            "FLASH.MSET", "mg:a", "1", "mg:b", "2", "mg:c", "3"
-        )
+        self.client.execute_command("FLASH.MSET", "mg:a", "1", "mg:b", "2", "mg:c", "3")
         result = self.client.execute_command("FLASH.MGET", "mg:a", "mg:b", "mg:c")
         assert result == [b"1", b"2", b"3"]
 
@@ -178,7 +170,5 @@ class TestFlashMSetMGetRoundTrip(ValkeyFlashTestCase):
     def test_round_trip_with_holes(self):
         # Set 3 keys, then fetch 5 (the middle 2 don't exist).
         self.client.execute_command("FLASH.MSET", "rt:a", "A", "rt:c", "C", "rt:e", "E")
-        result = self.client.execute_command(
-            "FLASH.MGET", "rt:a", "rt:b", "rt:c", "rt:d", "rt:e"
-        )
+        result = self.client.execute_command("FLASH.MGET", "rt:a", "rt:b", "rt:c", "rt:d", "rt:e")
         assert result == [b"A", None, b"C", None, b"E"]

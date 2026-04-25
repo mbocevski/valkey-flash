@@ -126,10 +126,7 @@ class TestFlashRenameNX(ValkeyFlashTestCase):
         # Native dst should also block the rename.
         self.client.execute_command("FLASH.SET", "nx:src3", "v")
         self.client.execute_command("SET", "nx:dst3_native", "blocker")
-        assert (
-            self.client.execute_command("FLASH.RENAMENX", "nx:src3", "nx:dst3_native")
-            == 0
-        )
+        assert self.client.execute_command("FLASH.RENAMENX", "nx:src3", "nx:dst3_native") == 0
         assert self.client.execute_command("FLASH.GET", "nx:src3") == b"v"
 
     def test_renamenx_missing_src_raises(self):
@@ -185,12 +182,7 @@ class TestFlashCopySemantics(ValkeyFlashTestCase):
     def test_copy_with_replace_overwrites(self):
         self.client.execute_command("FLASH.SET", "cp:rep_src", "src_val")
         self.client.execute_command("FLASH.SET", "cp:rep_dst", "dst_val")
-        assert (
-            self.client.execute_command(
-                "FLASH.COPY", "cp:rep_src", "cp:rep_dst", "REPLACE"
-            )
-            == 1
-        )
+        assert self.client.execute_command("FLASH.COPY", "cp:rep_src", "cp:rep_dst", "REPLACE") == 1
         assert self.client.execute_command("FLASH.GET", "cp:rep_dst") == b"src_val"
         # src still present.
         assert self.client.execute_command("FLASH.GET", "cp:rep_src") == b"src_val"
@@ -198,33 +190,22 @@ class TestFlashCopySemantics(ValkeyFlashTestCase):
     def test_copy_replace_case_insensitive(self):
         self.client.execute_command("FLASH.SET", "cp:ci_src", "v")
         self.client.execute_command("FLASH.SET", "cp:ci_dst", "old")
-        assert (
-            self.client.execute_command(
-                "FLASH.COPY", "cp:ci_src", "cp:ci_dst", "replace"
-            )
-            == 1
-        )
+        assert self.client.execute_command("FLASH.COPY", "cp:ci_src", "cp:ci_dst", "replace") == 1
         assert self.client.execute_command("FLASH.GET", "cp:ci_dst") == b"v"
 
     def test_copy_returns_zero_when_src_missing(self):
         # Match native COPY: missing src → 0, no error.
-        assert (
-            self.client.execute_command("FLASH.COPY", "cp:never", "cp:any") == 0
-        )
+        assert self.client.execute_command("FLASH.COPY", "cp:never", "cp:any") == 0
 
     def test_copy_returns_zero_when_src_native(self):
         # Native (non-flash) src — return 0 (same as missing).
         self.client.execute_command("SET", "cp:native_src", "v")
-        assert (
-            self.client.execute_command("FLASH.COPY", "cp:native_src", "cp:any") == 0
-        )
+        assert self.client.execute_command("FLASH.COPY", "cp:native_src", "cp:any") == 0
 
     def test_copy_unknown_keyword_raises(self):
         self.client.execute_command("FLASH.SET", "cp:bad_src", "v")
         with pytest.raises(ResponseError):
-            self.client.execute_command(
-                "FLASH.COPY", "cp:bad_src", "cp:bad_dst", "REPLACE_TYPO"
-            )
+            self.client.execute_command("FLASH.COPY", "cp:bad_src", "cp:bad_dst", "REPLACE_TYPO")
 
     def test_copy_preserves_ttl(self):
         self.client.execute_command("FLASH.SET", "cp:ttl_src", "v", "EX", 600)
