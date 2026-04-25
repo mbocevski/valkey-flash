@@ -4,6 +4,7 @@ pub mod blpop;
 pub mod bzpop;
 pub mod compaction;
 pub mod convert;
+pub mod copy_rename;
 pub mod debug_demote;
 pub mod debug_state;
 pub mod del;
