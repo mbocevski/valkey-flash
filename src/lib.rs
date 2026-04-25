@@ -69,6 +69,7 @@ use crate::commands::debug_demote::flash_debug_demote_command;
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::drain::flash_drain_command;
+use crate::commands::exists::flash_exists_command;
 use crate::commands::get::flash_get_command;
 use crate::commands::hdel::flash_hdel_command;
 use crate::commands::hexists::flash_hexists_command;
@@ -609,6 +610,7 @@ valkey_module! {
         ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write fast flash"],
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write fast flash"],
+        ["FLASH.EXISTS", flash_exists_command, "readonly fast", 1, -1, 1, "read fast flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],

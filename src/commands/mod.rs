@@ -8,6 +8,7 @@ pub mod debug_demote;
 pub mod debug_state;
 pub mod del;
 pub mod drain;
+pub mod exists;
 pub mod get;
 pub mod hdel;
 pub mod hexists;
