@@ -37,9 +37,7 @@ class TestFlashIncr(ValkeyFlashTestCase):
         with pytest.raises(ResponseError, match="overflow"):
             self.client.execute_command("FLASH.INCR", "ic:max")
         # Value unchanged.
-        assert self.client.execute_command("FLASH.GET", "ic:max") == str(
-            2**63 - 1
-        ).encode()
+        assert self.client.execute_command("FLASH.GET", "ic:max") == str(2**63 - 1).encode()
 
     def test_incr_on_non_integer_value_errors(self):
         self.client.execute_command("FLASH.SET", "ic:bad", "abc")
