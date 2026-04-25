@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`FLASH.INCR` / `FLASH.INCRBY` / `FLASH.DECR` / `FLASH.DECRBY` / `FLASH.APPEND`** — string read-modify-write commands closing the production gap that prevented counter / rate-limiter / append-log workloads from running on the flash tier. Wrappers' Bucket B previously returned `WrapperError::FlashArithmeticUnsupported` for these; module commands now ship and wrappers can route real flash-tier RMW. Match native Valkey semantics: `INCR` on a missing key initialises to `"0"` then increments; `DECR` on missing key initialises to `"0"` then decrements (returns `-1`); `INCRBY 0` is a valid no-op return; `APPEND` on missing key sets the value and returns its length; arithmetic on a non-integer string errors with the standard `ERR value is not an integer or out of range` message; i64 boundary overflow errors with `ERR increment or decrement would overflow`. Type-strict: any non-`FlashString` flash type (Hash/List/ZSet) or native key returns `WRONGTYPE`. v1 implementation is promote-modify-demote: Cold values are materialised through hot RAM (synchronous NVMe read on event loop, same accepted pattern as `lset`/`linsert`/`lrem`); the in-place RMW optimisation is documented as a v1.2 follow-up. TTL preservation matches native: existing TTLs survive the write; freshly-initialised keys have no TTL. New keyspace notifications: `flash.incrby`, `flash.decrby`, `flash.append`.
+
 ## [1.1.1] - 2026-04-24
 
 ### Fixed
