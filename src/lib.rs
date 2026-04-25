@@ -96,8 +96,10 @@ use crate::commands::lrange::flash_lrange_command;
 use crate::commands::lrem::flash_lrem_command;
 use crate::commands::lset::flash_lset_command;
 use crate::commands::ltrim::flash_ltrim_command;
+use crate::commands::mget::flash_mget_command;
 use crate::commands::migrate::flash_migrate_command;
 use crate::commands::migrate_probe::flash_migrate_probe_command;
+use crate::commands::mset::flash_mset_command;
 use crate::commands::set::flash_set_command;
 use crate::commands::zadd::flash_zadd_command;
 use crate::commands::zpop::{
@@ -625,6 +627,8 @@ valkey_module! {
         ["FLASH.PTTL", flash_pttl_command, "readonly fast", 1, 1, 1, "read fast flash"],
         ["FLASH.EXPIRETIME", flash_expiretime_command, "readonly fast", 1, 1, 1, "read fast flash"],
         ["FLASH.PEXPIRETIME", flash_pexpiretime_command, "readonly fast", 1, 1, 1, "read fast flash"],
+        ["FLASH.MGET", flash_mget_command, "readonly", 1, -1, 1, "read flash"],
+        ["FLASH.MSET", flash_mset_command, "write deny-oom", 1, -1, 2, "write flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
