@@ -65,6 +65,9 @@ use crate::commands::compaction::{
     flash_compaction_stats_command, flash_compaction_trigger_command,
 };
 use crate::commands::convert::flash_convert_command;
+use crate::commands::copy_rename::{
+    flash_copy_command, flash_rename_command, flash_renamenx_command,
+};
 use crate::commands::debug_demote::flash_debug_demote_command;
 use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
@@ -629,6 +632,9 @@ valkey_module! {
         ["FLASH.PEXPIRETIME", flash_pexpiretime_command, "readonly fast", 1, 1, 1, "read fast flash"],
         ["FLASH.MGET", flash_mget_command, "readonly", 1, -1, 1, "read flash"],
         ["FLASH.MSET", flash_mset_command, "write deny-oom", 1, -1, 2, "write flash"],
+        ["FLASH.COPY", flash_copy_command, "write deny-oom", 1, 2, 1, "write slow flash"],
+        ["FLASH.RENAME", flash_rename_command, "write", 1, 2, 1, "write fast flash"],
+        ["FLASH.RENAMENX", flash_renamenx_command, "write", 1, 2, 1, "write fast flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
