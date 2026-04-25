@@ -52,9 +52,7 @@ class TestFlashExists(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.SET", "ex:flash", "v")
         self.client.execute_command("SET", "ex:native", "v")
         # 1 (flash) + 0 (native) + 0 (missing) = 1
-        result = self.client.execute_command(
-            "FLASH.EXISTS", "ex:flash", "ex:native", "ex:nope"
-        )
+        result = self.client.execute_command("FLASH.EXISTS", "ex:flash", "ex:native", "ex:nope")
         assert result == 1
 
     def test_exists_native_string_does_not_raise_wrongtype(self):
@@ -84,9 +82,7 @@ class TestFlashExists(ValkeyFlashTestCase):
         self.client.execute_command("FLASH.HSET", "ex:h", "f", "v")
         self.client.execute_command("FLASH.RPUSH", "ex:l", "x")
         self.client.execute_command("FLASH.ZADD", "ex:z", "1", "m")
-        result = self.client.execute_command(
-            "FLASH.EXISTS", "ex:s", "ex:h", "ex:l", "ex:z"
-        )
+        result = self.client.execute_command("FLASH.EXISTS", "ex:s", "ex:h", "ex:l", "ex:z")
         assert result == 4
 
     # ── Arity ─────────────────────────────────────────────────────────────────
