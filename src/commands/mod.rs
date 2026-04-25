@@ -15,6 +15,7 @@ pub mod hget;
 pub mod hgetall;
 pub mod hlen;
 pub mod hset;
+pub mod incr_append;
 pub mod lindex;
 pub mod linsert;
 pub mod list_common;

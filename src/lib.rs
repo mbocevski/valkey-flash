@@ -76,6 +76,10 @@ use crate::commands::hget::flash_hget_command;
 use crate::commands::hgetall::flash_hgetall_command;
 use crate::commands::hlen::flash_hlen_command;
 use crate::commands::hset::flash_hset_command;
+use crate::commands::incr_append::{
+    flash_append_command, flash_decr_command, flash_decrby_command, flash_incr_command,
+    flash_incrby_command,
+};
 use crate::commands::lindex::flash_lindex_command;
 use crate::commands::linsert::flash_linsert_command;
 use crate::commands::llen::flash_llen_command;
@@ -609,6 +613,11 @@ valkey_module! {
         ["FLASH.SET", flash_set_command, "write deny-oom", 1, 1, 1, "write fast flash"],
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write fast flash"],
+        ["FLASH.INCR", flash_incr_command, "write deny-oom fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.INCRBY", flash_incrby_command, "write deny-oom fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.DECR", flash_decr_command, "write deny-oom fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.DECRBY", flash_decrby_command, "write deny-oom fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.APPEND", flash_append_command, "write deny-oom fast", 1, 1, 1, "write fast flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
