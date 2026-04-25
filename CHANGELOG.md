@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `FLASH.EXISTS key [key ...]` — multi-key existence check across all four flash-tier types (FlashString, FlashHash, FlashList, FlashZSet). Mirrors native `EXISTS` semantics: returns the count of keys that exist as a flash type, counts argument occurrences (not unique keys), and is best-effort — keys holding non-flash types or that don't exist contribute 0 without raising `WRONGTYPE`. Pure metadata read; no NVMe IO, no replication, no demotion-pipeline interaction. Unblocks the Python wrapper's `exists()` implementation across `FlashClient` / `FlashAsyncClient` / `FlashClusterClient` / `FlashAsyncClusterClient` (all four were calling this command against the module without it being registered, breaking at runtime).
+
 ### Changed
 
 - `docs/ARCHITECTURE.md` updated to reflect the actual shipped command surface. §3 (Data types) previously claimed `FlashList` and `FlashZSet` were deferred — both have been fully implemented since v1.0.0 (~50 commands across all four data types). New "Command reference" subsection enumerates every registered `FLASH.*` command grouped by data type. New "Out of scope" subsection documents data types deliberately not in flash tier (sets, streams, bitmaps, HyperLogLog, geo). §1 At-a-glance and §2 Component map redrawn to match. §10 keyspace-notifications wording updated for `flash.expire`/`flash.persist` (now scheduled, not deferred). §12 Known limitations expanded with the planned-for-v1.1.1 missing-command list (`FLASH.EXISTS`, `FLASH.EXPIRE` family, `FLASH.MGET`/`FLASH.MSET`, `FLASH.COPY`/`FLASH.RENAME`, `FLASH.INCR`/`FLASH.APPEND` family) cross-referencing their backlog tasks.
