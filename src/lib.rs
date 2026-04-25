@@ -70,6 +70,11 @@ use crate::commands::debug_state::flash_debug_state_command;
 use crate::commands::del::flash_del_command;
 use crate::commands::drain::flash_drain_command;
 use crate::commands::exists::flash_exists_command;
+use crate::commands::expire::{
+    flash_expire_command, flash_expireat_command, flash_expiretime_command, flash_persist_command,
+    flash_pexpire_command, flash_pexpireat_command, flash_pexpiretime_command, flash_pttl_command,
+    flash_ttl_command,
+};
 use crate::commands::get::flash_get_command;
 use crate::commands::hdel::flash_hdel_command;
 use crate::commands::hexists::flash_hexists_command;
@@ -611,6 +616,15 @@ valkey_module! {
         ["FLASH.GET", flash_get_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.DEL", flash_del_command, "write", 1, -1, 1, "write fast flash"],
         ["FLASH.EXISTS", flash_exists_command, "readonly fast", 1, -1, 1, "read fast flash"],
+        ["FLASH.EXPIRE", flash_expire_command, "write fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.EXPIREAT", flash_expireat_command, "write fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.PEXPIRE", flash_pexpire_command, "write fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.PEXPIREAT", flash_pexpireat_command, "write fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.PERSIST", flash_persist_command, "write fast", 1, 1, 1, "write fast flash"],
+        ["FLASH.TTL", flash_ttl_command, "readonly fast", 1, 1, 1, "read fast flash"],
+        ["FLASH.PTTL", flash_pttl_command, "readonly fast", 1, 1, 1, "read fast flash"],
+        ["FLASH.EXPIRETIME", flash_expiretime_command, "readonly fast", 1, 1, 1, "read fast flash"],
+        ["FLASH.PEXPIRETIME", flash_pexpiretime_command, "readonly fast", 1, 1, 1, "read fast flash"],
         ["FLASH.HSET", flash_hset_command, "write deny-oom", 1, 1, 1, "write flash"],
         ["FLASH.HGET", flash_hget_command, "readonly", 1, 1, 1, "read flash"],
         ["FLASH.HGETALL", flash_hgetall_command, "readonly", 1, 1, 1, "read flash"],
