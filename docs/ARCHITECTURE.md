@@ -7,45 +7,54 @@ This document captures the architectural decisions behind valkey-flash.
 valkey-flash is a Valkey module that tiers key/value data to NVMe storage, letting a Valkey instance serve a working set larger than RAM by transparently demoting cold data to flash. Hot entries live in an in-memory cache; cold entries reside on an NVMe-backed file. Valkey proper remains unaware of the flash tier — the module exposes `FLASH.*` commands that users opt into per-key.
 
 **At a glance:**
-- **Commands**: `FLASH.SET`/`FLASH.GET`/`FLASH.DEL` for tiered strings; `FLASH.HSET`/`HGET`/`HGETALL`/`HDEL`/`HEXISTS`/`HLEN` for tiered hashes.
+- **Data types**: four custom types — `FlashString`, `FlashHash`, `FlashList`, `FlashZSet`. Each registered as its own `ValkeyType` with separate RDB layout and callback set.
+- **Commands**: ~50 `FLASH.*` commands covering basic CRUD on strings + hashes, full list operations (push/pop/range/move/blocking variants), full sorted-set operations (add/range/score/store/blocking variants), plus admin / cluster / debug commands. See [§3 Command reference](#3-command-reference) for the complete list.
 - **Storage**: file-backed `io_uring` NVMe backend; S3-FIFO cache layer.
 - **Durability**: append-only WAL with three sync modes (`always` / `everysec` / `no`) plus standard Valkey RDB + AOF.
 - **Cluster**: native `MIGRATE` support for slot migration, per-key atomic, probe-gated by module availability.
+- **Known gaps (planned for v1.1.1)**: `FLASH.EXISTS`, `FLASH.EXPIRE` family, `FLASH.MGET` / `FLASH.MSET`, `FLASH.COPY` / `FLASH.RENAME`, `FLASH.INCR` / `FLASH.APPEND` family. Full list in [§12 Known limitations](#12-known-limitations).
+- **Out of scope** (data types deliberately not in flash tier): sets, streams, bitmaps, HyperLogLog, geo. Use native Valkey for these.
 
 ## 2. Component map
 
 ```
-            ┌────────────────────── FLASH.* command handlers ──────────────────────┐
-            │  SET  GET  DEL  HSET  HGET  HGETALL  HDEL  HEXISTS  HLEN             │
-            └───┬──────────┬──────────┬─────────────────┬───────────────┬──────────┘
-                │          │          │                 │               │
-                ▼          ▼          ▼                 ▼               ▼
-            ┌─────────────────────┐          ┌─────────────────────┐
-            │  FlashString type   │          │  FlashHash type     │
-            │  (rdb/aof/defrag/   │          │  (rdb/aof/defrag/   │
-            │   copy/mem_usage2)  │          │   copy/mem_usage2)  │
-            └──────────┬──────────┘          └──────────┬──────────┘
-                       │                                 │
-                       └──────────────┬──────────────────┘
-                                      ▼
-                          ┌─────────────────────┐
-                          │  FlashCache         │   ← S3-FIFO (quick_cache)
-                          │  (hot tier, RAM)    │
-                          └──────────┬──────────┘
-                                     │ miss / demote / reclaim
-                                     ▼
-                          ┌─────────────────────┐
-                          │  StorageBackend     │   ← trait; Mock for tests
-                          │  FileIoUringBackend │      real backend (io-uring + O_DIRECT)
-                          └──────────┬──────────┘
-                                     │
-                         ┌───────────┴────────────┐
-                         ▼                        ▼
-                  ┌──────────────┐          ┌──────────────┐
-                  │  WAL          │          │  backing     │
-                  │  (CRC32C,     │          │  file (NVMe) │
-                  │   3 sync modes)│         │              │
-                  └──────────────┘          └──────────────┘
+            ┌──────────────────────── FLASH.* command handlers ────────────────────────┐
+            │  Strings    SET  GET  DEL                                                │
+            │  Hashes     HSET  HGET  HGETALL  HDEL  HEXISTS  HLEN                     │
+            │  Lists      LPUSH  RPUSH  LPOP  RPOP  LRANGE  LSET  LINSERT  LMOVE  …   │
+            │  Sorted set ZADD  ZRANGE  ZSCORE  ZRANK  ZINCRBY  ZUNIONSTORE  …        │
+            │  Admin      AUX.INFO  CONVERT  DRAIN  COMPACTION.{STATS,TRIGGER}  …     │
+            │  Cluster    MIGRATE  MIGRATE.PROBE                                       │
+            └───┬──────────────┬──────────────┬──────────────┬───────────────┬─────────┘
+                │              │              │              │               │
+                ▼              ▼              ▼              ▼               ▼
+            ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+            │ FlashString  │ │ FlashHash    │ │ FlashList    │ │ FlashZSet    │
+            │ (rdb/aof/    │ │ (rdb/aof/    │ │ (rdb/aof/    │ │ (rdb/aof/    │
+            │  defrag/copy │ │  defrag/copy │ │  defrag/copy │ │  defrag/copy │
+            │  /mem_usage2)│ │  /mem_usage2)│ │  /mem_usage2)│ │  /mem_usage2)│
+            └──────┬───────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+                   │                │                │                │
+                   └────────────────┴────────┬───────┴────────────────┘
+                                             ▼
+                                ┌─────────────────────┐
+                                │  FlashCache         │   ← S3-FIFO (quick_cache)
+                                │  (hot tier, RAM)    │
+                                └──────────┬──────────┘
+                                           │ miss / demote / reclaim
+                                           ▼
+                                ┌─────────────────────┐
+                                │  StorageBackend     │   ← trait; Mock for tests
+                                │  FileIoUringBackend │      real backend (io-uring + O_DIRECT)
+                                └──────────┬──────────┘
+                                           │
+                               ┌───────────┴────────────┐
+                               ▼                        ▼
+                        ┌──────────────┐          ┌──────────────┐
+                        │  WAL          │         │  backing     │
+                        │  (CRC32C,     │         │  file (NVMe) │
+                        │   3 sync modes)│        │              │
+                        └──────────────┘          └──────────────┘
 ```
 
 Background threads: a compaction worker reclaims freed blocks; the WAL flusher thread handles `everysec` fsync; the async I/O thread pool serves cache-miss reads and cold writes via `BlockClient` / `ThreadSafeContext`.
@@ -56,10 +65,44 @@ Background threads: a compaction worker reclaims freed blocks; the WAL flusher t
 
 - `FlashString` — `src/types/string.rs` — holds `Tier::Hot(Vec<u8>)` or `Tier::Cold { key_hash, backend_offset, num_blocks, value_len }`
 - `FlashHash` — `src/types/hash.rs` — same Tier shape, payload is serialized `HashMap<Vec<u8>, Vec<u8>>`
+- `FlashList` — `src/types/list.rs` — same Tier shape, payload is a `VecDeque<Vec<u8>>` of list elements
+- `FlashZSet` — `src/types/zset.rs` — same Tier shape, payload is a sorted skip-list backed by `BTreeMap<f64, Vec<Vec<u8>>>` for score lookup plus `HashMap<Vec<u8>, f64>` for member→score
 
 Rationale: clean command dispatch, separate RDB layouts (simpler forward-compat when a shape gains features), per-type defrag cursor. The Tier enum is the single source of truth for whether a value is in RAM or NVMe; every callback dispatches on it.
 
-`FlashList` and `FlashZSet` are deferred to a future release.
+### Command reference
+
+The module currently registers ~50 `FLASH.*` commands. Grouped by data type:
+
+#### Strings (FlashString)
+`FLASH.SET`, `FLASH.GET`, `FLASH.DEL`
+
+#### Hashes (FlashHash)
+`FLASH.HSET`, `FLASH.HGET`, `FLASH.HGETALL`, `FLASH.HDEL`, `FLASH.HEXISTS`, `FLASH.HLEN`
+
+#### Lists (FlashList)
+`FLASH.LPUSH`, `FLASH.RPUSH`, `FLASH.LPUSHX`, `FLASH.RPUSHX`, `FLASH.LPOP`, `FLASH.RPOP`, `FLASH.LRANGE`, `FLASH.LLEN`, `FLASH.LINDEX`, `FLASH.LSET`, `FLASH.LINSERT`, `FLASH.LREM`, `FLASH.LTRIM`, `FLASH.LMOVE`, `FLASH.BLPOP`, `FLASH.BRPOP`, `FLASH.BLMOVE`
+
+#### Sorted sets (FlashZSet)
+`FLASH.ZADD`, `FLASH.ZCARD`, `FLASH.ZCOUNT`, `FLASH.ZINCRBY`, `FLASH.ZLEXCOUNT`, `FLASH.ZRANGE`, `FLASH.ZRANGEBYLEX`, `FLASH.ZRANGEBYSCORE`, `FLASH.ZRANGESTORE`, `FLASH.ZRANK`, `FLASH.ZREM`, `FLASH.ZREVRANGEBYLEX`, `FLASH.ZREVRANGEBYSCORE`, `FLASH.ZREVRANK`, `FLASH.ZSCAN`, `FLASH.ZSCORE`, `FLASH.ZUNIONSTORE`, `FLASH.ZINTERSTORE`, `FLASH.ZDIFFSTORE`, `FLASH.ZPOPMIN`, `FLASH.ZPOPMAX`, `FLASH.BZPOPMIN`, `FLASH.BZPOPMAX`
+
+#### Admin
+`FLASH.AUX.INFO`, `FLASH.CONVERT`, `FLASH.DRAIN`, `FLASH.DEBUG.DEMOTE`, `FLASH.DEBUG.STATE`, `FLASH.COMPACTION.STATS`, `FLASH.COMPACTION.TRIGGER`
+
+#### Cluster
+`FLASH.MIGRATE`, `FLASH.MIGRATE.PROBE`
+
+### Out of scope (deferred indefinitely)
+
+The module deliberately does not implement these data types — keep them in native Valkey:
+
+- **Sets** (`SADD` / `SREM` / `SMEMBERS` / `SISMEMBER`): no flash-tier set type. Use native sets.
+- **Streams** (`XADD` / `XREAD` / consumer groups): time-series append patterns are a poor fit for the demotion model.
+- **Bitmaps** (`SETBIT` / `BITCOUNT` / `BITOP`): operate on small fixed buffers; little benefit from tiering.
+- **HyperLogLog** (`PFADD` / `PFCOUNT`): fixed-size sketches, RAM-only is correct.
+- **Geo** (`GEOADD` / `GEOSEARCH`): backed by sorted sets natively; if needed in flash, use `FLASH.Z*` directly.
+
+Workloads that depend on these data types should run them in native Valkey alongside the flash module — the two coexist on the same instance.
 
 ## 4. Storage backend
 
@@ -219,7 +262,7 @@ Validated under stress: 4 concurrent clients, mixed SET/GET/HSET/HDEL, 1 or 16 s
 - Drain: `convert_total`, `drain_in_progress`, `drain_last_converted`, `drain_last_skipped`, `drain_last_errors`, `drain_last_scanned`
 - State: `module_state` (`recovering|ready|error`)
 
-Keyspace notifications: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`, `flash.convert`. `flash.expire` deferred (no module API hook for Valkey's native TTL `free` path).
+Keyspace notifications: `flash.set`, `flash.del`, `flash.hset`, `flash.hdel`, `flash.evict`, `flash.convert`. `flash.expire` and `flash.persist` ship with the v1.1.1 `FLASH.EXPIRE` family work.
 
 ACL: `@flash` category scopes every FLASH.* command; admin/debug commands are `@admin @dangerous @flash`.
 
@@ -264,7 +307,20 @@ Operators should watch `flash_drain_last_errors` after a `FORCE` drain on a tigh
 
 ## 12. Known limitations
 
+### Missing commands (planned for v1.1.1)
+
+The following commands are absent from the current module surface and are scheduled for the v1.1.1 release. Wrappers handle the gaps with workarounds in the meantime:
+
+- **`FLASH.EXISTS`** — multi-key existence check. Wrappers currently fall back to per-key `FLASH.GET` loops which read full values just to check presence. Spec: backlog task `7873d9ed`.
+- **`FLASH.EXPIRE` family** — `EXPIRE`, `EXPIREAT`, `PEXPIRE`, `PEXPIREAT`, `TTL`, `PTTL`, `PERSIST`, `EXPIRETIME`, `PEXPIRETIME`. Today TTL is settable only at write-time via `FLASH.SET` options; cannot bump TTL on existing keys. **Blocks the session-cache "extend on activity" pattern.** Spec: backlog task `57e13805`.
+- **`FLASH.MGET` / `FLASH.MSET`** — batch read/write commands. Wrappers do per-key dispatch (N round-trips). Spec: backlog task `f5d207d2`.
+- **`FLASH.COPY` / `FLASH.RENAME` / `FLASH.RENAMENX`** — atomic same-tier moves and atomic-via-WAL cross-tier moves. Wrappers currently do non-atomic GET+SET+DEL fallback for cross-tier moves (Bucket C in the wrapper backlogs). Spec: backlog task `82b87a71`.
+- **`FLASH.INCR` / `FLASH.INCRBY` / `FLASH.DECR` / `FLASH.DECRBY` / `FLASH.APPEND`** — read-modify-write on flash-tier strings. Wrappers (Bucket B) return a typed error today. Spec: backlog task `db201438`.
+
+### Long-standing tradeoffs
+
 - **Cold-tier keyed-lookup during RDB save** for very large cold values: inline inclusion in RDB inflates file size (documented tradeoff; a future revision can use `aux_save`-based shared backing).
 - **Migration key-size cap**: keys > `flash.migration-max-key-bytes` (default 64 MiB) must be drained manually before reshard; chunked streaming is planned.
 - **FLASH.HSET TTL on cold hash materialization**: `obj.ttl_ms` round-trips correctly through RDB/AOF, but `rdb_save` on a Cold hash reconstructs from NVMe blocks — `backend_offset` must be set. Tested.
 - **AOF under instrumented debug builds**: integration-coverage disables AOF tests because debug-speed instrumentation slows server restart enough to race NVMe reinit. Production (release) builds are unaffected.
+- **Block allocator fragmentation over months**: current allocator is a bump pointer with persisted free-list, coalesced by the compaction thread. Sufficient for short-lived workloads; for production deployments with months of mixed SET/DEL on variable-sized values, copy-on-compact segment cleaning is needed. Spec: backlog task `8aaeac00` (v1.2+ material).
