@@ -12,7 +12,7 @@ valkey-module-macros = "0"
 linkme = "0"
 io-uring = "0.7"
 libc = "0.2"
-quick_cache = { version = "=0.6.18", features = ["stats"] }
+quick_cache = { version = "=0.6.21", features = ["stats"] }
 crossbeam-channel = "=0.5.15"
 num_cpus = "=1.17.0"
 crc32c = "=0.6.8"
